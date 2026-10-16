@@ -1,45 +1,97 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { ClaimsModule } from '../claims/claims.module';
+import { ClaimsService } from '../claims/claims.service';
+import { MatchingModule } from '../matching/matching.module';
+import { MatchingService } from '../matching/matching.service';
+
+const LATE_THRESHOLD_DAYS = 7;
 
 /**
  * CockpitModule — écran 1 "Cockpit de place". Module AGRÉGATEUR additionnel
- * (en plus des 17 modules de B.2), explicitement demandé pour fournir un
- * endpoint stable `/cockpit/summary` qui agrège les KPIs des autres
- * modules — aucune entité, aucune règle métier propre.
+ * (en plus des 17 modules de B.2), qui agrège désormais les VRAIES données
+ * de `ClaimsModule` (dossiers) et `MatchingModule` (file de confrontation)
+ * au lieu de valeurs mockées. Forme de `GET /cockpit/summary` INCHANGÉE
+ * (contrat stable, voir HANDOFF.md) — seules les valeurs sont réelles.
  *
- * TODO(backend-agent): remplacer les valeurs mock par de vrais appels aux
- * services ClaimsModule / MatchingModule / SettlementModule / RecoursModule
- * une fois leur logique réelle implémentée, en conservant EXACTEMENT la
- * forme de `GET /cockpit/summary` ci-dessous (le front est déjà branché
- * dessus — Module I, écran 1).
+ * Hypothèses documentées (RecoursModule/SettlementModule restent hors
+ * périmètre de ce sprint, voir HANDOFF.md) :
+ *  - "dossiers du jour" = dossiers importés aujourd'hui (date de création) ;
+ *  - "à apparier" = lignes de la file de confrontation au statut
+ *    `A_CONFIRMER` (MatchingModule, B.5) ;
+ *  - "en retard" = dossiers encore en `A_APPARIER` depuis plus de
+ *    `LATE_THRESHOLD_DAYS` jours (pas de timer conventionnel réel tant que
+ *    RecoursModule reste un mock) ;
+ *  - "compensation à venir" = somme des montants (expertisé si connu, sinon
+ *    estimé) des dossiers non encore réglés (`A_APPARIER`/`APPARIE`).
  */
 @ApiTags('cockpit')
 @ApiBearerAuth()
 @Controller('cockpit')
 @UseGuards(AuthGuard)
 class CockpitController {
+  constructor(
+    private readonly claims: ClaimsService,
+    private readonly matching: MatchingService,
+  ) {}
+
   @Get('summary')
   @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (dossiers du jour, à apparier, en retard, compensation à venir)' })
-  summary() {
+  async summary() {
+    const [{ items: allClaims }, matchCounters] = await Promise.all([
+      this.claims.list({ page: 1, pageSize: 100_000 }),
+      this.matching.counters(),
+    ]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
+    const lateThresholdMs = LATE_THRESHOLD_DAYS * 86_400_000;
+
+    const dossiersDuJour = allClaims.filter((c) => c.createdAt.slice(0, 10) === today).length;
+    const enRetard = allClaims.filter(
+      (c) => c.state === 'A_APPARIER' && now - new Date(c.createdAt).getTime() > lateThresholdMs,
+    ).length;
+    const compensationAVenir = allClaims
+      .filter((c) => c.state === 'A_APPARIER' || c.state === 'APPARIE')
+      .reduce((sum, c) => sum + (c.expertAmount ?? c.estimatedAmount ?? 0), 0);
+
+    // Sparkline : nb de dossiers créés par jour sur les 12 derniers jours (ordre chronologique).
+    const sparklineDeclarations: number[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const day = new Date(now - i * 86_400_000).toISOString().slice(0, 10);
+      sparklineDeclarations.push(allClaims.filter((c) => c.createdAt.slice(0, 10) === day).length);
+    }
+
+    // Position nette par compagnie (somme des montants où elle est "A" moins où elle est adverse "B").
+    const companies = new Set<string>();
+    for (const c of allClaims) {
+      if (c.company) companies.add(c.company);
+      if (c.counterpartyCompany) companies.add(c.counterpartyCompany);
+    }
+    const barresNettes = Array.from(companies).map((company) => {
+      const net = allClaims.reduce((sum, c) => {
+        const amount = c.expertAmount ?? c.estimatedAmount ?? 0;
+        if (c.company === company) return sum + amount;
+        if (c.counterpartyCompany === company) return sum - amount;
+        return sum;
+      }, 0);
+      return { company, net };
+    });
+
     return {
       kpis: {
-        dossiersDuJour: 37,
-        aApparier: 14,
-        enRetard: 5,
-        compensationAVenir: 2_840_000,
+        dossiersDuJour,
+        aApparier: matchCounters.A_CONFIRMER ?? 0,
+        enRetard,
+        compensationAVenir,
       },
-      sparklineDeclarations: [12, 18, 15, 22, 19, 27, 24, 31, 28, 34, 30, 37],
-      barresNettes: [
-        { company: 'CAAT', net: 120000 },
-        { company: 'SAA', net: -45000 },
-        { company: 'CASH', net: 68000 },
-        { company: 'ALLI', net: -23000 },
-      ],
+      sparklineDeclarations,
+      barresNettes,
       updatedAt: new Date().toISOString(),
     };
   }
 }
 
-@Module({ controllers: [CockpitController] })
+@Module({ imports: [ClaimsModule, MatchingModule], controllers: [CockpitController] })
 export class CockpitModule {}

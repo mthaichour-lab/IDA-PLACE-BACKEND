@@ -1,39 +1,49 @@
-import { Injectable, Logger, Module } from '@nestjs/common';
+import { Inject, Injectable, Logger, Module } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { AUTH_PROVIDER, AuthProvider } from '../common/interfaces/authenticated-user.interface';
 
 export type RealtimeEvent = 'claim.ingested' | 'match.updated' | 'recours.timer' | 'metering.tick' | 'ledger.appended';
 
 /**
  * RealtimeModule — B.2/B.12 : passerelle WebSocket pour les dashboards
  * temps réel (écrans 1, 2, 10). Abonnement par salon tenant
- * (`join-tenant` → room `tenant:<companyId|place>`).
+ * (room `tenant:place` pour les événements de place — cockpit, matching,
+ * métrologie — et, en plus, `tenant:<companyId>` pour un utilisateur
+ * rattaché à une compagnie, afin de supporter de futurs événements scopés
+ * compagnie comme `recours.timer`).
  *
- * TODO(backend-agent): voir §B.12 :
- *  - authentifier la connexion WS (token Keycloak / dev) avant de joindre
- *    un salon — actuellement aucune vérification (socket ouvert) ;
- *  - appeler `RealtimeGateway.emitEvent(...)` depuis ClaimsModule (import),
- *    MatchingModule (decide), RecoursModule (timers), MeteringModule
- *    (tick périodique) et LedgerModule (append) au lieu du seul exemple
- *    périodique ci-dessous ;
- *  - remplacer l'intervalle de démonstration par une file d'événements
- *    Redis (pub/sub) pour supporter plusieurs instances du back-end.
+ * Authentification de la connexion (B.12) : le handshake doit porter le
+ * même en-tête `x-dev-user` que l'API REST (voir `DevAuthProvider`) — une
+ * connexion non authentifiée est refusée (`disconnect`). `ClaimsModule`
+ * (après import) et `MatchingModule` (après `decide()`) émettent
+ * respectivement `claim.ingested` et `match.updated` via
+ * `emitEvent(...)` (voir leurs services) — ce gateway ne contient plus de
+ * logique métier propre, uniquement la diffusion.
+ *
+ * TODO(backend-agent): remplacer l'émission directe en mémoire par une file
+ * d'événements Redis (pub/sub) pour supporter plusieurs instances du
+ * back-end (voir HANDOFF.md §4).
  */
 @Injectable()
 @WebSocketGateway({ cors: { origin: process.env.CORS_ORIGIN ?? '*' }, namespace: '/realtime' })
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger('RealtimeGateway');
-  private demoInterval?: NodeJS.Timeout;
 
-  handleConnection(client: Socket): void {
-    this.logger.log(`Client connecté: ${client.id}`);
-    client.join('tenant:place');
-    if (!this.demoInterval) {
-      // Démonstration : un tick périodique tant qu'aucun module métier
-      // n'émet encore de vrais événements (voir TODO ci-dessus).
-      this.demoInterval = setInterval(() => this.emitEvent('metering.tick', { at: new Date().toISOString() }), 15000);
+  constructor(@Inject(AUTH_PROVIDER) private readonly authProvider: AuthProvider) {}
+
+  async handleConnection(client: Socket): Promise<void> {
+    const user = await this.authProvider.resolve({ headers: client.handshake.headers as Record<string, unknown> });
+    if (!user) {
+      this.logger.warn(`Connexion WS refusée (non authentifiée): ${client.id}`);
+      client.emit('error', { code: 'UNAUTHORIZED', message: 'Authentification requise (en-tête x-dev-user).' });
+      client.disconnect(true);
+      return;
     }
+    client.join('tenant:place');
+    if (user.companyId) client.join(`tenant:${user.companyId}`);
+    this.logger.log(`Client connecté: ${client.id} (${user.role}${user.companyId ? `, ${user.companyId}` : ''})`);
   }
 
   handleDisconnect(client: Socket): void {

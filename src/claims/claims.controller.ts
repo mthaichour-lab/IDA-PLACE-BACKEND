@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Privileges } from '../common/decorators/privileges.decorator';
@@ -31,10 +31,11 @@ export class ClaimsController {
   @ApiOperation({ summary: 'Import Excel/CSV (47 colonnes) → rapport d’éligibilité ligne à ligne (B.4)' })
   @ApiOkResponse({ type: ClaimImportReportDto })
   @UseInterceptors(FileInterceptor('file'))
-  // TODO(backend-agent): remplacer le mock par le parsing réel du fichier
-  // (`file.buffer`) + délégation à EligibilityModule. Voir claims.service.ts.
-  importFile(@UploadedFile() file?: { originalname?: string; size?: number }): ClaimImportReportDto {
-    return this.service.buildMockImportReport(file?.originalname ?? 'import.xlsx');
+  async importFile(@UploadedFile() file?: { originalname?: string; buffer?: Buffer; size?: number }): Promise<ClaimImportReportDto> {
+    if (!file?.buffer) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Fichier manquant (champ "file", multipart/form-data).' });
+    }
+    return this.service.importFile(file.originalname ?? 'import.xlsx', file.buffer);
   }
 
   @Get()

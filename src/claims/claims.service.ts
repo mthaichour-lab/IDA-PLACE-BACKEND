@@ -1,79 +1,259 @@
-import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityRepository } from '@mikro-orm/postgresql';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
+import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { EligibilityService } from '../eligibility/eligibility.service';
+import { MatchingService } from '../matching/matching.service';
+import { ClaimMatchInput } from '../matching/matching.types';
+import { RealtimeGateway } from '../realtime/realtime.module';
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
+import { parseClaimFile } from './claim-parser';
+import { Claim } from './entities/claim.entity';
 import { ClaimImportReportDto, ClaimImportRowResultDto } from './dto/claim-import.dto';
 import { ClaimViewDto, ListClaimsQueryDto } from './dto/claim.dto';
 
-const MOCK_CLAIMS: ClaimViewDto[] = Array.from({ length: 14 }).map((_, i) => ({
-  id: `clm-${1000 + i}`,
-  numEconstat: `ECT-2026-${(10000 + i).toString()}`,
-  company: ['CAAT', 'SAA', 'CASH', 'ALLI'][i % 4],
-  counterpartyCompany: ['SAA', 'CASH', 'ALLI', 'CAAT'][i % 4],
-  accidentDate: new Date(Date.UTC(2026, 0, (i % 27) + 1)).toISOString(),
-  wilaya: ['16', '31', '25', '09', '19'][i % 5],
-  estimatedAmount: 45000 + i * 7350,
-  expertAmount: i % 3 === 0 ? 42000 + i * 6000 : undefined,
-  state: ['RECU', 'A_APPARIER', 'APPARIE', 'ELIGIBLE', 'EN_RECOURS'][i % 5],
-  createdAt: new Date(Date.UTC(2026, 0, (i % 27) + 1, 8 + i)).toISOString(),
-}));
+/** Repli mémoire — mode dégradé. Persistant pour la durée du process (voir README "Mode dégradé"). */
+const MEMORY_CLAIMS: ClaimViewDto[] = [];
+
+function toClaimView(c: Claim): ClaimViewDto {
+  return {
+    id: c.id,
+    numEconstat: c.numEconstat ?? '',
+    company: c.company,
+    counterpartyCompany: c.counterpartyCompany ?? '',
+    accidentDate: c.accidentDate ?? '',
+    wilaya: c.wilaya ?? '',
+    estimatedAmount: c.estimatedAmount ?? 0,
+    expertAmount: c.expertAmount,
+    state: c.state,
+    createdAt: c.createdAt.toISOString(),
+    commune: c.commune,
+    accidentTime: c.accidentTime,
+    plateA: c.plateA,
+    plateB: c.plateB,
+    policeA: c.policeA,
+    policeB: c.policeB,
+    gpsLat: c.gpsLat,
+    gpsLng: c.gpsLng,
+    eligibilityVerdict: c.eligibilityVerdict,
+    eligibilityReasons: c.eligibilityReasons,
+  };
+}
+
+function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
+  return {
+    id: c.id,
+    numEconstat: c.numEconstat,
+    company: c.company,
+    counterpartyCompany: c.counterpartyCompany,
+    plateA: c.plateA,
+    plateB: c.plateB,
+    policeA: c.policeA,
+    policeB: c.policeB,
+    accidentDate: c.accidentDate,
+    accidentTime: c.accidentTime,
+    wilaya: c.wilaya,
+    commune: c.commune,
+    gpsLat: c.gpsLat,
+    gpsLng: c.gpsLng,
+  };
+}
 
 /**
- * ClaimsModule — B.2 : ingestion ERP/e-constat/import, modèle 47 colonnes.
+ * ClaimsModule — B.2 : ingestion ERP/e-constat/import, modèle 47 colonnes
+ * (B.4). Parsing réel (`claim-parser.ts`, exceljs/CSV), verdict ligne à
+ * ligne délégué à `EligibilityModule` (B.6), persistance réelle (`Claim`,
+ * B.3), déclenchement du calcul d'appariement (`MatchingModule`, B.5) et
+ * événement temps réel `claim.ingested` (B.12) après import.
  *
- * TODO(backend-agent): implémenter la logique métier réelle, voir §B.4 et
- * §B.6 du dossier technique :
- *  - parsing réel du fichier Excel/CSV (47 colonnes, §B.4) avec une
- *    librairie de parsing (ex: `exceljs`) au lieu du générateur de mock
- *    `buildMockImportReport` ci-dessous ;
- *  - délégation du verdict ligne à ligne à `EligibilityModule` (règles
- *    Art. 3/4/5-6/13/19/28, §B.6) plutôt que le tirage pseudo-aléatoire
- *    actuel ;
- *  - persistance réelle des `Claim`/`Declaration` (entité MikroORM +
- *    migration, §B.3) à la place du tableau `MOCK_CLAIMS` ;
- *  - émission de l'événement temps réel `claim.ingested` (RealtimeModule,
- *    §B.12) après import.
- * NE PAS changer la forme du DTO `ClaimImportReportDto` ni des routes.
+ * Contrat stable (voir HANDOFF.md) : la forme de `ClaimImportReportDto`,
+ * `ClaimViewDto` et des routes `POST /claims/import`, `GET /claims`,
+ * `GET /claims/:id` ne change pas.
  */
 @Injectable()
 export class ClaimsService {
-  list(query: ListClaimsQueryDto): PaginatedResult<ClaimViewDto> {
-    let rows = MOCK_CLAIMS;
+  constructor(
+    @InjectRepository(Claim) private readonly repo: EntityRepository<Claim>,
+    private readonly eligibility: EligibilityService,
+    private readonly matching: MatchingService,
+    private readonly realtime: RealtimeGateway,
+  ) {}
+
+  private async findAll(): Promise<ClaimViewDto[]> {
+    return withDegradedFallback(
+      'ClaimsService.findAll',
+      async () => {
+        const rows = await this.repo.findAll({ orderBy: { createdAt: 'DESC' }, limit: 5000 });
+        return rows.map(toClaimView);
+      },
+      () => [...MEMORY_CLAIMS].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+    );
+  }
+
+  async list(query: ListClaimsQueryDto): Promise<PaginatedResult<ClaimViewDto>> {
+    let rows = await this.findAll();
     if (query.company) rows = rows.filter((c) => c.company === query.company);
     if (query.state) rows = rows.filter((c) => c.state === query.state);
     return paginateArray(rows, query.page, query.pageSize);
   }
 
-  get(id: string): ClaimViewDto | undefined {
-    return MOCK_CLAIMS.find((c) => c.id === id);
+  async get(id: string): Promise<ClaimViewDto> {
+    return withDegradedFallback(
+      'ClaimsService.get',
+      async () => {
+        const c = await this.repo.findOne({ id });
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier introuvable.' });
+        return toClaimView(c);
+      },
+      () => {
+        const c = MEMORY_CLAIMS.find((m) => m.id === id);
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier introuvable (mode dégradé).' });
+        return c;
+      },
+    );
   }
 
   columns() {
     return CLAIM_IMPORT_COLUMNS;
   }
 
-  /** Génère un rapport d'import plausible (mock) à la forme finale exacte du contrat B.4/B.11. */
-  buildMockImportReport(fileName: string, rowCount = 8): ClaimImportReportDto {
-    const rows: ClaimImportRowResultDto[] = Array.from({ length: rowCount }).map((_, i) => {
-      const eligible = i % 4 !== 0;
-      const reasons = eligible
-        ? []
-        : [
-            ['Montant estimé (45 2000 DA) > plafond 300 000 DA — Art. 4', 'Exclusion contractuelle déclarée — Art. 5-6', 'Pièce obligatoire manquante — Art. 13'][i % 3],
-          ];
-      const sample: Record<string, unknown> = {};
-      for (const col of CLAIM_IMPORT_COLUMNS) {
-        sample[col.key] = mockValueFor(col.key, i);
+  private async persistClaim(
+    values: Record<string, unknown>,
+    verdict: 'ELIGIBLE_IDA' | 'HORS_IDA',
+    reasons: string[],
+    fileName: string,
+  ): Promise<ClaimViewDto> {
+    // Pipeline des dossiers (B.3) : un dossier jugé HORS_IDA n'entre jamais
+    // en file d'appariement ; un dossier ELIGIBLE_IDA passe en "A_APPARIER"
+    // (écran 2 — MatchingModule prend le relais).
+    const state = verdict === 'ELIGIBLE_IDA' ? 'A_APPARIER' : 'HORS_IDA';
+
+    return withDegradedFallback(
+      'ClaimsService.persistClaim',
+      async () => {
+        const entity = this.repo.create({
+          numEconstat: values.numEconstat as string | undefined,
+          company: (values.compagnieA as string) ?? 'INCONNU',
+          counterpartyCompany: values.compagnieB as string | undefined,
+          accidentDate: values.dateAccident as string | undefined,
+          accidentTime: values.heureAccident as string | undefined,
+          wilaya: values.wilaya as string | undefined,
+          commune: values.commune as string | undefined,
+          gpsLat: values.gpsLat as number | undefined,
+          gpsLng: values.gpsLng as number | undefined,
+          plateA: values.immatriculationA as string | undefined,
+          plateB: values.immatriculationB as string | undefined,
+          policeA: (values.numPoliceA as string) ?? (values.numAttestationA as string | undefined),
+          policeB: (values.numPoliceB as string) ?? (values.numAttestationB as string | undefined),
+          nombreVehicules: values.nombreVehicules as number | undefined,
+          territoire: values.territoire as string | undefined,
+          dommagesCorporelsDeclares: values.dommagesCorporelsDeclares as boolean | undefined,
+          adversePartieAdherente: values.adversePartieAdherente as boolean | undefined,
+          adversePartieActive: values.adversePartieActive as boolean | undefined,
+          estimatedAmount: values.montantEstime as number | undefined,
+          expertAmount: values.montantExpertise as number | undefined,
+          exclusions: values.exclusions as string[] | undefined,
+          piecesFournies: values.piecesFournies as string[] | undefined,
+          constatAmiableSigneDeuxParties: values.constatAmiableSigneDeuxParties as boolean | undefined,
+          dateDemandeRecours: values.dateDemandeRecours as string | undefined,
+          canalDeclaration: values.canalDeclaration as string | undefined,
+          state,
+          eligibilityVerdict: verdict,
+          eligibilityReasons: reasons,
+          raw: values,
+          sourceFile: fileName,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await this.repo.getEntityManager().persistAndFlush(entity);
+        return toClaimView(entity);
+      },
+      () => {
+        const view: ClaimViewDto = {
+          id: randomUUID(),
+          numEconstat: (values.numEconstat as string) ?? '',
+          company: (values.compagnieA as string) ?? 'INCONNU',
+          counterpartyCompany: (values.compagnieB as string) ?? '',
+          accidentDate: (values.dateAccident as string) ?? '',
+          wilaya: (values.wilaya as string) ?? '',
+          estimatedAmount: (values.montantEstime as number) ?? 0,
+          expertAmount: values.montantExpertise as number | undefined,
+          state,
+          createdAt: new Date().toISOString(),
+          commune: values.commune as string | undefined,
+          accidentTime: values.heureAccident as string | undefined,
+          plateA: values.immatriculationA as string | undefined,
+          plateB: values.immatriculationB as string | undefined,
+          policeA: (values.numPoliceA as string) ?? (values.numAttestationA as string | undefined),
+          policeB: (values.numPoliceB as string) ?? (values.numAttestationB as string | undefined),
+          gpsLat: values.gpsLat as number | undefined,
+          gpsLng: values.gpsLng as number | undefined,
+          eligibilityVerdict: verdict,
+          eligibilityReasons: reasons,
+        };
+        MEMORY_CLAIMS.push(view);
+        return view;
+      },
+    );
+  }
+
+  /**
+   * Parse réellement le fichier (47 colonnes, B.4), délègue le verdict
+   * ligne à ligne à `EligibilityModule` (B.6), persiste chaque dossier
+   * (B.3), déclenche le calcul d'appariement (B.5) et émet `claim.ingested`
+   * (B.12). Conserve EXACTEMENT la forme de `ClaimImportReportDto`.
+   */
+  async importFile(fileName: string, buffer: Buffer): Promise<ClaimImportReportDto> {
+    const parsedRows = await parseClaimFile(buffer, fileName);
+    const rows: ClaimImportRowResultDto[] = [];
+    const created: ClaimViewDto[] = [];
+
+    for (const row of parsedRows) {
+      const v = row.values;
+      const eligibility = this.eligibility.evaluate({
+        nombreVehicules: v.nombreVehicules as number | undefined,
+        territoire: v.territoire as string | undefined,
+        dommagesCorporelsDeclares: v.dommagesCorporelsDeclares as boolean | undefined,
+        adversePartieAdherente: v.adversePartieAdherente as boolean | undefined,
+        adversePartieActive: v.adversePartieActive as boolean | undefined,
+        montantEstime: v.montantEstime as number | undefined,
+        montantExpertise: v.montantExpertise as number | undefined,
+        dateAccident: v.dateAccident as string | undefined,
+        dateDemandeRecours: v.dateDemandeRecours as string | undefined,
+        exclusions: v.exclusions as string[] | undefined,
+        piecesFournies: v.piecesFournies as string[] | undefined,
+        constatAmiableSigneDeuxParties: v.constatAmiableSigneDeuxParties as boolean | undefined,
+      });
+
+      // Une ligne dont le parsing a produit des erreurs de format sur des
+      // champs déterminants ne peut pas être jugée éligible en toute
+      // confiance : elle est marquée HORS_IDA, erreurs de format comprises
+      // dans les motifs (le front n'affiche que `reasons`, pas de champ
+      // `errors` séparé — contrat `ClaimImportRowResultDto` stable).
+      const hasParseErrors = row.errors.length > 0;
+      const verdict: 'ELIGIBLE_IDA' | 'HORS_IDA' = hasParseErrors ? 'HORS_IDA' : eligibility.verdict;
+      const reasons = hasParseErrors
+        ? [...row.errors.map((e) => `Erreur de format : ${e}`), ...eligibility.reasons]
+        : eligibility.reasons;
+
+      const view = await this.persistClaim(v, verdict, reasons, fileName);
+      created.push(view);
+      rows.push({ rowNumber: row.rowNumber, verdict, reasons, data: v });
+    }
+
+    // Appariement (B.5) — recalcule la file pour chaque dossier nouvellement
+    // ingéré, contre l'ensemble des dossiers existants (ClaimsModule dépend
+    // de MatchingModule, jamais l'inverse — voir matching.service.ts).
+    if (created.length > 0) {
+      const allClaims = await this.findAll();
+      for (const claim of created) {
+        await this.matching.ingestClaim(toMatchInput(claim), allClaims.map(toMatchInput));
       }
-      return {
-        rowNumber: i + 1,
-        verdict: eligible ? 'ELIGIBLE_IDA' : 'HORS_IDA',
-        reasons,
-        data: sample,
-      };
-    });
+    }
 
     const eligibleCount = rows.filter((r) => r.verdict === 'ELIGIBLE_IDA').length;
-    return {
+    const report: ClaimImportReportDto = {
       fileName,
       importedAt: new Date().toISOString(),
       totalRows: rows.length,
@@ -81,52 +261,16 @@ export class ClaimsService {
       ineligibleCount: rows.length - eligibleCount,
       rows,
     };
-  }
-}
 
-function mockValueFor(key: string, i: number): unknown {
-  const companies = ['CAAT', 'SAA', 'CASH', 'ALLI'];
-  switch (key) {
-    case 'numEconstat':
-      return `ECT-2026-${20000 + i}`;
-    case 'dateDeclaration':
-    case 'dateDemandeRecours':
-    case 'dateAccident':
-    case 'validiteADebut':
-    case 'validiteAFin':
-    case 'validiteBDebut':
-    case 'validiteBFin':
-    case 'dateExpertise':
-      return new Date(Date.UTC(2026, 0, (i % 27) + 1)).toISOString().slice(0, 10);
-    case 'nombreVehicules':
-      return 2;
-    case 'territoire':
-      return 'ALGERIE';
-    case 'wilaya':
-      return ['16', '31', '25', '09'][i % 4];
-    case 'compagnieA':
-      return companies[i % 4];
-    case 'compagnieB':
-      return companies[(i + 1) % 4];
-    case 'montantEstime':
-    case 'montantExpertise':
-      return 40000 + i * 5000;
-    case 'exclusions':
-    case 'piecesFournies':
-      return [];
-    case 'constatAmiableSigneDeuxParties':
-    case 'conducteurAEstAssure':
-    case 'conducteurBEstAssure':
-    case 'adversePartieAdherente':
-    case 'adversePartieActive':
-      return i % 4 !== 0;
-    case 'responsabiliteDeclareeA':
-      return 60;
-    case 'responsabiliteDeclareeB':
-      return 40;
-    case 'canalDeclaration':
-      return 'IMPORT';
-    default:
-      return null;
+    // B.12 — événement temps réel après tout import réussi.
+    this.realtime.emitEvent('claim.ingested', {
+      fileName: report.fileName,
+      totalRows: report.totalRows,
+      eligibleCount: report.eligibleCount,
+      ineligibleCount: report.ineligibleCount,
+      importedAt: report.importedAt,
+    });
+
+    return report;
   }
 }

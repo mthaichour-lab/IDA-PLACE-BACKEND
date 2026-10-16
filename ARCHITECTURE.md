@@ -66,9 +66,9 @@
 | `AuthModule` | **RÉEL** | `GET /me`, `DevAuthProvider` fonctionnel, `KeycloakStrategy` = interface + TODO explicite (lève une erreur si activé sans implémentation). |
 | `AdherentsModule` | **RÉEL** | Entités MikroORM (`Company`, `Agency`, `Wilaya`), migration, DTO, CRUD, pagination 6/p, repli mémoire si DB absente. |
 | `ExpertsModule` | **RÉEL** | Entité `Expert`, DTO, CRUD, pagination. |
-| `ClaimsModule` | **MOCK (contrat stable)** | `POST /claims/import` renvoie un rapport à la forme finale exacte (47 colonnes, B.4). Pas de persistance ni de parsing réel. |
-| `EligibilityModule` | **MOCK minimal** | `GET /eligibility/rules` (lecture). Pas de moteur de règles. |
-| `MatchingModule` | **MOCK (contrat stable)** | `GET /matching/queue`, `POST /matching/{id}/decide` avec critères pondérés B.5 déjà visibles dans le DTO. Décisions mutent un tableau en mémoire (perdu au redémarrage). |
+| `ClaimsModule` | **RÉEL** (sprint 2) | Entité `Claim` + migration, parsing réel Excel (`exceljs`)/CSV (parseur maison), verdict délégué à `EligibilityModule`, persistance (+ repli mémoire), déclenche l'appariement et émet `claim.ingested`. Voir HANDOFF.md. |
+| `EligibilityModule` | **RÉEL** (sprint 2) | Règles B.6 (Art. 3/4/5-6/13/19/28) en fonctions pures testées (`eligibility.rules.spec.ts`), config paramétrable par env. |
+| `MatchingModule` | **RÉEL** (sprint 2) | Clé exacte/composite + score pondéré en fonctions pures testées (`matching.scoring.spec.ts`), entité `MatchQueueItem` + migration, décisions persistées (+ repli mémoire), émet `match.updated`. Voir HANDOFF.md. |
 | `RecoursModule` | **MOCK minimal** | Registre + transition, pas de timers conventionnels réels. |
 | `SettlementModule` | **MOCK minimal** | Synthèse mensuelle + compensation trimestrielle, valeurs calculées à la volée mais non persistées. |
 | `CommissionModule` | **MOCK minimal** | File de conciliation, pénalité, PV — pas de persistance. |
@@ -79,8 +79,8 @@
 | `LedgerModule` | **RÉEL (logique de chaînage)** | Chaînage SHA-256 `hash(n)=f(event,hash(n-1))` réellement implémenté et vérifiable (`GET /ledger/verify`), stockage en mémoire (non append-only en base — TODO). |
 | `AdminModule` | **PARTIEL** | `GET/PUT /admin/roles/matrix` **RÉEL** (branché sur `RbacService`, effet immédiat sur les autorisations). `GET/POST /admin/users` = mock. |
 | `DocumentsModule` | **PARTIEL** | Interface `StorageProvider` réelle + `LocalFsStorageProvider` fonctionnel (mode dégradé assumé) ; `S3StorageProvider` = TODO explicite ; pas d'intégration Paperless. |
-| `RealtimeModule` | **SQUELETTE** | Gateway Socket.IO fonctionnel (`/realtime`), un seul événement de démonstration (`metering.tick` périodique). Aucun module métier n'émet encore d'événement réel. |
-| `CockpitModule` *(additionnel)* | **MOCK (contrat stable)** | `GET /cockpit/summary` — agrégateur sans logique propre, forme figée pour le front (écran 1). |
+| `RealtimeModule` | **RÉEL (partiel)** (sprint 2) | Gateway Socket.IO (`/realtime`) authentifiée (même `AUTH_PROVIDER` que l'API REST), salons `tenant:place`/`tenant:<companyId>`. Émet réellement `claim.ingested` (ClaimsModule) et `match.updated` (MatchingModule). Toujours en mémoire (pas de pub/sub Redis) — un seul process backend. |
+| `CockpitModule` *(additionnel)* | **RÉEL** (sprint 2) | `GET /cockpit/summary` — agrège les vraies données de ClaimsModule/MatchingModule (forme inchangée). Hypothèses documentées dans le fichier (voir HANDOFF.md). |
 
 ## 5. Pourquoi un 18ᵉ module (`CockpitModule`) ?
 
@@ -89,6 +89,7 @@ en Partie 4 de la mission, un endpoint `/cockpit/summary` "que tu inventes
 proprement pour agréger les KPIs de l'écran 1". Plutôt que de le loger
 arbitrairement dans un module existant (ce qui aurait mélangé des
 responsabilités), un module agrégateur minimal et sans règle métier
-propre a été créé. Il ne possède aucune entité et n'appelle (pour
-l'instant) aucun autre service — à corriger par le prochain agent Backend
-(voir HANDOFF.md).
+propre a été créé. Il ne possède aucune entité propre ; depuis le sprint 2
+(voir HANDOFF.md), il appelle réellement `ClaimsService`/`MatchingService`
+pour agréger les KPIs de l'écran 1 — toujours sans règle métier qui lui
+soit propre.

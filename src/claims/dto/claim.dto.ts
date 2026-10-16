@@ -33,4 +33,19 @@ export class ClaimViewDto {
   @ApiPropertyOptional() expertAmount?: number;
   @ApiProperty({ enum: CLAIM_STATES }) state!: string;
   @ApiProperty() createdAt!: string;
+
+  // --- Champs optionnels additionnels (B.3/B.5) — ajoutés sans modifier les
+  // champs existants ci-dessus (règle du contrat stable, voir HANDOFF.md).
+  // Utilisés par MatchingModule (clé d'appariement + score, B.5) et par les
+  // écrans qui affichent le détail d'une déclaration.
+  @ApiPropertyOptional() commune?: string;
+  @ApiPropertyOptional() accidentTime?: string;
+  @ApiPropertyOptional() plateA?: string;
+  @ApiPropertyOptional() plateB?: string;
+  @ApiPropertyOptional() policeA?: string;
+  @ApiPropertyOptional() policeB?: string;
+  @ApiPropertyOptional() gpsLat?: number;
+  @ApiPropertyOptional() gpsLng?: number;
+  @ApiPropertyOptional({ enum: ['ELIGIBLE_IDA', 'HORS_IDA'] }) eligibilityVerdict?: string;
+  @ApiPropertyOptional({ type: [String] }) eligibilityReasons?: string[];
 }

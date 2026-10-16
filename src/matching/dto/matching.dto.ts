@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
 
 export const MATCH_LEVELS = ['AUTO', 'MANUEL', 'NON'] as const;
@@ -45,9 +45,20 @@ export class MatchQueueItemDto {
 }
 
 export class MatchDecisionDto {
-  @ApiProperty({ enum: MATCH_DECISIONS }) action!: 'confirm' | 'reject' | 'complement' | 'link';
-  @ApiPropertyOptional() reason?: string;
-  @ApiPropertyOptional({ description: 'Id de la déclaration à lier (action=link)' }) linkDeclId?: string;
+  @ApiProperty({ enum: MATCH_DECISIONS })
+  @IsIn(MATCH_DECISIONS as unknown as string[])
+  action!: 'confirm' | 'reject' | 'complement' | 'link';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  reason?: string;
+
+  @ApiPropertyOptional({ description: 'Id de la déclaration à lier (action=link)' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  linkDeclId?: string;
 }
 
 export class MatchDecisionResultDto {
