@@ -1,0 +1,85 @@
+{
+  "name": "ida-place-backend",
+  "version": "0.1.0",
+  "description": "IDA Place - API back-end (NestJS) - chambre de compensation IDA",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main.js",
+    "lint": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "migration:create": "mikro-orm migration:create",
+    "migration:up": "mikro-orm migration:up",
+    "migration:down": "mikro-orm migration:down",
+    "migration:pending": "mikro-orm migration:pending",
+    "seed:wilayas": "ts-node -r tsconfig-paths/register src/seeders/wilaya.seeder.ts"
+  },
+  "dependencies": {
+    "@mikro-orm/core": "6.4.3",
+    "@mikro-orm/migrations": "6.4.3",
+    "@mikro-orm/nestjs": "6.1.1",
+    "@mikro-orm/postgresql": "6.4.3",
+    "@nestjs/common": "11.0.11",
+    "@nestjs/config": "4.0.0",
+    "@nestjs/core": "11.0.11",
+    "@nestjs/platform-express": "11.0.11",
+    "@nestjs/platform-socket.io": "11.0.11",
+    "@nestjs/swagger": "11.0.3",
+    "@nestjs/websockets": "11.0.11",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.14.1",
+    "jsonwebtoken": "9.0.2",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.1",
+    "socket.io": "4.8.1",
+    "swagger-ui-express": "5.0.1",
+    "uuid": "11.0.5"
+  },
+  "devDependencies": {
+    "@mikro-orm/cli": "6.4.3",
+    "@nestjs/cli": "11.0.4",
+    "@nestjs/schematics": "11.0.1",
+    "@nestjs/testing": "11.0.11",
+    "@types/express": "5.0.0",
+    "@types/jest": "29.5.14",
+    "@types/jsonwebtoken": "9.0.8",
+    "@types/multer": "1.4.12",
+    "@types/node": "22.13.4",
+    "@types/supertest": "6.0.2",
+    "@types/uuid": "10.0.0",
+    "jest": "29.7.0",
+    "source-map-support": "0.5.21",
+    "supertest": "7.0.0",
+    "ts-jest": "29.2.5",
+    "ts-loader": "9.5.2",
+    "ts-node": "10.9.2",
+    "tsconfig-paths": "4.2.0",
+    "typescript": "5.7.3"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  },
+  "mikro-orm": {
+    "useTsNode": true,
+    "configPaths": [
+      "./mikro-orm.config.ts"
+    ]
+  }
+}

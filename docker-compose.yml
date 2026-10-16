@@ -1,0 +1,55 @@
+# IDA Place - services d'infrastructure pour le développement local.
+# Aucun de ces services n'est requis pour démarrer l'API (voir README.md
+# "Mode dégradé") : docker-compose up permet simplement de les avoir
+# disponibles pour retrouver le comportement "plein" (persistance réelle,
+# cache Redis, stockage objet).
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ida_place
+      POSTGRES_USER: ida_place
+      POSTGRES_PASSWORD: ida_place
+    ports:
+      - "5432:5432"
+    volumes:
+      - ida_place_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ida_place"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # MinIO (S3-compatible) - optionnel, nécessaire seulement pour tester
+  # réellement DocumentsModule en mode "objet" plutôt qu'en mode dégradé
+  # fichier local. Décommenter pour l'activer.
+  # minio:
+  #   image: minio/minio:latest
+  #   restart: unless-stopped
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     MINIO_ROOT_USER: minioadmin
+  #     MINIO_ROOT_PASSWORD: minioadmin
+  #   ports:
+  #     - "9000:9000"
+  #     - "9001:9001"
+  #   volumes:
+  #     - ida_place_minio:/data
+
+volumes:
+  ida_place_pgdata:
+  # ida_place_minio:
