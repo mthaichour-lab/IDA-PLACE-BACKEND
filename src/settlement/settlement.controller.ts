@@ -39,6 +39,18 @@ export class SettlementController {
     return this.service.quarter(q, user);
   }
 
+  @Get('quarter/:q/matrix')
+  @ApiOperation({ summary: 'Matrice brute créancier×débiteur du trimestre, avant tout netting — pour la carte thermique (B.7 : scopée par compagnie)' })
+  matrix(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.matrix(q, user);
+  }
+
+  @Get('quarter/:q/summary')
+  @ApiOperation({ summary: 'KPI de synthèse du trimestre : brut, net bilatéral, net multilatéral, réduction des flux, recours réglés/en opposition (B.7 : scopée par compagnie)' })
+  summary(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.summary(q, user);
+  }
+
   @Post('quarter/:q/close')
   @Privileges('synth')
   @ApiOperation({ summary: 'Clôture de la compensation trimestrielle et génération du bordereau (idempotent : 409 si déjà clôturée)' })

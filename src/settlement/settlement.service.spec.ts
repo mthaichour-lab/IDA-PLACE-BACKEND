@@ -106,6 +106,49 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     expect(result.net.find((n) => n.code === 'CASH')).toBeUndefined(); // dossier non réglé, jamais entré dans la matrice
   });
 
+  it('matrix() renvoie la matrice brute (avant netting), limitée aux compagnies ayant au moins un recours réglé', async () => {
+    const a = await recours.create({ claimId: 'clm-a2', from: 'CAAT', to: 'SAA', amount: 100_000 });
+    const b = await recours.create({ claimId: 'clm-b2', from: 'SAA', to: 'CAAT', amount: 40_000 });
+    await recours.create({ claimId: 'clm-c2', from: 'CASH', to: 'CAAT', amount: 999_999 }); // jamais réglé : exclu
+    await recours.transition(a.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(b.id, { action: 'accepter' }, fakeUser('x'));
+
+    const q = `${new Date(a.requestSentAt).getUTCFullYear()}-Q${Math.floor(new Date(a.requestSentAt).getUTCMonth() / 3) + 1}`;
+    const result = await settlement.matrix(q);
+
+    expect(result.companies).toEqual(['CAAT', 'SAA']);
+    expect(result.cells).toEqual(
+      expect.arrayContaining([
+        { from: 'CAAT', to: 'SAA', amount: 100_000 },
+        { from: 'SAA', to: 'CAAT', amount: 40_000 },
+      ]),
+    );
+  });
+
+  it('summary() calcule le brut, le net multilatéral, la réduction des flux et les recours réglés/en opposition', async () => {
+    const a = await recours.create({ claimId: 'clm-a3', from: 'CAAT', to: 'SAA', amount: 100_000 });
+    const b = await recours.create({ claimId: 'clm-b3', from: 'SAA', to: 'CAAT', amount: 40_000 });
+    const c = await recours.create({ claimId: 'clm-c3', from: 'CASH', to: 'CAAT', amount: 10_000 });
+    await recours.transition(a.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(b.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(c.id, { action: 'opposer' }, fakeUser('x')); // en opposition — hors circuit, jamais réglé
+
+    const q = `${new Date(a.requestSentAt).getUTCFullYear()}-Q${Math.floor(new Date(a.requestSentAt).getUTCMonth() / 3) + 1}`;
+    const result = await settlement.summary(q);
+
+    expect(result.grossTotal).toBe(140_000); // 100k + 40k, le recours en opposition n'entre jamais dans la matrice
+    expect(result.bilateralNetTotal).toBe(60_000); // CAAT -> SAA net
+    expect(result.multilateralNetTotal).toBe(60_000); // 2 compagnies : net multilatéral == net bilatéral ici
+    expect(result.reductionPct).toBeCloseTo(57.1, 1);
+    expect(result.settledCount).toBe(2);
+    expect(result.opposedCount).toBe(1);
+  });
+
+  it('summary() ne divise jamais par zéro quand aucun recours n’est réglé ce trimestre', async () => {
+    const result = await settlement.summary('2099-Q1');
+    expect(result).toMatchObject({ grossTotal: 0, bilateralNetTotal: 0, multilateralNetTotal: 0, reductionPct: 0, settledCount: 0 });
+  });
+
   it('closeQuarterly() est idempotent (409 si déjà clôturé) et expose le bordereau sur quarter() ensuite', async () => {
     const now = new Date();
     const q = `${now.getUTCFullYear()}-Q${Math.floor(now.getUTCMonth() / 3) + 1}`;

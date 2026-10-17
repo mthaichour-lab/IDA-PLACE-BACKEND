@@ -43,3 +43,31 @@ export class QuarterlySettlementDto {
   @ApiPropertyOptional() closedAt?: string;
   @ApiPropertyOptional() closedBy?: string;
 }
+
+/**
+ * Nouveaux endpoints additifs (`GET /settlement/quarter/:q/matrix`,
+ * `GET /settlement/quarter/:q/summary`) — `SettlementModule` est un contrat
+ * figé (ARCHITECTURE.md §1) : `QuarterlySettlementDto` ci-dessus ne change
+ * pas de forme, ces compléments vivent sur des routes séparées.
+ */
+export class MatrixCellDto {
+  @ApiProperty() from!: string;
+  @ApiProperty() to!: string;
+  @ApiProperty({ description: 'Position BRUTE (avant tout netting) que `from` doit à `to`' }) amount!: number;
+}
+
+export class QuarterlyMatrixDto {
+  @ApiProperty() quarter!: string;
+  @ApiProperty({ type: [String], description: 'Compagnies impliquées dans au moins une position ce trimestre, triées' }) companies!: string[];
+  @ApiProperty({ type: [MatrixCellDto], description: 'Matrice brute créancier(from)×débiteur(to), avant netting bilatéral ou multilatéral' }) cells!: MatrixCellDto[];
+}
+
+export class QuarterlySummaryDto {
+  @ApiProperty() quarter!: string;
+  @ApiProperty({ description: 'Somme des positions brutes (avant tout netting)' }) grossTotal!: number;
+  @ApiProperty({ description: 'Somme des positions après netting bilatéral (paire par paire)' }) bilateralNetTotal!: number;
+  @ApiProperty({ description: 'Somme des positions après netting multilatéral (compensation de place) — somme des positions nettes positives uniquement' }) multilateralNetTotal!: number;
+  @ApiProperty({ description: 'Réduction des flux (%) entre le brut et le net multilatéral' }) reductionPct!: number;
+  @ApiProperty({ description: 'Nombre de recours réglés inclus dans la compensation de ce trimestre' }) settledCount!: number;
+  @ApiProperty({ description: 'Nombre de recours actuellement en opposition (hors circuit de compensation, toutes périodes confondues)' }) opposedCount!: number;
+}

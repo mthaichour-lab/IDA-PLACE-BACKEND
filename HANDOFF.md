@@ -52,6 +52,30 @@ l'hypothèse ou omettre proprement, ne jamais l'inventer).
    à chiffrer séparément si repris — voir HANDOFF.md frontend pour le
    détail écran par écran).
 
+### Fait pour rapprocher `/quarter` de la capture de référence (2026-10-17)
+
+1. **Nouveau `GET /settlement/quarter/:q/matrix`** : matrice BRUTE
+   créancier×débiteur (avant tout netting), pour la carte thermique de
+   l'écran 6. `QuarterlySettlementDto` existant ne change pas de forme
+   (contrat figé, voir ARCHITECTURE.md §1) — endpoint additif, même
+   scoping tenant que `quarter()` (B.7).
+2. **Nouveau `GET /settlement/quarter/:q/summary`** : positions brutes,
+   après netting bilatéral, après netting multilatéral, réduction des
+   flux (%), recours compensés, recours en opposition (hors circuit —
+   toutes périodes confondues, pas seulement le trimestre, puisqu'une
+   opposition en cours exclut le recours du circuit quel que soit le
+   trimestre où elle a été levée). Toutes valeurs réelles, calculées à
+   partir de `RecoursService.listAll()` + les fonctions pures déjà
+   testées de `settlement.rules.ts` (aucune logique de netting dupliquée).
+3. **Toujours omis** (captures du guide, hors périmètre de cette passe) :
+   agenda de réunion de commission (date/lieu/ordre du jour — aucune
+   entité de planification de réunion n'existe pour la compensation
+   trimestrielle, à la différence de `CommissionModule` qui gère les
+   dossiers de conciliation individuels, pas des réunions programmées) ;
+   diagramme circulaire des flux de règlement (visualisation complexe,
+   les données sous-jacentes existent déjà via `net`/`matrix`, juste pas
+   le rendu — à faire séparément si repris côté front).
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même
