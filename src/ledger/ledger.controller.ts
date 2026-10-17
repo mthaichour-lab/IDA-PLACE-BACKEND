@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { LedgerService } from './ledger.service';
 
-/** LedgerModule — écran 13 "Journal scellé". Voir TODO dans ledger.service.ts. */
+/** LedgerModule — écran 13 "Journal scellé" (chaînage SHA-256 append-only, voir ledger.service.ts). */
 @ApiTags('ledger')
 @ApiBearerAuth()
 @Controller('ledger')

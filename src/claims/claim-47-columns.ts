@@ -5,9 +5,9 @@
  * servant à l'éligibilité IDA. Le dossier technique ne fournit qu'un
  * extrait de noms de colonnes ; cette liste complète les 47 colonnes de
  * façon cohérente avec l'extrait donné (B.4) et les règles d'éligibilité
- * (B.6). ⚠️ Elle fixe le CONTRAT final : le futur agent Backend ne doit
- * plus renommer/retirer de colonnes ici, seulement implémenter le parsing
- * Excel/CSV réel (TODO dans `claims.service.ts`).
+ * (B.6). ⚠️ Elle fixe le CONTRAT final : ne plus renommer/retirer de
+ * colonnes ici — le parsing Excel (`exceljs`)/CSV réel (`claims.service.ts`)
+ * en dépend.
  */
 export type ClaimColumnGroup = 'IDENTIFICATION' | 'ELIGIBILITE';
 

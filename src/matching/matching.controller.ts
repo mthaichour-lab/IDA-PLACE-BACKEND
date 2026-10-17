@@ -8,7 +8,7 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { MatchDecisionDto, MatchQueueQueryDto } from './dto/matching.dto';
 import { MatchingService } from './matching.service';
 
-/** MatchingModule — écran 2 "Confrontation & matching". Voir TODO dans matching.service.ts. */
+/** MatchingModule — écran 2 "Confrontation & matching" (B.7 : scoping tenant réel, voir matching.service.ts). */
 @ApiTags('matching')
 @ApiBearerAuth()
 @Controller('matching')

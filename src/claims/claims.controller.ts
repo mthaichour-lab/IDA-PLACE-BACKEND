@@ -12,7 +12,7 @@ import { ListClaimsQueryDto } from './dto/claim.dto';
 
 /**
  * ClaimsModule — écrans 2 (matching) et 3 (import). Contrat stable
- * (§B.4, B.11) : voir TODO détaillés dans `claims.service.ts`.
+ * (§B.4, B.11, voir ARCHITECTURE.md §1).
  */
 @ApiTags('claims')
 @ApiBearerAuth()
