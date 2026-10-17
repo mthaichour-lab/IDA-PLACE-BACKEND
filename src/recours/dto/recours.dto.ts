@@ -1,73 +1,51 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, Length, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
-import { RECOURS_STATES } from '../recours.rules';
+import { RECOURS_ACTIONS, RECOURS_STATES } from '../recours.rules';
+
+/** Filtres d'onglets écran 4 — "tous" en plus des états réels (RECOURS_STATES). */
+export const RECOURS_FILTERS = ['TOUS', ...RECOURS_STATES] as const;
 
 export class ListRecoursQueryDto {
+  @ApiPropertyOptional({ enum: RECOURS_FILTERS, default: 'TOUS' })
+  @IsOptional()
+  @IsIn(RECOURS_FILTERS as unknown as string[])
+  filter: string = 'TOUS';
+
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
-  @ApiPropertyOptional({ enum: RECOURS_STATES }) @IsOptional() @IsIn(RECOURS_STATES as unknown as string[]) state?: string;
 }
-
-export class CreateRecoursDto {
-  @ApiProperty({ description: 'Id du dossier (ClaimsModule) concerné' })
-  @IsString()
-  @Length(1, 64)
-  claimId!: string;
-
-  @ApiProperty({ description: 'Compagnie à l’origine du recours (code, ex: CAAT)' })
-  @IsString()
-  @Length(2, 4)
-  from!: string;
-
-  @ApiProperty({ description: 'Compagnie destinataire du recours (code)' })
-  @IsString()
-  @Length(2, 4)
-  to!: string;
-
-  @ApiProperty()
-  @IsNumber()
-  @IsPositive()
-  amount!: number;
-}
-
-export class OpposerRecoursDto {
-  @ApiProperty({ description: "Motif de l'opposition" })
-  @IsString()
-  @Length(1, 2000)
-  motif!: string;
-}
-
-export class ContesterRecoursDto {
-  @ApiProperty({ description: 'Motif de la contestation de l’opposition' })
-  @IsString()
-  @Length(1, 2000)
-  motif!: string;
-}
-
-/**
- * Corps vide : le règlement se fait toujours au montant du recours
- * (`Recours.amount`), jamais à un montant choisi par l'appelant — voir
- * `RecoursService.settle` (revue Product Owner, sprint 3 : un montant
- * librement modifiable par la partie débitrice était un trou de contrôle
- * financier).
- */
-export class SettleRecoursDto {}
 
 export class RecoursOppositionDto {
-  @ApiProperty() motif!: string;
-  @ApiProperty() at!: string;
-  @ApiPropertyOptional() by?: string;
+  @ApiProperty() raisedAt!: string;
+  @ApiPropertyOptional() reason?: string;
+  @ApiProperty() status!: string;
+  @ApiProperty() deadlineAt!: string;
+  @ApiPropertyOptional() decidedAt?: string;
 }
 
 export class RecoursContestationDto {
-  @ApiProperty() motif!: string;
-  @ApiProperty() at!: string;
-  @ApiPropertyOptional() by?: string;
+  @ApiProperty() raisedAt!: string;
+  @ApiPropertyOptional() reason?: string;
+  @ApiProperty() status!: string;
 }
 
-/** Vue Recours — écran 4 "Échanges Annexes 2/3/4". */
+export class RecoursResolutionDto {
+  @ApiProperty() kind!: string;
+  @ApiProperty() at!: string;
+  @ApiPropertyOptional() note?: string;
+}
+
+/** Timer conventionnel courant — `countdownBar` front, aucun calcul côté front (C.1). */
+export class RecoursTimerDto {
+  @ApiProperty({ enum: ['SILENCE_ART10', 'OPPOSITION_ART12', 'FORCLUSION_ART19', 'AUCUN'] }) timerType!: string;
+  @ApiPropertyOptional() deadlineAt?: string;
+  @ApiProperty() remainingDays!: number;
+  @ApiProperty() expired!: boolean;
+}
+
+/** Fiche recours (registre + détail) — écran 4. */
 export class RecoursViewDto {
   @ApiProperty() id!: string;
   @ApiProperty() claimId!: string;
@@ -81,6 +59,47 @@ export class RecoursViewDto {
   @ApiPropertyOptional() commissionAt?: string;
   @ApiPropertyOptional() settledAt?: string;
   @ApiProperty() amount!: number;
-  @ApiPropertyOptional({ description: 'Échéance courante (countdown Art. 10 ou Art. 12 selon l’état)' })
-  currentDeadlineAt?: string;
+  @ApiPropertyOptional({ type: RecoursResolutionDto }) resolution?: RecoursResolutionDto;
+  @ApiProperty({ type: RecoursTimerDto }) timer!: RecoursTimerDto;
+  @ApiProperty() createdAt!: string;
+}
+
+export class CreateRecoursDto {
+  @ApiProperty({ description: 'Id du dossier (Claim) à l’origine du recours' })
+  @IsString()
+  @IsNotEmpty()
+  claimId!: string;
+
+  @ApiProperty({ description: 'Compagnie demanderesse (code)' })
+  @IsString()
+  @IsNotEmpty()
+  from!: string;
+
+  @ApiProperty({ description: 'Compagnie adverse (code)' })
+  @IsString()
+  @IsNotEmpty()
+  to!: string;
+
+  @ApiProperty()
+  @IsNumber()
+  @Min(0)
+  amount!: number;
+}
+
+export class RecoursTransitionDto {
+  @ApiProperty({ enum: RECOURS_ACTIONS })
+  @IsIn(RECOURS_ACTIONS as unknown as string[])
+  action!: string;
+
+  @ApiPropertyOptional({ description: 'Motif (opposition, contestation, décision de commission...)' })
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class RecoursTransitionResultDto {
+  @ApiProperty() id!: string;
+  @ApiProperty({ enum: RECOURS_STATES }) state!: string;
+  @ApiProperty({ type: RecoursTimerDto }) timer!: RecoursTimerDto;
+  @ApiProperty() transitionedAt!: string;
 }

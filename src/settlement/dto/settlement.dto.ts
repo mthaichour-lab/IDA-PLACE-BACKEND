@@ -1,22 +1,27 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsString } from 'class-validator';
 
-export class SettlementCompanyLineDto {
-  @ApiProperty() company!: string;
-  @ApiProperty() claimsSettledCount!: number;
-  @ApiProperty() claimsPendingCount!: number;
-  @ApiProperty() totalSettledAmount!: number;
-  @ApiProperty() totalPendingAmount!: number;
-  @ApiProperty() fraisTraitement!: number;
-  @ApiProperty({ enum: ['EN_COURS', 'CLOTURE'] }) status!: string;
-  @ApiProperty() bordereauRef!: string;
-  @ApiProperty() generatedAt!: string;
+export class CompanyMonthlySynthesisDto {
+  @ApiProperty() code!: string;
+  @ApiProperty() claimsCount!: number;
+  @ApiProperty({ description: 'Nombre de recours résolus (REGLE/REJETE/FORCLOS) sur la période — état d’avancement' })
+  resolvedCount!: number;
+  @ApiProperty() totalAmount!: number;
+  @ApiProperty({ enum: ['EN_COURS', 'CLOTURE'] }) status!: 'EN_COURS' | 'CLOTURE';
   @ApiPropertyOptional() closedAt?: string;
+  @ApiPropertyOptional() bordereauRef?: string;
 }
 
-/** Réponse de `GET /settlement/monthly/:period` — synthèse par compagnie (écran 5). */
 export class MonthlySettlementDto {
   @ApiProperty() period!: string;
-  @ApiProperty({ type: [SettlementCompanyLineDto] }) companies!: SettlementCompanyLineDto[];
+  @ApiProperty({ type: [CompanyMonthlySynthesisDto] }) companies!: CompanyMonthlySynthesisDto[];
+}
+
+export class CloseMonthlyDto {
+  @ApiProperty({ description: 'Code de la compagnie dont on clôture la synthèse mensuelle' })
+  @IsString()
+  @IsNotEmpty()
+  company!: string;
 }
 
 export class BilateralPositionDto {
@@ -25,18 +30,16 @@ export class BilateralPositionDto {
   @ApiProperty() amount!: number;
 }
 
-export class NetPositionDto {
-  @ApiProperty() company!: string;
-  @ApiProperty() net!: number;
+export class CompanyNetPositionDto {
+  @ApiProperty() code!: string;
+  @ApiProperty({ description: 'Positif = la compagnie doit recevoir ; négatif = elle doit payer' }) net!: number;
 }
 
-/** Réponse de `GET /settlement/quarter/:q` — compensation trimestrielle (écran 6). */
-export class QuarterCompensationDto {
+export class QuarterlySettlementDto {
   @ApiProperty() quarter!: string;
-  @ApiProperty() bordereau!: string;
-  @ApiProperty({ type: [BilateralPositionDto] }) positions!: BilateralPositionDto[];
-  @ApiProperty({ type: [NetPositionDto] }) net!: NetPositionDto[];
-  @ApiProperty({ enum: ['CALCULE', 'SCELLE'] }) status!: string;
-  @ApiProperty() generatedAt!: string;
-  @ApiPropertyOptional() sealedAt?: string;
+  @ApiPropertyOptional() bordereau?: string;
+  @ApiProperty({ type: [BilateralPositionDto], description: 'Positions bilatérales nettées (paire par paire)' }) positions!: BilateralPositionDto[];
+  @ApiProperty({ type: [CompanyNetPositionDto], description: 'Compensation multilatérale — position nette par compagnie vis-à-vis de la place' }) net!: CompanyNetPositionDto[];
+  @ApiPropertyOptional() closedAt?: string;
+  @ApiPropertyOptional() closedBy?: string;
 }

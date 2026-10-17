@@ -1,182 +1,320 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { PaginatedResult, paginateArray } from '../common/dto/pagination.dto';
-import { withDegradedFallback } from '../common/interfaces/degraded-mode';
-import { LedgerService } from '../ledger/ledger.service';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
+import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { RecoursService } from '../recours/recours.service';
-import { CommissionCaseDto, CommissionPvViewDto, CreatePenaltyDto, CreatePvDto, CreateSanctionDto, ListCommissionCasesQueryDto, SanctionViewDto } from './dto/commission.dto';
-import { CommissionPv } from './entities/commission-pv.entity';
-import { Sanction, SanctionType } from './entities/sanction.entity';
+import {
+  CommissionCaseViewDto,
+  CreateCommissionCaseDto,
+  DecideCommissionDto,
+  ListCommissionCasesQueryDto,
+  ListSanctionsQueryDto,
+  PenaltyDto,
+  PvSignDto,
+  SanctionOrderDto,
+  SanctionViewDto,
+} from './dto/commission.dto';
+import { CommissionCase, CommissionDecisionInfo, CommissionPvInfo } from './entities/commission-case.entity';
+import { Sanction } from './entities/sanction.entity';
+import { canAdvanceCaseStatus, CommissionCaseStatus, isCompanyPartyToCase } from './commission.rules';
 
-/** Repli mémoire — mode dégradé (voir README "Mode dégradé"). Persistant pour la durée du process. */
-const MEMORY_SANCTIONS: SanctionViewDto[] = [];
-const MEMORY_PVS: CommissionPvViewDto[] = [];
+const DEFAULT_SCHEDULE_DELAY_MS = 14 * 86_400_000;
 
-function sanctionToView(s: Sanction): SanctionViewDto {
+/** Repli mémoire — dossier de conciliation. */
+type MemoryCase = {
+  id: string;
+  recoursId: string;
+  claimId: string;
+  companyA: string;
+  companyB: string;
+  amount: number;
+  motif: string;
+  status: string;
+  scheduledAt: string;
+  decidedAt?: string;
+  decision?: CommissionDecisionInfo;
+  pv?: CommissionPvInfo;
+  createdAt: string;
+};
+
+/** Repli mémoire — sanction. */
+type MemorySanction = {
+  id: string;
+  commissionCaseId?: string;
+  companyCode: string;
+  type: string;
+  amount?: number;
+  reason: string;
+  orderedAt: string;
+  orderedBy: string;
+};
+
+function toCaseView(e: CommissionCase): CommissionCaseViewDto {
   return {
-    id: s.id,
-    recoursId: s.recoursId,
-    targetCompany: s.targetCompany,
-    type: s.type,
-    amount: s.amount,
-    reason: s.reason,
-    orderedBy: s.orderedBy,
-    orderedAt: s.orderedAt.toISOString(),
+    id: e.id,
+    recoursId: e.recoursId,
+    claimId: e.claimId,
+    companyA: e.companyA,
+    companyB: e.companyB,
+    amount: e.amount,
+    motif: e.motif,
+    status: e.status,
+    scheduledAt: e.scheduledAt.toISOString(),
+    decidedAt: e.decidedAt?.toISOString(),
+    decision: e.decision,
+    pv: e.pv,
+    createdAt: e.createdAt.toISOString(),
   };
 }
 
-function pvToView(p: CommissionPv): CommissionPvViewDto {
+function toCaseViewFromMemory(row: MemoryCase): CommissionCaseViewDto {
+  return { ...row };
+}
+
+function toSanctionView(e: Sanction): SanctionViewDto {
   return {
-    id: p.id,
-    recoursId: p.recoursId,
-    motif: p.motif,
-    decision: p.decision,
-    signataires: p.signataires,
-    status: p.status,
-    signedAt: (p.signedAt ?? p.createdAt).toISOString(),
+    id: e.id,
+    commissionCaseId: e.commissionCaseId,
+    companyCode: e.companyCode,
+    type: e.type,
+    amount: e.amount,
+    reason: e.reason,
+    orderedAt: e.orderedAt.toISOString(),
+    orderedBy: e.orderedBy,
   };
+}
+
+function toSanctionViewFromMemory(row: MemorySanction): SanctionViewDto {
+  return { ...row };
 }
 
 /**
- * CommissionModule — écran 7 "Commission", B.2/B.3. La file de conciliation
- * N'EST PAS un état propre à ce module : ce sont les recours escaladés en
- * commission (`RecoursModule`, état `COMMISSION` — Art. 12) — on réutilise
- * son service public (`RecoursService.list`), jamais son entité
- * (ARCHITECTURE.md §1). Pénalités/sanctions et PV, en revanche, sont bien
- * propres à ce module et persistés ici (entités `Sanction`/`CommissionPv`).
- *
- * ⚠️ HYPOTHÈSE À VALIDER PAR LE MÉTIER : le dossier ne chiffre pas le délai
- * indicatif de délibération affiché (`scheduledAt`) une fois un recours
- * escaladé — valeur par défaut paramétrable (`COMMISSION_DELIBERATION_DELAY_DAYS`,
- * 21 jours), purement informative (n'entraîne aucune transition automatique
- * côté `RecoursModule`).
+ * CommissionModule — B.2, écran 7 "Commission" : file de conciliation
+ * (`CommissionCase`), prononcé de pénalités/sanctions (`Sanction`), PV de
+ * commission. Dépend de `RecoursModule` (lecture seule, interface publique
+ * `RecoursService.get()`) pour valider et dénormaliser `claimId`/
+ * `companyA`/`companyB`/`amount` à l'ouverture d'un dossier — jamais
+ * l'inverse (pas de cycle, voir ARCHITECTURE.md). La transmission
+ * `RecoursModule -> CommissionModule` reste pour l'instant une action
+ * MANUELLE en deux temps (voir HANDOFF.md, limite connue) : le correspondant
+ * ouvre le dossier de commission via `POST /commission/cases` après avoir
+ * transitionné le recours en `COMMISSION` (`transmettre_commission`).
  */
 @Injectable()
 export class CommissionService {
-  private readonly deliberationDelayDays: number;
+  private readonly memoryCases: MemoryCase[] = [];
+  private readonly memorySanctions: MemorySanction[] = [];
 
   constructor(
+    @InjectRepository(CommissionCase) private readonly caseRepo: EntityRepository<CommissionCase>,
     @InjectRepository(Sanction) private readonly sanctionRepo: EntityRepository<Sanction>,
-    @InjectRepository(CommissionPv) private readonly pvRepo: EntityRepository<CommissionPv>,
     private readonly recours: RecoursService,
-    private readonly ledger: LedgerService,
-    configService: ConfigService,
-  ) {
-    this.deliberationDelayDays = Number(configService.get<string>('COMMISSION_DELIBERATION_DELAY_DAYS') ?? 21);
-  }
+  ) {}
 
-  async cases(query: ListCommissionCasesQueryDto): Promise<PaginatedResult<CommissionCaseDto>> {
-    const { items } = await this.recours.list({ page: 1, pageSize: 100_000, state: 'COMMISSION' });
-    const rows: CommissionCaseDto[] = items.map((r) => {
-      const commissionAt = r.commissionAt ?? r.requestSentAt;
-      const scheduledAt = new Date(new Date(commissionAt).getTime() + this.deliberationDelayDays * 86_400_000).toISOString();
-      return { id: r.id, claimId: r.claimId, from: r.from, to: r.to, amount: r.amount, commissionAt, scheduledAt };
-    });
-    return paginateArray(rows, query.page, query.pageSize);
-  }
-
-  async penalty(recoursId: string, dto: CreatePenaltyDto, orderedBy: string): Promise<SanctionViewDto> {
-    await this.assertCaseExists(recoursId);
-    const view = await this.persistSanction(recoursId, SanctionType.PENALITE, dto.targetCompany, dto.amount, dto.reason, orderedBy);
-    await this.ledger.append('COMMISSION', recoursId, orderedBy, `Pénalité prononcée contre ${dto.targetCompany} (${dto.amount} DA) : ${dto.reason}`);
-    return view;
-  }
-
-  async sanction(recoursId: string, dto: CreateSanctionDto, orderedBy: string): Promise<SanctionViewDto> {
-    await this.assertCaseExists(recoursId);
-    const view = await this.persistSanction(recoursId, SanctionType.SANCTION, dto.targetCompany, dto.amount, dto.reason, orderedBy);
-    await this.ledger.append('COMMISSION', recoursId, orderedBy, `Sanction prononcée contre ${dto.targetCompany} : ${dto.reason}`);
-    return view;
-  }
-
-  async listSanctions(query: ListCommissionCasesQueryDto): Promise<PaginatedResult<SanctionViewDto>> {
-    const rows = await withDegradedFallback(
-      'CommissionService.listSanctions',
-      async () => (await this.sanctionRepo.findAll({ orderBy: { orderedAt: 'DESC' } })).map(sanctionToView),
-      () => [...MEMORY_SANCTIONS].sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)),
-    );
-    return paginateArray(rows, query.page, query.pageSize);
-  }
-
-  async pvSign(recoursId: string, dto: CreatePvDto, signedBy: string): Promise<CommissionPvViewDto> {
-    await this.assertCaseExists(recoursId);
-    const now = new Date();
-    const view = await withDegradedFallback(
-      'CommissionService.pvSign',
+  private async loadAllCaseViews(): Promise<CommissionCaseViewDto[]> {
+    return withDegradedFallback(
+      'CommissionService.loadAllCaseViews',
       async () => {
-        const entity = this.pvRepo.create({
-          recoursId,
+        const rows = await this.caseRepo.findAll({ orderBy: { scheduledAt: 'DESC' } });
+        return rows.map(toCaseView);
+      },
+      () => [...this.memoryCases].sort((a, b) => (a.scheduledAt < b.scheduledAt ? 1 : -1)).map(toCaseViewFromMemory),
+    );
+  }
+
+  async listCases(query: ListCommissionCasesQueryDto): Promise<PaginatedResult<CommissionCaseViewDto>> {
+    let rows = await this.loadAllCaseViews();
+    if (query.status) rows = rows.filter((r) => r.status === query.status);
+    return paginateArray(rows, query.page, query.pageSize);
+  }
+
+  async getCase(id: string): Promise<CommissionCaseViewDto> {
+    const rows = await this.loadAllCaseViews();
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
+    return row;
+  }
+
+  async createCase(dto: CreateCommissionCaseDto): Promise<CommissionCaseViewDto> {
+    // Validation + dénormalisation depuis RecoursModule (interface publique
+    // en lecture seule) — lève un 404 normalisé si le recours n'existe pas.
+    const recours = await this.recours.get(dto.recoursId);
+    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date(Date.now() + DEFAULT_SCHEDULE_DELAY_MS);
+
+    return withDegradedFallback(
+      'CommissionService.createCase',
+      async () => {
+        const entity = this.caseRepo.create({
+          recoursId: recours.id,
+          claimId: recours.claimId,
+          companyA: recours.from,
+          companyB: recours.to,
+          amount: recours.amount,
           motif: dto.motif,
-          decision: dto.decision,
-          signataires: dto.signataires,
-          status: 'SIGNE',
-          signedAt: now,
+          status: 'A_INSTRUIRE',
+          scheduledAt,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
-        await this.pvRepo.getEntityManager().persistAndFlush(entity);
-        return pvToView(entity);
+        await this.caseRepo.getEntityManager().persistAndFlush(entity);
+        return toCaseView(entity);
       },
       () => {
-        const row: CommissionPvViewDto = {
-          id: `pv-${MEMORY_PVS.length + 1}-${Date.now()}`,
-          recoursId,
+        const row: MemoryCase = {
+          id: randomUUID(),
+          recoursId: recours.id,
+          claimId: recours.claimId,
+          companyA: recours.from,
+          companyB: recours.to,
+          amount: recours.amount,
           motif: dto.motif,
-          decision: dto.decision,
-          signataires: dto.signataires,
-          status: 'SIGNE',
-          signedAt: now.toISOString(),
+          status: 'A_INSTRUIRE',
+          scheduledAt: scheduledAt.toISOString(),
+          createdAt: new Date().toISOString(),
         };
-        MEMORY_PVS.push(row);
-        return row;
+        this.memoryCases.push(row);
+        return toCaseViewFromMemory(row);
       },
     );
-    await this.ledger.append('COMMISSION', recoursId, signedBy, `PV de commission signé par ${dto.signataires.join(', ')}`);
-    return view;
   }
 
-  private async assertCaseExists(recoursId: string): Promise<void> {
-    await this.recours.get(recoursId); // 404 normalisé si inconnu (visibilité "place" : CommissionModule n'est pas scopé tenant)
+  /**
+   * Récupère un dossier (DB ou repli mémoire) SANS passer par
+   * `withDegradedFallback` — même raison que `RecoursService.loadForTransition` :
+   * ne jamais confondre une exception MÉTIER (404/400) avec une bascule en
+   * mode dégradé.
+   */
+  private async loadCaseForMutation(id: string): Promise<{ mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }> {
+    try {
+      const entity = await this.caseRepo.findOne({ id });
+      if (entity) return { mode: 'db', entity };
+    } catch (err) {
+      logDegraded('CommissionService.loadCaseForMutation', `base de données injoignable (${(err as Error).message}) — repli mémoire`);
+    }
+    const row = this.memoryCases.find((r) => r.id === id);
+    if (row) return { mode: 'memory', row };
+    throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
   }
 
-  private async persistSanction(
-    recoursId: string,
-    type: SanctionType,
-    targetCompany: string,
-    amount: number | undefined,
-    reason: string,
-    orderedBy: string,
-  ): Promise<SanctionViewDto> {
+  private statusOf(loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }): CommissionCaseStatus {
+    return (loaded.mode === 'db' ? loaded.entity.status : loaded.row.status) as CommissionCaseStatus;
+  }
+
+  private partiesOf(loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }): { companyA: string; companyB: string } {
+    return loaded.mode === 'db' ? loaded.entity : loaded.row;
+  }
+
+  private async persistCaseStatus(
+    loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase },
+    status: CommissionCaseStatus,
+    extra: Partial<Pick<MemoryCase, 'decidedAt' | 'decision' | 'pv'>> = {},
+  ): Promise<CommissionCaseViewDto> {
+    if (loaded.mode === 'db') {
+      loaded.entity.status = status;
+      if (extra.decidedAt) loaded.entity.decidedAt = new Date(extra.decidedAt);
+      if (extra.decision) loaded.entity.decision = extra.decision;
+      if (extra.pv) loaded.entity.pv = extra.pv;
+      await this.caseRepo.getEntityManager().flush();
+      return toCaseView(loaded.entity);
+    }
+    Object.assign(loaded.row, { status, ...extra });
+    return toCaseViewFromMemory(loaded.row);
+  }
+
+  async deliberate(id: string): Promise<CommissionCaseViewDto> {
+    const loaded = await this.loadCaseForMutation(id);
+    const current = this.statusOf(loaded);
+    if (!canAdvanceCaseStatus(current, 'EN_DELIBERE')) {
+      throw new BadRequestException({ code: 'INVALID_TRANSITION', message: `Impossible de délibérer depuis l'état "${current}".` });
+    }
+    return this.persistCaseStatus(loaded, 'EN_DELIBERE');
+  }
+
+  async decide(id: string, dto: DecideCommissionDto): Promise<CommissionCaseViewDto> {
+    const loaded = await this.loadCaseForMutation(id);
+    const current = this.statusOf(loaded);
+    if (!canAdvanceCaseStatus(current, 'PRONONCE')) {
+      throw new BadRequestException({
+        code: 'INVALID_TRANSITION',
+        message: `Impossible de prononcer une décision depuis l'état "${current}" (délibération requise au préalable).`,
+      });
+    }
+    const decidedAt = new Date().toISOString();
+    return this.persistCaseStatus(loaded, 'PRONONCE', {
+      decidedAt,
+      decision: { outcome: dto.outcome as CommissionDecisionInfo['outcome'], motif: dto.motif },
+    });
+  }
+
+  async penalty(id: string, dto: PenaltyDto, orderedBy: string): Promise<SanctionViewDto> {
+    const loaded = await this.loadCaseForMutation(id);
+    const { companyA, companyB } = this.partiesOf(loaded);
+    if (!isCompanyPartyToCase(dto.companyCode, companyA, companyB)) {
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: `"${dto.companyCode}" n'est pas partie à ce dossier (${companyA}/${companyB}).`,
+      });
+    }
+    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: 'PENALITE_FINANCIERE', amount: dto.amount, reason: dto.reason, orderedBy });
+  }
+
+  async sanction(id: string, dto: SanctionOrderDto, orderedBy: string): Promise<SanctionViewDto> {
+    const loaded = await this.loadCaseForMutation(id);
+    const { companyA, companyB } = this.partiesOf(loaded);
+    if (!isCompanyPartyToCase(dto.companyCode, companyA, companyB)) {
+      throw new BadRequestException({
+        code: 'BAD_REQUEST',
+        message: `"${dto.companyCode}" n'est pas partie à ce dossier (${companyA}/${companyB}).`,
+      });
+    }
+    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: dto.type, reason: dto.reason, orderedBy });
+  }
+
+  async pvSign(id: string, dto: PvSignDto, signedBy: string): Promise<CommissionCaseViewDto> {
+    const loaded = await this.loadCaseForMutation(id);
+    const current = this.statusOf(loaded);
+    if (current !== 'PRONONCE') {
+      throw new BadRequestException({ code: 'INVALID_TRANSITION', message: 'Le PV ne peut être signé qu’après le prononcé de la décision.' });
+    }
+    const pv: CommissionPvInfo = { signedBy, signedAt: new Date().toISOString(), ref: dto.ref ?? `PV-${id}` };
+    return this.persistCaseStatus(loaded, current, { pv });
+  }
+
+  private async persistSanction(record: Omit<MemorySanction, 'id' | 'orderedAt'>): Promise<SanctionViewDto> {
     return withDegradedFallback(
       'CommissionService.persistSanction',
       async () => {
         const entity = this.sanctionRepo.create({
-          recoursId,
-          type,
-          targetCompany,
-          amount,
-          reason,
-          orderedBy,
+          commissionCaseId: record.commissionCaseId,
+          companyCode: record.companyCode,
+          type: record.type,
+          amount: record.amount,
+          reason: record.reason,
+          orderedBy: record.orderedBy,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
         await this.sanctionRepo.getEntityManager().persistAndFlush(entity);
-        return sanctionToView(entity);
+        return toSanctionView(entity);
       },
       () => {
-        const row: SanctionViewDto = {
-          id: `snc-${MEMORY_SANCTIONS.length + 1}-${Date.now()}`,
-          recoursId,
-          targetCompany,
-          type,
-          amount,
-          reason,
-          orderedBy,
-          orderedAt: new Date().toISOString(),
-        };
-        MEMORY_SANCTIONS.push(row);
-        return row;
+        const row: MemorySanction = { id: randomUUID(), orderedAt: new Date().toISOString(), ...record };
+        this.memorySanctions.push(row);
+        return toSanctionViewFromMemory(row);
       },
     );
+  }
+
+  async listSanctions(query: ListSanctionsQueryDto): Promise<PaginatedResult<SanctionViewDto>> {
+    const rows = await withDegradedFallback(
+      'CommissionService.listSanctions',
+      async () => {
+        const all = await this.sanctionRepo.findAll({ orderBy: { orderedAt: 'DESC' } });
+        return all.map(toSanctionView);
+      },
+      () => [...this.memorySanctions].sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)).map(toSanctionViewFromMemory),
+    );
+    const filtered = query.company ? rows.filter((r) => r.companyCode === query.company) : rows;
+    return paginateArray(filtered, query.page, query.pageSize);
   }
 }

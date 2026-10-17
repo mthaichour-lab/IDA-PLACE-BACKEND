@@ -1,80 +1,68 @@
 import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
-import { RecoursState } from '../recours.rules';
-
-export interface RecoursOpposition {
-  motif: string;
-  at: string;
-  by?: string;
-}
-
-export interface RecoursContestation {
-  motif: string;
-  at: string;
-  by?: string;
-}
+import { ContestationInfo, OppositionInfo, ResolutionInfo } from '../recours.rules';
 
 /**
- * Recours — B.3, écran 4 "Échanges Annexes 2/3/4". Un recours formel d'une
- * compagnie (`from`) vers une autre (`to`) au sujet d'un dossier (`claimId`,
- * ClaimsModule — référencé par id uniquement, jamais par relation MikroORM :
- * `RecoursModule` n'importe jamais l'entité `Claim`, ARCHITECTURE.md §1).
+ * Recours — B.3, écran 4 "Échanges Annexes 2/3/4". Une ligne = un recours
+ * inter-compagnies (Annexe 2) introduit par la compagnie `from` (assureur de
+ * l'adhérent IDA) à l'encontre de la compagnie `to` (adverse), pour le
+ * dossier `claimId` (ClaimsModule — référencé par id uniquement, jamais par
+ * relation MikroORM : les modules ne partagent que des interfaces publiques,
+ * voir ARCHITECTURE.md).
  *
- * Machine à états + timers conventionnels réels : voir `recours.rules.ts`
- * (fonctions pures testées, `recours.rules.spec.ts`) pour le détail des
- * articles couverts (Art. 10/12/19) et les hypothèses de délais posées.
+ * `state` suit la machine d'état pure de `recours.rules.ts` (timers
+ * conventionnels Art.10/12/19) ; stocké en texte simple (comme `Claim.state`)
+ * plutôt qu'en `@Enum` MikroORM, pour ne pas dupliquer l'union de types déjà
+ * définie côté règles pures.
  */
 @Entity({ tableName: 'recours' })
 export class Recours {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
-  /** Id du `Claim` (ClaimsModule) concerné par ce recours. */
+  /** Id du `Claim` (ClaimsModule) à l'origine de ce recours. */
   @Property({ length: 36 })
   claimId!: string;
 
-  /** Compagnie à l'origine du recours (code, ex: "CAAT"). */
+  /** Compagnie demanderesse (assureur IDA de l'assuré indemnisé). */
   @Property({ length: 4 })
   from!: string;
 
-  /** Compagnie destinataire du recours (code). */
+  /** Compagnie adverse (débitrice potentielle). */
   @Property({ length: 4 })
   to!: string;
 
+  /** Voir `RecoursState` (recours.rules.ts). */
   @Property()
-  state: RecoursState = 'EN_ATTENTE';
+  state: string = 'EN_ATTENTE';
 
   @Property()
   requestSentAt: Date = new Date();
 
-  /** Date de la réponse (opposition) de `to`, si formulée avant l'échéance Art. 10. */
   @Property({ nullable: true })
   responseAt?: Date;
 
+  /** Forme `OppositionInfo` (recours.rules.ts) — Art.12. */
   @Property({ type: 'json', nullable: true })
-  opposition?: RecoursOpposition;
+  opposition?: OppositionInfo;
 
+  /** Forme `ContestationInfo` (recours.rules.ts). */
   @Property({ type: 'json', nullable: true })
-  contestation?: RecoursContestation;
+  contestation?: ContestationInfo;
 
-  /** Date d'escalade en commission (manuelle ou automatique — Art. 12). */
   @Property({ nullable: true })
   commissionAt?: Date;
 
+  /** Date de règlement effectif (compensation — SettlementModule), distincte de `responseAt`. */
   @Property({ nullable: true })
   settledAt?: Date;
 
   @Property({ type: 'float' })
   amount!: number;
 
-  /**
-   * Échéance courante affichée par le front (countdown Art. 10 ou Art. 12
-   * selon l'état) — recalculée/persistée par `RecoursService` à chaque
-   * transition. `undefined` pour un état sans timer propre (OPPOSITION) ou
-   * définitif (REGLE/FORCLOS/ACCEPTE_TACITE).
-   */
-  @Property({ nullable: true })
-  currentDeadlineAt?: Date;
+  /** Forme `ResolutionInfo` (recours.rules.ts) — comment le recours s'est conclu. */
+  @Property({ type: 'json', nullable: true })
+  resolution?: ResolutionInfo;
 
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();
