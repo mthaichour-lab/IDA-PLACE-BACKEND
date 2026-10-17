@@ -13,6 +13,12 @@ export class ListRecoursQueryDto {
   @IsIn(RECOURS_FILTERS as unknown as string[])
   filter: string = 'TOUS';
 
+  /** Recherche libre (id recours, dossier lié, compagnie from/to) — paramètre additif, ignoré des clients existants (pas de rupture de forme, ARCHITECTURE.md §1). */
+  @ApiPropertyOptional({ description: 'Recherche libre : n° recours (id), n° dossier (claimId), compagnie (from/to)' })
+  @IsOptional()
+  @IsString()
+  q?: string;
+
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
 }

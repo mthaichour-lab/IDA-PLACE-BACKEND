@@ -157,6 +157,10 @@ export class RecoursService {
     let rows = await this.computeAllViews(new Date());
     rows = rows.filter((r) => this.visibleToUser(r, user));
     if (query.filter && query.filter !== 'TOUS') rows = rows.filter((r) => r.state === query.filter);
+    if (query.q) {
+      const needle = query.q.trim().toLowerCase();
+      if (needle) rows = rows.filter((r) => [r.id, r.claimId, r.from, r.to].some((v) => v.toLowerCase().includes(needle)));
+    }
     return paginateArray(rows, query.page, query.pageSize);
   }
 

@@ -76,6 +76,25 @@ l'hypothèse ou omettre proprement, ne jamais l'inventer).
    les données sous-jacentes existent déjà via `net`/`matrix`, juste pas
    le rendu — à faire séparément si repris côté front).
 
+### Fait pour rapprocher `/exchanges` de la capture de référence (2026-10-17)
+
+1. **`GET /recours` accepte un paramètre `q` optionnel** (recherche libre :
+   id recours, `claimId` du dossier lié, compagnie `from`/`to`) —
+   additif, `ListRecoursQueryDto` existant ne perd aucun champ, les
+   clients qui ne l'envoient pas ne voient aucun changement de
+   comportement (pas de rupture de forme, ARCHITECTURE.md §1).
+2. **Toujours omis** (capture du guide, hors périmètre de cette passe) :
+   onglets "Acceptés/silence" vs "Réglés/compensés" du guide (deux sous-
+   catégories de `REGLE` dont la distinction métier exacte n'est précisée
+   dans aucun des deux documents de référence — plutôt que de deviner une
+   règle, les deux tabs utilisables dès aujourd'hui sont `REGLE`/`REJETE`
+   eux-mêmes, déjà des états réels de `RECOURS_STATES` mais jusqu'ici
+   absents des onglets côté front, voir HANDOFF.md frontend) ; pièces
+   jointes Annexe 2/3/4 (aucune intégration `DocumentsModule` pour
+   `RecoursModule` — B.2 ne liste que les écrans 2/3/12) ; numéro de
+   dossier par compagnie, assuré victime nommé, code de barème par
+   dossier (aucun de ces champs n'existe sur `Claim`/`Recours`).
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même

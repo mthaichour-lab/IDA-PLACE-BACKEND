@@ -66,6 +66,21 @@ describe('RecoursService (mode dégradé — timers Art.10/12/19, machine d’é
     expect(detail.amount).toBe(85_000);
   });
 
+  it('list() filtre par recherche libre (q) sur l’id recours, le dossier lié ou la compagnie from/to', async () => {
+    const a = await service.create({ claimId: 'clm-caat-saa', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await service.create({ claimId: 'clm-cash-caar', from: 'CASH', to: 'CAAR', amount: 20_000 });
+
+    const byClaim = await service.list({ filter: 'TOUS', page: 1, pageSize: 6, q: 'clm-caat-saa' });
+    expect(byClaim.items.map((r) => r.id)).toEqual([a.id]);
+
+    const byCompany = await service.list({ filter: 'TOUS', page: 1, pageSize: 6, q: 'caar' }); // insensible à la casse
+    expect(byCompany.items).toHaveLength(1);
+    expect(byCompany.items[0].to).toBe('CAAR');
+
+    const noMatch = await service.list({ filter: 'TOUS', page: 1, pageSize: 6, q: 'inconnu' });
+    expect(noMatch.items).toHaveLength(0);
+  });
+
   it('get() lève un 404 normalisé pour un id inconnu', async () => {
     await expect(service.get('inconnu')).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
   });
