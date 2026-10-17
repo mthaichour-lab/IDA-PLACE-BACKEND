@@ -1,9 +1,11 @@
 import { BadRequestException, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ClaimsService } from './claims.service';
 import { ClaimImportReportDto } from './dto/claim-import.dto';
 import { ListClaimsQueryDto } from './dto/claim.dto';
@@ -39,14 +41,14 @@ export class ClaimsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Liste paginée des dossiers (6/p), filtrable par compagnie/état' })
-  list(@Query() q: ListClaimsQueryDto) {
-    return this.service.list(q);
+  @ApiOperation({ summary: 'Liste paginée des dossiers (6/p), filtrable par compagnie/état — scopée par compagnie (B.7)' })
+  list(@Query() q: ListClaimsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.list(q, user);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: "Détail d'un dossier" })
-  get(@Param('id') id: string) {
-    return this.service.get(id);
+  @ApiOperation({ summary: "Détail d'un dossier — scopé par compagnie (B.7)" })
+  get(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.get(id, user);
   }
 }
