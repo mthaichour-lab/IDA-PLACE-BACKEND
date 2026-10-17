@@ -27,8 +27,18 @@ import { KeycloakStrategy } from './strategies/keycloak.strategy';
     {
       provide: AUTH_PROVIDER,
       inject: [DevAuthProvider, KeycloakStrategy],
-      useFactory: (dev: DevAuthProvider, keycloak: KeycloakStrategy) =>
-        process.env.AUTH_PROVIDER === 'keycloak' ? keycloak : dev,
+      useFactory: (dev: DevAuthProvider, keycloak: KeycloakStrategy) => {
+        if (process.env.AUTH_PROVIDER === 'keycloak') {
+          // Vérifié ICI (au démarrage, quand ce provider est effectivement
+          // sélectionné) plutôt que dans le constructeur de KeycloakStrategy
+          // (toujours instancié par Nest aux côtés de DevAuthProvider) —
+          // zero-trust : jamais de repli admin silencieux si la config
+          // Keycloak est incomplète (voir keycloak.strategy.ts).
+          keycloak.assertConfigured();
+          return keycloak;
+        }
+        return dev;
+      },
     },
   ],
   exports: [RbacService, AUTH_PROVIDER],

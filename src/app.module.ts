@@ -5,6 +5,7 @@ import mikroOrmConfig from '../mikro-orm.config';
 import { AdherentsModule } from './adherents/adherents.module';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
+import { CacheModule } from './common/cache/cache.module';
 import { ClaimsModule } from './claims/claims.module';
 import { CockpitModule } from './cockpit/cockpit.module';
 import { CommissionModule } from './commission/commission.module';
@@ -30,6 +31,7 @@ import { StatsModule } from './stats/stats.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     MikroOrmModule.forRoot(mikroOrmConfig),
+    CacheModule,
 
     // --- 17 modules B.2 ---
     AuthModule,

@@ -48,4 +48,15 @@ export class ClaimViewDto {
   @ApiPropertyOptional() gpsLng?: number;
   @ApiPropertyOptional({ enum: ['ELIGIBLE_IDA', 'HORS_IDA'] }) eligibilityVerdict?: string;
   @ApiPropertyOptional({ type: [String] }) eligibilityReasons?: string[];
+  // --- Champ optionnel additionnel (sprint 3, Monitoring/Stats réels) ---
+  // Nécessaire pour calculer réellement les "demandes tardives" (Monitoring,
+  // B.2 écran 8) à partir de la vraie date de demande de recours (Art. 19),
+  // sans dépendre de RecoursModule (toujours un mock). Ajout d'un champ
+  // optionnel supplémentaire, aucun champ existant renommé/retiré — même
+  // règle que les ajouts du sprint 2 ci-dessus (voir HANDOFF.md).
+  @ApiPropertyOptional() dateDemandeRecours?: string;
+  // --- Champ optionnel additionnel (sprint 3, StatsModule réel) : canal de
+  // déclaration réel (B.4 colonne 47 — ERP/ECONSTAT/IMPORT/API), nécessaire
+  // pour agréger réellement l'adoption e-constat sans inventer de valeur.
+  @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclaration?: string;
 }

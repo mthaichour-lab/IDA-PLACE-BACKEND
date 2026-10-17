@@ -41,6 +41,8 @@ function toClaimView(c: Claim): ClaimViewDto {
     gpsLng: c.gpsLng,
     eligibilityVerdict: c.eligibilityVerdict,
     eligibilityReasons: c.eligibilityReasons,
+    dateDemandeRecours: c.dateDemandeRecours,
+    canalDeclaration: c.canalDeclaration,
   };
 }
 
@@ -214,6 +216,8 @@ export class ClaimsService {
           gpsLng: values.gpsLng as number | undefined,
           eligibilityVerdict: verdict,
           eligibilityReasons: reasons,
+          dateDemandeRecours: values.dateDemandeRecours as string | undefined,
+          canalDeclaration: values.canalDeclaration as string | undefined,
         };
         MEMORY_CLAIMS.push(view);
         return view;

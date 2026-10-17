@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { Inject, Injectable, Logger, Module } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
@@ -24,14 +25,29 @@ export type RealtimeEvent = 'claim.ingested' | 'match.updated' | 'recours.timer'
  * TODO(backend-agent): remplacer l'émission directe en mémoire par une file
  * d'événements Redis (pub/sub) pour supporter plusieurs instances du
  * back-end (voir HANDOFF.md §4).
+ *
+ * Sprint 3 (MonitoringModule/FraudModule) : en plus de la diffusion WebSocket,
+ * `emitEvent` relaie désormais aussi chaque événement sur un `EventEmitter`
+ * interne (`onEvent`), pour que d'autres modules RÉELS du même process
+ * (ex. `FraudModule` — journal des actions suspectes, appariement manuel/
+ * déliage/reliage) puissent réagir à `match.updated` sans dépendre de
+ * Socket.IO ni importer `MatchingModule`/`ClaimsModule` directement (toujours
+ * via le service public `RealtimeGateway`, cohérent avec ARCHITECTURE.md —
+ * modules séparés par interfaces publiques). N'affecte pas le protocole
+ * WebSocket existant (toujours émis à l'identique côté `server`).
  */
 @Injectable()
 @WebSocketGateway({ cors: { origin: process.env.CORS_ORIGIN ?? '*' }, namespace: '/realtime' })
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger('RealtimeGateway');
+  private readonly internalEmitter = new EventEmitter();
 
-  constructor(@Inject(AUTH_PROVIDER) private readonly authProvider: AuthProvider) {}
+  constructor(@Inject(AUTH_PROVIDER) private readonly authProvider: AuthProvider) {
+    // Beaucoup d'abonnés internes possibles (Fraud, futurs modules) — évite
+    // le warning MaxListenersExceeded par défaut (10) de Node.
+    this.internalEmitter.setMaxListeners(50);
+  }
 
   async handleConnection(client: Socket): Promise<void> {
     const user = await this.authProvider.resolve({ headers: client.handshake.headers as Record<string, unknown> });
@@ -52,6 +68,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   emitEvent(event: RealtimeEvent, payload: unknown, room = 'tenant:place'): void {
     this.server?.to(room).emit(event, payload);
+    this.internalEmitter.emit(event, payload);
+  }
+
+  /** Abonnement interne (process local) à un événement de place — voir doc de classe. */
+  onEvent(event: RealtimeEvent, handler: (payload: unknown) => void): void {
+    this.internalEmitter.on(event, handler);
   }
 }
 
