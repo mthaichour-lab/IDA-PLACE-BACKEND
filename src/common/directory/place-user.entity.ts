@@ -1,6 +1,6 @@
 import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
-import { Privilege, Role } from '../../common/rbac/roles-privileges';
+import { Privilege, Role } from '../rbac/roles-privileges';
 
 /**
  * PlaceUser — B.3 "PlaceUser", écran 14 "Paramétrage" (super admin), B.7.
@@ -8,13 +8,10 @@ import { Privilege, Role } from '../../common/rbac/roles-privileges';
  * dérogations de privilèges (grant/revoke) PAR UTILISATEUR, en plus de la
  * matrice rôle × privilège globale (`RbacService`, déjà réelle).
  *
- * TODO sprint suivant (voir rapport de fin de sprint) : synchronisation
- * avec Keycloak (réconciliation rôle/groupe) et consommation de ces
- * dérogations par `KeycloakStrategy` au moment de résoudre les privilèges
- * effectifs d'un utilisateur authentifié — non fait ce sprint pour éviter
- * une dépendance inverse AuthModule → AdminModule (ARCHITECTURE.md : modules
- * séparés par interfaces publiques, AuthModule est @Global() et ne doit pas
- * dépendre d'un module applicatif).
+ * Vit dans `common/directory` (et non `admin`) pour que `AuthModule`
+ * (`KeycloakStrategy`) et `AdminModule` (écran 14) puissent tous deux en
+ * dépendre sans dépendance inverse `AuthModule` → `AdminModule` — voir
+ * `place-user-directory.module.ts`.
  */
 @Entity({ tableName: 'place_user' })
 export class PlaceUser {

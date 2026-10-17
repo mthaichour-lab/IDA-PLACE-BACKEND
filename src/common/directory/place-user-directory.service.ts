@@ -2,11 +2,11 @@ import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
-import { withDegradedFallback } from '../common/interfaces/degraded-mode';
-import { Privilege, Role } from '../common/rbac/roles-privileges';
-import { CreatePlaceUserDto, PlaceUserViewDto, UpdatePlaceUserDto } from './dto/place-user.dto';
-import { PlaceUser } from './entities/place-user.entity';
+import { CreatePlaceUserDto, PlaceUserViewDto, UpdatePlaceUserDto } from '../../admin/dto/place-user.dto';
+import { paginateArray, PaginatedResult } from '../dto/pagination.dto';
+import { withDegradedFallback } from '../interfaces/degraded-mode';
+import { Privilege, Role } from '../rbac/roles-privileges';
+import { PlaceUser } from './place-user.entity';
 
 /** Repli mémoire — mode dégradé (voir README "Mode dégradé"). Seed identique à l'ancien mock, pour ne pas changer le comportement observé en dev sans base. */
 const MEMORY_USERS: PlaceUserViewDto[] = [
@@ -42,18 +42,26 @@ function definedFieldsOnly<T extends object>(dto: T): Partial<T> {
 }
 
 /**
- * AdminModule.users — écran 14 "Paramétrage" (super admin), B.2/B.3/B.7.
- * CRUD réel (`PlaceUser`, migration, pagination 6/p) : liste, création/
- * édition, compte actif/suspendu, dérogations de privilèges grant/revoke
- * par utilisateur. Repli mémoire en mode dégradé (voir README).
+ * PlaceUserDirectory — source unique des `PlaceUser` (B.3), extraite dans
+ * `common/directory` (et non `admin`) précisément pour être consommée par
+ * DEUX modules qui ne doivent pas dépendre l'un de l'autre :
+ *  - `AdminModule` (écran 14 "Paramétrage") : CRUD complet (`list`/`create`/
+ *    `update`), sans changement de comportement vis-à-vis de l'ancien
+ *    `UsersService` qu'elle remplace.
+ *  - `AuthModule` (`KeycloakStrategy`) : lecture seule des dérogations
+ *    grant/revoke d'un utilisateur authentifié via `findActiveDerogationsByEmail`
+ *    — avant cette extraction, consommer `UsersService` depuis `AuthModule`
+ *    aurait créé une dépendance inverse `AuthModule` → `AdminModule`
+ *    (`AdminModule` important déjà `AuthModule` pour ses guards), impossible
+ *    sans `forwardRef`. Voir ARCHITECTURE.md §3 et HANDOFF.md.
  */
 @Injectable()
-export class UsersService {
+export class PlaceUserDirectory {
   constructor(@InjectRepository(PlaceUser) private readonly repo: EntityRepository<PlaceUser>) {}
 
   async list(page: number, pageSize: number): Promise<PaginatedResult<PlaceUserViewDto>> {
     return withDegradedFallback(
-      'UsersService.list',
+      'PlaceUserDirectory.list',
       async () => {
         const [rows, total] = await this.repo.findAndCount({}, { limit: pageSize, offset: (page - 1) * pageSize, orderBy: { name: 'ASC' } });
         return { page, total, items: rows.map(toView) } as PaginatedResult<PlaceUserViewDto>;
@@ -64,7 +72,7 @@ export class UsersService {
 
   async create(dto: CreatePlaceUserDto): Promise<PlaceUserViewDto> {
     return withDegradedFallback(
-      'UsersService.create',
+      'PlaceUserDirectory.create',
       async () => {
         const existing = await this.repo.findOne({ email: dto.email });
         if (existing) throw new ConflictException({ code: 'CONFLICT', message: 'Un utilisateur avec cet email existe déjà.' });
@@ -104,7 +112,7 @@ export class UsersService {
   async update(id: string, dto: UpdatePlaceUserDto): Promise<PlaceUserViewDto> {
     const patch = definedFieldsOnly(dto);
     return withDegradedFallback(
-      'UsersService.update',
+      'PlaceUserDirectory.update',
       async () => {
         const u = await this.repo.findOne({ id });
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable.' });
@@ -117,6 +125,37 @@ export class UsersService {
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable (mode dégradé).' });
         Object.assign(u, patch);
         return u;
+      },
+    );
+  }
+
+  /**
+   * Lecture seule, consommée par `KeycloakStrategy` (B.7) pour appliquer les
+   * dérogations grant/revoke d'un utilisateur authentifié via Keycloak — le
+   * rôle/les privilèges de base viennent du token (realm_access.roles /
+   * ida_place_role), mais les dérogations PAR UTILISATEUR ne vivent que dans
+   * ce miroir applicatif `PlaceUser`, pas dans Keycloak.
+   *
+   * Retourne `null` si aucun `PlaceUser` ne correspond à cet email (ce
+   * miroir n'est pas forcément synchronisé pour tous les utilisateurs
+   * Keycloak) OU si le compte est suspendu (`active:false`) — dans les deux
+   * cas, l'appelant (`KeycloakStrategy`) applique alors le rôle seul, sans
+   * dérogation. Keycloak reste la seule source de vérité pour
+   * l'authentification elle-même : ce miroir ne peut donc PAS rejeter une
+   * authentification, seulement moduler les privilèges d'un rôle déjà admis.
+   */
+  async findActiveDerogationsByEmail(email: string): Promise<{ grant: Privilege[]; revoke: Privilege[] } | null> {
+    return withDegradedFallback(
+      'PlaceUserDirectory.findActiveDerogationsByEmail',
+      async () => {
+        const u = await this.repo.findOne({ email });
+        if (!u || !u.active) return null;
+        return { grant: u.grant, revoke: u.revoke };
+      },
+      () => {
+        const u = MEMORY_USERS.find((m) => m.email === email);
+        if (!u || !u.active) return null;
+        return { grant: u.grant as Privilege[], revoke: u.revoke as Privilege[] };
       },
     );
   }

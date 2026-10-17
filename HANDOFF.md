@@ -86,16 +86,29 @@ cache Redis minimal.
    appariée dans `/matching/queue` et peuvent agir via `/matching/:id/decide`
    (`201`) ; une compagnie tierce (`TALA`) reçoit une file vide, des
    compteurs à zéro, et `403 FORBIDDEN` sur `/decide`.
+5. **`KeycloakStrategy` applique désormais les dérogations grant/revoke par
+   utilisateur** : dépendance circulaire `AuthModule`↔`AdminModule` résolue
+   en extrayant l'entité `PlaceUser` + le service (ex-`UsersService`) dans
+   un module transverse neutre, `common/directory/` (`PlaceUserDirectory`,
+   `PlaceUserDirectoryModule`) — `AuthModule` ET `AdminModule` l'importent
+   tous les deux, sans dépendance de l'un vers l'autre. `KeycloakStrategy`
+   résout désormais les dérogations par email du token
+   (`findActiveDerogationsByEmail`) et les applique via
+   `RbacService.effectivePrivileges(role, grant, revoke)` — EXACTEMENT
+   comme `DevAuthProvider`. Un `PlaceUser` introuvable pour cet email (miroir
+   pas forcément synchronisé) ou suspendu (`active:false`) applique le rôle
+   seul, sans dérogation ni rejet total (Keycloak reste la seule source de
+   vérité pour l'authentification elle-même). Vérifié : 212/212 tests
+   unitaires (dont les nouveaux cas `keycloak.strategy.spec.ts` — grant
+   appliqué, revoke appliqué, email inconnu, compte suspendu) + démarrage
+   réel (`AdminModule.users` CRUD testé en navigateur/curl, aucune
+   régression). Testable en conditions Keycloak réelles uniquement avec un
+   serveur Keycloak (indisponible dans cet environnement) — hors périmètre
+   de cette vérification.
 
 ## Todo-list restante, par priorité
 
-### 1. `KeycloakStrategy` ignore les dérogations grant/revoke
-
-Dépendance circulaire `AuthModule`↔`AdminModule` à résoudre proprement
-(extraire un `PlaceUserDirectory` partagé) avant toute bascule
-`AUTH_PROVIDER=keycloak` réelle. Hors périmètre dev actuel.
-
-### 2. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
+### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
 
 - Délais conventionnels `RecoursModule` (Art.10/12/19) — valeurs par
   variable d'environnement, non chiffrées par le dossier.

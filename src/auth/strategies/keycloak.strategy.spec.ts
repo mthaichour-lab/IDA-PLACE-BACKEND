@@ -1,7 +1,16 @@
 import { createPublicKey, generateKeyPairSync, KeyObject } from 'crypto';
 import * as jwt from 'jsonwebtoken';
+import { PlaceUserDirectory } from '../../common/directory/place-user-directory.service';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { KeycloakStrategy } from './keycloak.strategy';
+
+/** Double minimal — pas de conteneur Nest ici (voir `new KeycloakStrategy(...)` ci-dessous). */
+function fakeDirectory(derogationsByEmail: Record<string, { grant: string[]; revoke: string[] } | null> = {}): PlaceUserDirectory {
+  return {
+    findActiveDerogationsByEmail: jest.fn(async (email: string) => derogationsByEmail[email] ?? null),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+}
 
 const KID = 'test-key-1';
 const ISSUER = 'http://keycloak.test/realms/ida-place';
@@ -52,7 +61,7 @@ describe('KeycloakStrategy', () => {
 
   beforeEach(() => {
     setKeycloakEnv();
-    strategy = new KeycloakStrategy(new RbacService());
+    strategy = new KeycloakStrategy(new RbacService(), fakeDirectory());
     mockFetchJwks({ keys: [jwkFromPublicKeyPem(publicKeyPem, KID)] });
   });
 
@@ -159,5 +168,69 @@ describe('KeycloakStrategy', () => {
     );
     const user = await strategy.resolve({ headers: { authorization: `Bearer ${token}` } });
     expect(user).toBeNull();
+  });
+
+  describe('dérogations grant/revoke par utilisateur (PlaceUserDirectory, B.7)', () => {
+    it('applique les dérogations grant/revoke du PlaceUser correspondant à l’email du token', async () => {
+      const directory = fakeDirectory({ 'correspondant@caat.dz': { grant: ['bill'], revoke: [] } });
+      strategy = new KeycloakStrategy(new RbacService(), directory);
+      const token = signToken({
+        sub: 'kc-user-8',
+        email: 'correspondant@caat.dz',
+        azp: 'ida-place-api',
+        realm_access: { roles: ['CORRESPONDANT_IDA'] },
+      });
+
+      const user = await strategy.resolve({ headers: { authorization: `Bearer ${token}` } });
+
+      expect(directory.findActiveDerogationsByEmail).toHaveBeenCalledWith('correspondant@caat.dz');
+      expect(user?.privileges).toContain('bill');
+    });
+
+    it('retire un privilège via une dérogation "revoke" malgré le rôle', async () => {
+      const directory = fakeDirectory({ 'operateur@finlab.dz': { grant: [], revoke: ['bill'] } });
+      strategy = new KeycloakStrategy(new RbacService(), directory);
+      const token = signToken({
+        sub: 'kc-user-9',
+        email: 'operateur@finlab.dz',
+        azp: 'ida-place-api',
+        realm_access: { roles: ['OPERATEUR_PLACE'] },
+      });
+
+      const user = await strategy.resolve({ headers: { authorization: `Bearer ${token}` } });
+      expect(user?.privileges).not.toContain('bill');
+    });
+
+    it('applique le rôle seul (aucune dérogation) si aucun PlaceUser ne correspond à cet email — miroir non synchronisé', async () => {
+      const directory = fakeDirectory({});
+      strategy = new KeycloakStrategy(new RbacService(), directory);
+      const token = signToken({
+        sub: 'kc-user-10',
+        email: 'inconnu@ailleurs.dz',
+        azp: 'ida-place-api',
+        realm_access: { roles: ['OPERATEUR_PLACE'] },
+      });
+
+      const user = await strategy.resolve({ headers: { authorization: `Bearer ${token}` } });
+      expect(user).not.toBeNull();
+      expect(directory.findActiveDerogationsByEmail).toHaveBeenCalledWith('inconnu@ailleurs.dz');
+    });
+
+    it('applique le rôle seul (aucune dérogation) si le PlaceUser correspondant est suspendu — pas de rejet total', async () => {
+      // PlaceUserDirectory.findActiveDerogationsByEmail renvoie null pour un compte suspendu (voir son implémentation) :
+      // simulé ici directement, Keycloak reste la source de vérité pour l'authentification elle-même.
+      const directory = fakeDirectory({ 'suspendu@caat.dz': null });
+      strategy = new KeycloakStrategy(new RbacService(), directory);
+      const token = signToken({
+        sub: 'kc-user-11',
+        email: 'suspendu@caat.dz',
+        azp: 'ida-place-api',
+        realm_access: { roles: ['CORRESPONDANT_IDA'] },
+      });
+
+      const user = await strategy.resolve({ headers: { authorization: `Bearer ${token}` } });
+      expect(user).not.toBeNull();
+      expect(user?.role).toBe('CORRESPONDANT_IDA');
+    });
   });
 });

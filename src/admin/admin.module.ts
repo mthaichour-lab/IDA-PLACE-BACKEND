@@ -1,15 +1,14 @@
-import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Body, Controller, Get, Module, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthModule } from '../auth/auth.module';
 import { Privileges } from '../common/decorators/privileges.decorator';
+import { PlaceUserDirectory } from '../common/directory/place-user-directory.service';
+import { PlaceUserDirectoryModule } from '../common/directory/place-user-directory.module';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { RbacService } from '../common/rbac/rbac.service';
 import { ROLES } from '../common/rbac/roles-privileges';
 import { CreatePlaceUserDto, ListPlaceUsersQueryDto, UpdatePlaceUserDto } from './dto/place-user.dto';
-import { PlaceUser } from './entities/place-user.entity';
-import { UsersService } from './users.service';
 
 /**
  * AdminModule — écran 14 "Paramétrage" (super admin), B.2/B.7.
@@ -25,9 +24,13 @@ import { UsersService } from './users.service';
  * figés (ClaimsModule/MatchingModule/CockpitModule/Auth/Adherents/Experts),
  * et était explicitement "mock, non persisté" jusqu'ici.
  *
- * TODO(backend-agent) — voir aussi `entities/place-user.entity.ts` :
- *  - synchroniser avec Keycloak (réconciliation rôle/groupe) une fois
- *    `KeycloakStrategy` branché sur ce miroir applicatif ;
+ * Entité + service déplacés dans `common/directory/` (`PlaceUserDirectory`,
+ * ex-`UsersService`) : `KeycloakStrategy` (AuthModule) consomme désormais
+ * les dérogations grant/revoke de ce même miroir applicatif (voir
+ * `place-user-directory.service.ts`) sans dépendance inverse
+ * `AuthModule` → `AdminModule`.
+ *
+ * TODO(backend-agent) :
  *  - persister `RolePermMatrix` en base au lieu du singleton mémoire de
  *    `RbacService` (toujours perdu au redémarrage — acceptable en socle) ;
  *  - dashboard des coûts (revenu par inducteur) — brancher sur MeteringModule.
@@ -39,7 +42,7 @@ import { UsersService } from './users.service';
 class AdminController {
   constructor(
     private readonly rbac: RbacService,
-    private readonly users: UsersService,
+    private readonly users: PlaceUserDirectory,
   ) {}
 
   @Get('users')
@@ -78,8 +81,7 @@ class AdminController {
 }
 
 @Module({
-  imports: [AuthModule, MikroOrmModule.forFeature([PlaceUser])],
+  imports: [AuthModule, PlaceUserDirectoryModule],
   controllers: [AdminController],
-  providers: [UsersService],
 })
 export class AdminModule {}

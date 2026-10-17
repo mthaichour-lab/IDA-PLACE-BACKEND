@@ -1,6 +1,7 @@
 import { createPublicKey, JsonWebKey } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
+import { PlaceUserDirectory } from '../../common/directory/place-user-directory.service';
 import { AuthenticatedUser, AuthProvider } from '../../common/interfaces/authenticated-user.interface';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { ROLES, Role } from '../../common/rbac/roles-privileges';
@@ -52,6 +53,17 @@ const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
  *  - client autorisé : le jeton doit avoir été émis pour `ida-place-web`
  *    ou `ida-place-api` (`azp`, sinon premier élément de `aud`) — rejeté
  *    sinon.
+ *  - dérogations grant/revoke par utilisateur : lues dans le miroir
+ *    applicatif `PlaceUser` (`PlaceUserDirectory.findActiveDerogationsByEmail`,
+ *    `common/directory`) par email du token — PAS par `sub` Keycloak, ce
+ *    miroir n'ayant pas vocation à connaître les identifiants internes
+ *    Keycloak. Si aucun `PlaceUser` ne correspond (miroir pas forcément
+ *    synchronisé pour tous les utilisateurs) ou si le compte est suspendu,
+ *    aucune dérogation n'est appliquée (comportement par rôle seul,
+ *    inchangé) — un compte suspendu continue néanmoins à authentifier avec
+ *    les seuls privilèges de son rôle (pas de rejet total : la suspension
+ *    du miroir applicatif ne doit pas se substituer à la révocation réelle
+ *    côté Keycloak, qui reste la source de vérité pour l'authentification).
  *
  * Testable SANS serveur Keycloak réel : `getJwks()` appelle `fetch` (Node
  * ≥18, déjà la version minimale du projet — voir package.json "engines"),
@@ -69,7 +81,10 @@ export class KeycloakStrategy implements AuthProvider {
   private readonly logger = new Logger('KeycloakStrategy');
   private jwksCache?: { fetchedAt: number; keys: Jwk[] };
 
-  constructor(private readonly rbac: RbacService) {}
+  constructor(
+    private readonly rbac: RbacService,
+    private readonly directory: PlaceUserDirectory,
+  ) {}
 
   private get baseUrl(): string | undefined {
     return process.env.KEYCLOAK_BASE_URL;
@@ -192,15 +207,17 @@ export class KeycloakStrategy implements AuthProvider {
     }
 
     // Dérogations grant/revoke par utilisateur (miroir applicatif PlaceUser,
-    // AdminModule) : pas encore synchronisées depuis ce provider — éviterait
-    // une dépendance inverse AuthModule → AdminModule (ARCHITECTURE.md).
-    // TODO sprint suivant.
-    const privileges = this.rbac.effectivePrivileges(role, [], []);
+    // common/directory) — voir doc de classe. `null` si pas de PlaceUser
+    // correspondant (miroir pas forcément synchronisé) ou compte suspendu :
+    // dans les deux cas, on applique le rôle seul, sans dérogation.
+    const email = payload.email ?? payload.preferred_username ?? '';
+    const derogations = email ? await this.directory.findActiveDerogationsByEmail(email) : null;
+    const privileges = this.rbac.effectivePrivileges(role, derogations?.grant ?? [], derogations?.revoke ?? []);
 
     return {
       id: payload.sub,
       name: payload.name ?? payload.preferred_username ?? payload.sub,
-      email: payload.email ?? payload.preferred_username ?? '',
+      email,
       role,
       companyId: payload.company_id,
       privileges,

@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { PlaceUserDirectoryModule } from '../common/directory/place-user-directory.module';
 import { AUTH_PROVIDER } from '../common/interfaces/authenticated-user.interface';
 import { RbacService } from '../common/rbac/rbac.service';
 import { AuthController } from './auth.controller';
@@ -11,6 +12,12 @@ import { KeycloakStrategy } from './strategies/keycloak.strategy';
  * `AUTH_PROVIDER` consommé par `AuthGuard`. `RbacService` est exporté pour
  * être réutilisé par AdminModule (édition de la matrice, écran 14).
  *
+ * Importe `PlaceUserDirectoryModule` (et non `AdminModule`, qui importe
+ * lui-même `AuthModule` — une dépendance inverse aurait formé un cycle) :
+ * `KeycloakStrategy` y lit les dérogations grant/revoke par utilisateur
+ * (`PlaceUser`, même miroir applicatif que l'écran 14 "Paramétrage"). Voir
+ * `common/directory/place-user-directory.service.ts`.
+ *
  * `@Global()` : `AuthGuard`/`PrivilegesGuard` sont utilisés par la quasi-
  * totalité des modules (B.2 : "tous"). Plutôt que de faire importer
  * `AuthModule` par chacun des 17 modules, on l'enregistre une seule fois
@@ -19,6 +26,7 @@ import { KeycloakStrategy } from './strategies/keycloak.strategy';
  */
 @Global()
 @Module({
+  imports: [PlaceUserDirectoryModule],
   controllers: [AuthController],
   providers: [
     RbacService,

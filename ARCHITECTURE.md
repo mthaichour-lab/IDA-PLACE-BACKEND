@@ -58,6 +58,14 @@
 - `common/guards/privileges.guard.ts` : vérifie le(s) privilège(s) requis
   ET bloque toute méthode HTTP mutante pour `AUDITEUR_CSA`, indépendamment
   de la matrice.
+- `common/directory/` (`PlaceUserDirectory`/`PlaceUserDirectoryModule`,
+  sprint 3 bis) : propriétaire unique de l'entité `PlaceUser` (B.3),
+  extraite hors d'`AdminModule` précisément pour être importée à la fois
+  par `AuthModule` (`KeycloakStrategy` y lit les dérogations grant/revoke
+  par utilisateur via `findActiveDerogationsByEmail`) et `AdminModule`
+  (CRUD écran 14, ex-`UsersService`), SANS que l'un dépende de l'autre —
+  la dépendance circulaire `AuthModule`↔`AdminModule` signalée au sprint
+  précédent est résolue par cette extraction, pas par un `forwardRef`.
 - `common/rbac/tenant-scope.ts` : scoping tenant (un `CORRESPONDANT_IDA`/
   `TRESORIER` ne voit que sa compagnie) — appliqué dans `ClaimsService`
   (`list`/`get`), `RecoursService` (`list`/`get`/`counters`/toute
@@ -75,7 +83,7 @@
 
 | Module | État | Détail |
 |---|---|---|
-| `AuthModule` | **RÉEL** | `GET /me`, `DevAuthProvider` fonctionnel. `KeycloakStrategy` réel (sprint 3) : JWT/JWKS RS256 (cache 10 min), mapping rôle Keycloak → RBAC interne, zero-trust (erreur explicite si mal configuré). ⚠️ Ignore les dérogations grant/revoke par utilisateur (dépendance circulaire `AuthModule`↔`AdminModule` non résolue, voir HANDOFF.md). |
+| `AuthModule` | **RÉEL** | `GET /me`, `DevAuthProvider` fonctionnel. `KeycloakStrategy` réel (sprint 3) : JWT/JWKS RS256 (cache 10 min), mapping rôle Keycloak → RBAC interne, zero-trust (erreur explicite si mal configuré). Applique désormais les dérogations grant/revoke par utilisateur (sprint 3 bis) via `PlaceUserDirectory` (`common/directory/`, importé à la fois par `AuthModule` et `AdminModule` — dépendance circulaire résolue, voir §3). |
 | `AdherentsModule` | **RÉEL** | Entités MikroORM (`Company`, `Agency`, `Wilaya`), migration, DTO, CRUD, pagination 6/p, repli mémoire si DB absente. |
 | `ExpertsModule` | **RÉEL** | Entité `Expert`, DTO, CRUD, pagination. |
 | `ClaimsModule` | **RÉEL** (sprint 2) | Entité `Claim` + migration, parsing réel Excel (`exceljs`)/CSV (parseur maison), verdict délégué à `EligibilityModule`, persistance (+ repli mémoire), déclenche l'appariement et émet `claim.ingested`. Voir HANDOFF.md. |
