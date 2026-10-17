@@ -1,6 +1,8 @@
 import { getRepositoryToken } from '@mikro-orm/nestjs';
+import { ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchQueueItem } from '../matching/entities/match-queue-item.entity';
 import { MatchingService } from '../matching/matching.service';
@@ -157,5 +159,45 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     expect(matched.length).toBeGreaterThanOrEqual(1);
     expect(matched[0].level).toBe('AUTO');
     expect(matched[0].status).toBe('AUTO_CONFIRME');
+  });
+
+  describe('scoping tenant (B.7, §5 de la mission)', () => {
+    function correspondant(companyId: string): AuthenticatedUser {
+      return { id: 'u', name: 'Correspondant (test)', email: 'c@test.dz', role: 'CORRESPONDANT_IDA', companyId, privileges: [] };
+    }
+    function auditeur(): AuthenticatedUser {
+      return { id: 'u2', name: 'Auditeur (test)', email: 'a@test.dz', role: 'AUDITEUR_CSA', privileges: [] };
+    }
+
+    it('un CORRESPONDANT_IDA ne voit que les dossiers où sa compagnie est émettrice ou adverse déclarée', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'XXAA', compagnieB: 'YYBB', numEconstat: 'ECT-SCOPE-1' });
+      const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
+      await service.importFile('import.csv', buffer);
+
+      const asXXAA = await service.list({ page: 1, pageSize: 100 }, correspondant('XXAA'));
+      expect(asXXAA.items.some((c) => c.numEconstat === 'ECT-SCOPE-1')).toBe(true);
+
+      const asYYBB = await service.list({ page: 1, pageSize: 100 }, correspondant('YYBB'));
+      expect(asYYBB.items.some((c) => c.numEconstat === 'ECT-SCOPE-1')).toBe(true); // partie adverse déclarée : visibilité aussi
+
+      const asOther = await service.list({ page: 1, pageSize: 100 }, correspondant('ZZCC'));
+      expect(asOther.items.some((c) => c.numEconstat === 'ECT-SCOPE-1')).toBe(false);
+    });
+
+    it('un AUDITEUR_CSA (rôle "place") voit tous les dossiers sans filtrage tenant', async () => {
+      const all = await service.list({ page: 1, pageSize: 100 }, auditeur());
+      expect(all.items.some((c) => c.numEconstat === 'ECT-SCOPE-1')).toBe(true);
+    });
+
+    it("get() lève un 403 pour un CORRESPONDANT_IDA hors périmètre de la compagnie", async () => {
+      const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'XXAA', compagnieB: 'YYBB', numEconstat: 'ECT-SCOPE-2' });
+      const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
+      await service.importFile('import.csv', buffer);
+      const list = await service.list({ page: 1, pageSize: 100 }, correspondant('XXAA'));
+      const claim = list.items.find((c) => c.numEconstat === 'ECT-SCOPE-2')!;
+
+      await expect(service.get(claim.id, correspondant('ZZCC'))).rejects.toThrow(ForbiddenException);
+      await expect(service.get(claim.id, correspondant('XXAA'))).resolves.toBeDefined();
+    });
   });
 });

@@ -48,19 +48,27 @@ export class DevAuthProvider implements AuthProvider {
       OPERATEUR_PLACE: { id: 'dev-op', name: 'Opérateur Place (dev)', email: 'operateur@finlab.dz', role },
       ADMIN_UAR: { id: 'dev-admin-uar', name: 'Admin UAR (dev)', email: 'admin@uar.dz', role },
       MEMBRE_COMMISSION: { id: 'dev-commission', name: 'Membre Commission (dev)', email: 'commission@uar.dz', role },
+      // companyId = code compagnie (4 lettres, ex: "CAAT") — même espace de
+      // valeurs que Claim.company/counterpartyCompany et Recours.from/to,
+      // pour que le scoping tenant (B.7, common/rbac/tenant-scope.ts) soit
+      // réellement testable en dev. ⚠️ Bug signalé (non corrigé ailleurs,
+      // voir rapport de sprint) : AdminModule.users (mock) utilise encore
+      // 'COMP-0001'/'COMP-0002', un espace de valeurs différent qui ne
+      // correspond ni à un code compagnie ni à Company.id (uuid) — à
+      // harmoniser quand ce module deviendra réel.
       CORRESPONDANT_IDA: {
         id: 'dev-correspondant',
         name: 'Correspondant IDA (dev)',
         email: 'correspondant@compagnie.dz',
         role,
-        companyId: 'COMP-0001',
+        companyId: 'CAAT',
       },
       TRESORIER: {
         id: 'dev-tresorier',
         name: 'Trésorier (dev)',
         email: 'tresorier@compagnie.dz',
         role,
-        companyId: 'COMP-0001',
+        companyId: 'CAAT',
       },
       AUDITEUR_CSA: { id: 'dev-auditeur', name: 'Auditeur CSA (dev)', email: 'auditeur@csa.dz', role },
     };

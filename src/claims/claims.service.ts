@@ -1,9 +1,11 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchingService } from '../matching/matching.service';
 import { ClaimMatchInput } from '../matching/matching.types';
@@ -92,15 +94,32 @@ export class ClaimsService {
     );
   }
 
-  async list(query: ListClaimsQueryDto): Promise<PaginatedResult<ClaimViewDto>> {
+  /**
+   * Scoping tenant (B.7, §5 de la mission) : un `CORRESPONDANT_IDA`/
+   * `TRESORIER` ne voit que les dossiers où sa compagnie est émettrice
+   * (`company`) OU partie adverse déclarée (`counterpartyCompany`) — il
+   * est partie à l'échange dans les deux cas. Les rôles "place" (dont
+   * `AUDITEUR_CSA`, lecture complète) ne sont pas filtrés. `user` optionnel
+   * pour préserver les appelants internes (CockpitModule) qui agrègent
+   * déjà sur l'ensemble des dossiers sans notion d'utilisateur courant.
+   */
+  private visibleToUser(c: ClaimViewDto, user?: AuthenticatedUser): boolean {
+    if (!user) return true;
+    const tenant = resolveTenantFilter(user);
+    if (!tenant) return true;
+    return c.company === tenant || c.counterpartyCompany === tenant;
+  }
+
+  async list(query: ListClaimsQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<ClaimViewDto>> {
     let rows = await this.findAll();
+    rows = rows.filter((c) => this.visibleToUser(c, user));
     if (query.company) rows = rows.filter((c) => c.company === query.company);
     if (query.state) rows = rows.filter((c) => c.state === query.state);
     return paginateArray(rows, query.page, query.pageSize);
   }
 
-  async get(id: string): Promise<ClaimViewDto> {
-    return withDegradedFallback(
+  async get(id: string, user?: AuthenticatedUser): Promise<ClaimViewDto> {
+    const view = await withDegradedFallback(
       'ClaimsService.get',
       async () => {
         const c = await this.repo.findOne({ id });
@@ -113,6 +132,10 @@ export class ClaimsService {
         return c;
       },
     );
+    if (!this.visibleToUser(view, user)) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
+    }
+    return view;
   }
 
   columns() {
