@@ -87,6 +87,7 @@ describe('applyAutomaticTransitions — Art.10 (silence = acceptation tacite)', 
     expect(next.state).toBe('REGLE');
     expect(next.resolution?.kind).toBe('ACCEPTATION_TACITE_ART10');
     expect(next.responseAt).toBe(now.toISOString());
+    expect(next.settledAt).toBe(now.toISOString()); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
   });
 
   it('ne touche jamais un état terminal (REJETE)', () => {
@@ -195,6 +196,7 @@ describe('applyManualTransition', () => {
     expect(next?.state).toBe('REGLE');
     expect(next?.resolution?.kind).toBe('ACCEPTATION_EXPRESSE');
     expect(next?.responseAt).toBe(now.toISOString());
+    expect(next?.settledAt).toBe(now.toISOString()); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
   });
 
   it('opposer : EN_ATTENTE -> OPPOSITION, pose l’échéance Art.12', () => {
@@ -212,10 +214,12 @@ describe('applyManualTransition', () => {
       state: 'OPPOSITION',
       opposition: { raisedAt: '2026-01-15T00:00:00.000Z', status: 'EN_COURS', deadlineAt: '2026-01-30T00:00:00.000Z' },
     });
-    const next = applyManualTransition(s, 'lever_opposition', new Date('2026-01-20T00:00:00.000Z'), CONFIG);
+    const now = new Date('2026-01-20T00:00:00.000Z');
+    const next = applyManualTransition(s, 'lever_opposition', now, CONFIG);
     expect(next?.state).toBe('REGLE');
     expect(next?.opposition?.status).toBe('REJETEE');
     expect(next?.resolution?.kind).toBe('OPPOSITION_LEVEE');
+    expect(next?.settledAt).toBe(now.toISOString()); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
   });
 
   it('contester puis transmettre_commission : OPPOSITION -> CONTESTATION -> COMMISSION', () => {
@@ -234,9 +238,11 @@ describe('applyManualTransition', () => {
 
   it('cloturer_commission_favorable : COMMISSION -> REGLE', () => {
     const s = snapshot({ state: 'COMMISSION', commissionAt: '2026-02-01T00:00:00.000Z' });
-    const next = applyManualTransition(s, 'cloturer_commission_favorable', new Date('2026-02-10T00:00:00.000Z'), CONFIG, { reason: 'Décision favorable' });
+    const now = new Date('2026-02-10T00:00:00.000Z');
+    const next = applyManualTransition(s, 'cloturer_commission_favorable', now, CONFIG, { reason: 'Décision favorable' });
     expect(next?.state).toBe('REGLE');
     expect(next?.resolution?.kind).toBe('DECISION_COMMISSION_FAVORABLE');
+    expect(next?.settledAt).toBe(now.toISOString()); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
   });
 
   it('cloturer_commission_defavorable : COMMISSION -> REJETE', () => {

@@ -24,6 +24,34 @@ Avant d'étendre un module pour coller à une capture, vérifier d'abord
 si le dossier technique fournit la donnée source (sinon : documenter
 l'hypothèse ou omettre proprement, ne jamais l'inventer).
 
+### Fait pour rapprocher `/stats` de la capture de référence (2026-10-17)
+
+1. **Bug corrigé — `Recours.settledAt` n'était jamais posé.** `RecoursViewDto`
+   déclare ce champ (B.3) mais aucun des 4 chemins qui amènent un recours en
+   `REGLE` (`accepter`, `lever_opposition`, `cloturer_commission_favorable`,
+   silence Art.10 tacite) ne l'écrivait — `SettlementModule` compensait déjà
+   avec un repli sur `requestSentAt` (voir son en-tête), ce qui masquait le
+   bug en silence. Corrigé dans `recours.rules.ts` (les 4 chemins posent
+   désormais `settledAt`), couvert par 4 assertions ajoutées à
+   `recours.rules.spec.ts`. Vérifié en conditions réelles (accepter un
+   recours → `settledAt` bien renvoyé par `GET /recours/:id`).
+2. **`StatsService.monthly()`** calcule désormais réellement `annexes2`
+   (ouvertures de recours), `oppositions` (`opposition.raisedAt`) et
+   `indemnises` (recours `REGLE`, par mois de `settledAt`) à partir de
+   `RecoursService.listAll()` — ces trois champs dépendaient de
+   `RecoursModule`, devenu réel depuis la réconciliation sprint 3.
+3. **Nouveau `GET /stats/summary`** : déclarations totales, taux
+   d'opposition, montant compensé, délai moyen de règlement — calculés à
+   partir de `ClaimsModule`/`RecoursModule`, aucune valeur inventée.
+   `StatsModule` n'étant pas dans la liste des contrats figés, cet ajout
+   est sans risque de rupture.
+4. **Toujours omis** (voir doc de classe `stats.service.ts`) : `pour100k`
+   (référentiel démographique absent), comparatif "vs IRSAM" (baseline
+   absente des deux documents), codes de barème Art.14 / catégories de
+   véhicules / tableau "délais de bout en bout" (champs absents de `Claim`,
+   à chiffrer séparément si repris — voir HANDOFF.md frontend pour le
+   détail écran par écran).
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même

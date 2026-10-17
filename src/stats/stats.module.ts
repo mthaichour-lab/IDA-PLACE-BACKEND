@@ -2,13 +2,14 @@ import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { ClaimsModule } from '../claims/claims.module';
+import { RecoursModule } from '../recours/recours.module';
 import { StatsService } from './stats.service';
 
 /**
  * StatsModule — écran 11 "Statistiques de la place", B.2. Agrégation RÉELLE
- * depuis `ClaimsModule` (voir `stats.service.ts` pour le détail des
- * métriques omises plutôt qu'inventées : population par wilaya, Annexes 2/
- * oppositions/indemnisés, mobile vs agence).
+ * depuis `ClaimsModule` + `RecoursModule` (voir `stats.service.ts` pour le
+ * détail des métriques encore omises plutôt qu'inventées : population par
+ * wilaya, e-constat mobile vs agence, comparatif IRSAM, codes de barème).
  */
 @ApiTags('stats')
 @ApiBearerAuth()
@@ -24,14 +25,20 @@ class StatsController {
   }
 
   @Get('monthly')
-  @ApiOperation({ summary: "Activité mensuelle réelle (déclarations, par mois d'accident) + canal (e-constat vs autres) — Annexes 2/oppositions/indemnisés omis (RecoursModule/SettlementModule non réels, voir stats.service.ts)" })
+  @ApiOperation({ summary: "Activité mensuelle réelle : déclarations (par mois d'accident), canal (e-constat vs autres canaux), Annexes 2 émises / oppositions / recours réglés (RecoursModule, réel)" })
   monthly() {
     return this.service.monthly();
+  }
+
+  @Get('summary')
+  @ApiOperation({ summary: 'KPI de synthèse : déclarations totales, taux d’opposition, montant compensé, délai moyen de règlement (voir stats.service.ts pour les KPI volontairement omis)' })
+  summary() {
+    return this.service.summary();
   }
 }
 
 @Module({
-  imports: [ClaimsModule],
+  imports: [ClaimsModule, RecoursModule],
   controllers: [StatsController],
   providers: [StatsService],
 })

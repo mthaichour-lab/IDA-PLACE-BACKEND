@@ -217,6 +217,7 @@ export function applyAutomaticTransitions(
           state: 'REGLE',
           responseAt: snapshot.responseAt ?? nowIso,
           resolution: { kind: 'ACCEPTATION_TACITE_ART10', at: nowIso },
+          settledAt: nowIso,
         },
       };
     }
@@ -287,6 +288,7 @@ export function applyManualTransition(
         state: 'REGLE',
         responseAt: nowIso,
         resolution: { kind: 'ACCEPTATION_EXPRESSE', at: nowIso },
+        settledAt: nowIso,
       };
     case 'opposer':
       return {
@@ -308,6 +310,7 @@ export function applyManualTransition(
           ? { ...snapshot.opposition, status: 'REJETEE', decidedAt: nowIso }
           : snapshot.opposition,
         resolution: { kind: 'OPPOSITION_LEVEE', at: nowIso },
+        settledAt: nowIso,
       };
     case 'contester':
       return {
@@ -329,6 +332,7 @@ export function applyManualTransition(
         ...snapshot,
         state: 'REGLE',
         resolution: { kind: 'DECISION_COMMISSION_FAVORABLE', at: nowIso, note: opts.reason },
+        settledAt: nowIso,
       };
     case 'cloturer_commission_defavorable':
       return {
