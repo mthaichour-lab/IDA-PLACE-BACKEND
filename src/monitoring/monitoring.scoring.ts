@@ -24,12 +24,14 @@
  *   - delais : latence réelle moyenne (en jours) entre la date de
  *     l'accident et la date d'ingestion du dossier dans la place
  *     (`createdAt` de `Claim`) — PAS la définition complète du dossier
- *     technique (qui inclut probablement les délais de règlement/recours,
- *     non réels tant que RecoursModule/SettlementModule restent des mocks),
+ *     technique (qui inclut probablement les délais de règlement/recours),
  *     mais la seule latence réellement mesurable aujourd'hui. Documenté.
  *
- * ⚠️ Composantes PAS calculables dans ce sprint (dépendent de modules hors
- * périmètre, RecoursModule/CommissionModule — voir consigne de la mission) :
+ * ⚠️ Composantes TOUJOURS PAS branchées (`RecoursModule`/`CommissionModule`
+ * sont réels depuis ce même sprint, mais dans un autre worktree — ce fichier
+ * n'a pas été mis à jour pour les consommer, pas parce que les données
+ * restent indisponibles ; voir revue Product Owner, sprint 3, et HANDOFF.md
+ * pour le TODO exact du prochain agent Backend) :
  *   - silences (silence d'une compagnie à une relance de recours)
  *   - oppositions (opposition formelle à un recours)
  *   - penalites (pénalités prononcées, CommissionModule)

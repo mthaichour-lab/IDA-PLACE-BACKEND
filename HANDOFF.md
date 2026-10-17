@@ -1,240 +1,187 @@
 # HANDOFF — pour le prochain agent Backend
 
 Règle absolue : **ne change pas la forme des DTO/endpoints existants**
-(`ClaimsModule`, `MatchingModule`, `CockpitModule`, `AdherentsModule`,
-`ExpertsModule`, `AuthModule`) — implémente la logique métier **derrière**
-ces contrats, que le front consomme déjà. Si un besoin impose vraiment un
-changement de forme, passe par une nouvelle version d'API (`/api/v2`,
-C.4) plutôt qu'une rupture silencieuse sur `/api/v1`.
+(`AuthModule`, `AdherentsModule`, `ExpertsModule`, `ClaimsModule`,
+`EligibilityModule`, `MatchingModule`, `CockpitModule`, `RealtimeModule`,
+et depuis ce sprint `RecoursModule`, `SettlementModule`,
+`CommissionModule`, `LedgerModule`) — implémente la logique métier
+**derrière** ces contrats, que le front consomme déjà. Si un besoin impose
+vraiment un changement de forme, passe par une nouvelle version d'API
+(`/api/v2`, C.4) plutôt qu'une rupture silencieuse sur `/api/v1`.
 
-## Réel vs mocké — résumé rapide (mis à jour, sprint 2)
+## Réel vs mocké — résumé rapide (mis à jour, sprint 3)
 
-**Réel** (entités, migrations, DTO, services, tests) :
-`AuthModule` (sauf Keycloak), `AdherentsModule`, `ExpertsModule`,
-`LedgerModule` (logique de chaînage, pas la persistance), `AdminModule`
-(uniquement `roles/matrix`), **`ClaimsModule`, `EligibilityModule`,
-`MatchingModule`, `CockpitModule`** (implémentés durant ce sprint — voir
-détail ci-dessous), **`RealtimeModule`** (authentification de connexion +
-émission réelle de `claim.ingested`/`match.updated`, branchée sur
-Claims/Matching).
+**Réel** : `AuthModule` (y compris `KeycloakStrategy`, voir limite plus
+bas), `AdherentsModule`, `ExpertsModule`, `ClaimsModule`,
+`EligibilityModule`, `MatchingModule`, `CockpitModule`, `RealtimeModule`,
+`RecoursModule`, `SettlementModule`, `CommissionModule`, `LedgerModule`
+(persisté), `FraudModule`, `AdminModule` (roles/matrix **et** users),
+`DocumentsModule.S3StorageProvider`, cache Redis minimal.
 
-**Mock minimal (squelette libre, peu de contraintes de forme), inchangé
-dans ce sprint** : `RecoursModule`, `SettlementModule`, `CommissionModule`,
-`MonitoringModule`, `FraudModule`, `MeteringModule` (sauf la grille
-tarifaire, déjà réelle), `StatsModule`, `DocumentsModule` (S3),
-`AdminModule.users`. **Non touchés** par ce sprint (hors périmètre, comme
-demandé) même si leur build continue de passer.
+**Réel partiel** : `MonitoringModule` (4 composantes sur 7 réelles —
+silences/oppositions/pénalités `null` explicite, dépendent de
+Recours/Commission, voir §1 ci-dessous), `StatsModule` (déclarations/
+montants/activité réels, "pour 100k hab." et quelques mesures omises
+faute de données).
 
-Voir `ARCHITECTURE.md` § 4 pour le détail module par module (section à
-rafraîchir par le prochain agent si de nouveaux modules deviennent réels).
+**Mock (grille réelle)** : `MeteringModule` (grille tarifaire
+TARIF-2026.01 réelle, mesures de consommation mockées, pas de collecte
+OpenTelemetry).
 
-## Ce qui a été implémenté dans ce sprint
+Voir `ARCHITECTURE.md` §4 pour le détail module par module.
 
-### ClaimsModule
+## Ce sprint en bref (sprint 3 — deux agents Backend en parallèle, worktrees séparés)
 
-- Entité `Claim` (MikroORM, `src/claims/entities/claim.entity.ts`) sur le
-  modèle B.3 : champs typés nécessaires à l'éligibilité et à l'appariement
-  (plaques, police/attestation, GPS, dates, montants…) + `raw` (jsonb, la
-  ligne source complète des 47 colonnes, pour audit/ré-évaluation future).
-  Migration : `src/migrations/Migration20260201000000_ClaimsMatching.ts`.
-- Parsing réel du fichier d'import (`src/claims/claim-parser.ts`) :
-  **exceljs** pour `.xlsx`/`.xls` (ajouté à `package.json`, installable
-  dans cet environnement — `npm view exceljs version` a répondu) ; un
-  **parseur CSV maison** (`splitCsvLine`, gestion des guillemets/
-  échappement, détection automatique `,` vs `;`) pour `.csv`/`.txt` plutôt
-  qu'une dépendance supplémentaire — testé (`claim-parser.spec.ts`).
-  Convention : 1ʳᵉ ligne = en-tête (ignorée), mapping par **position** de
-  colonne selon `CLAIM_IMPORT_COLUMNS` (le modèle téléchargeable impose un
-  ordre fixe). Erreurs de type/format par cellule renvoyées en motifs
-  préfixés `"Erreur de format : …"` dans `ClaimImportRowResultDto.reasons`
-  (pas de champ `errors` séparé ajouté : le contrat `ClaimImportRowResultDto`
-  reste figé).
-- Verdict ligne à ligne délégué à `EligibilityModule.evaluate(row)`.
-- Persistance réelle + repli mémoire (mode dégradé, voir plus bas) ;
-  pipeline de dossier : `ELIGIBLE_IDA` → état `A_APPARIER`, `HORS_IDA` →
-  état `HORS_IDA` (hypothèse documentée dans `cockpit.module.ts` et
-  `claims.service.ts` : pas de timer de recours réel tant que
-  `RecoursModule` reste un mock).
-- Après persistance de chaque ligne importée, déclenche le recalcul
-  d'appariement (`MatchingService.ingestClaim`) et émet `claim.ingested`
-  (`RealtimeGateway`) avec un résumé (`fileName`, `totalRows`,
-  `eligibleCount`, `ineligibleCount`).
-- `ClaimViewDto` : champs **optionnels ajoutés** (`commune`, `accidentTime`,
-  `plateA/B`, `policeA/B`, `gpsLat/Lng`, `eligibilityVerdict`,
-  `eligibilityReasons`) — aucun champ existant renommé/retiré.
+- **Agent 1** : `RecoursModule`, `SettlementModule`, `CommissionModule`
+  réels + persistance `LedgerModule` + tenant-scoping (`ClaimsModule`,
+  `RecoursModule`).
+- **Agent 2** : `MonitoringModule`/`FraudModule`/`StatsModule` réels
+  (partiel) + `KeycloakStrategy` + `S3StorageProvider` + `AdminModule.users`
+  + cache Redis.
+- **Fusion + revue croisée** (Testeur + Product Owner) sur le résultat
+  fusionné : plusieurs bugs de contrat (les deux agents n'ont pas pu se
+  voir, chacun dans son worktree) et deux failles métier ont été trouvés
+  et **déjà corrigés** par le Tech Lead avant ce commit — voir le détail
+  ci-dessous, pas la peine de les re-corriger.
 
-### EligibilityModule
+### Corrigé après la revue croisée (sprint 3)
 
-- Règles B.6 (Art. 3/4/5-6/13/19/28) en fonctions **pures**
-  (`src/eligibility/eligibility.rules.ts`, testées dans
-  `eligibility.rules.spec.ts`, 19 cas dont plusieurs cas limites : plafond
-  exact, délai de recours exact à 6 mois, casse/espacement des pièces…).
-  `EligibilityService` résout la configuration (plafond, délai, version de
-  grille) depuis des variables d'environnement
-  (`ELIGIBILITY_MAX_AMOUNT_DA`, `ELIGIBILITY_RECOURS_MAX_MONTHS`,
-  `ELIGIBILITY_GRID_VERSION`), valeurs par défaut = celles du dossier
-  (300 000 DA, 6 mois, "v2025.12").
-- **Hypothèse à vérifier avec le métier** : la liste des pièces
-  obligatoires (Art. 13) n'est pas fixée par le dossier technique (B.4 ne
-  décrit qu'une colonne libre "Pièces fournies") — un vocabulaire a été
-  assumé (`CONSTAT_AMIABLE`, `CARTE_GRISE`, `PERMIS_CONDUIRE`,
-  `ATTESTATION_ASSURANCE`, voir `DEFAULT_ELIGIBILITY_CONFIG.requiredPieces`
-  dans `eligibility.rules.ts`) et documenté en commentaire.
-- **Hypothèse** : le délai de recours (Art. 19) est calculé depuis la
-  **date de l'accident** (pas la date de déclaration) — à confirmer avec
-  le métier, ajustable en un point (`evaluateEligibility`).
-
-### MatchingModule
-
-- Clé d'appariement + score pondéré en fonctions **pures**
-  (`src/matching/matching.scoring.ts`, testées dans
-  `matching.scoring.spec.ts`, 18 cas dont les seuils de tolérance exacts :
-  60 min, 2 jours, 2 km GPS, cumul de poids 35+15+15+10+10=85).
-- Entité `MatchQueueItem` (migration incluse dans
-  `Migration20260201000000_ClaimsMatching.ts`) : **une ligne par
-  déclaration** (`declAId`), appariée ou non avec sa meilleure contrepartie
-  (`declBId`) — cohérent avec l'écran 2 ("Réf./Partie A/Partie B").
-  `MatchingModule` n'importe jamais l'entité `Claim` (ARCHITECTURE.md :
-  modules séparés par interfaces publiques) : `ClaimsService` lui passe des
-  `ClaimMatchInput` (DTO interne, `matching.types.ts`).
-- Seuils auto/à confirmer paramétrables via `MATCHING_AUTO_THRESHOLD` /
-  `MATCHING_CONFIRM_THRESHOLD` (défaut 80/50, inchangé).
-- `decide()` persiste réellement la décision (statut, `confirmedBy`,
-  `confirmedAt`, `rejectReason`) et **préserve toute décision humaine déjà
-  tranchée** (statuts terminaux `CONFIRME_MANUEL`/`REJETE`/`COMPLEMENT`) :
-  un recalcul automatique ultérieur (nouvel import) ne l'écrase jamais —
-  Art. 14, validation humaine obligatoire. Émet `match.updated`.
-- ⚠️ **Bug corrigé pendant ce sprint, signalé par l'agent Frontend** :
-  `MatchDecisionDto` (`action`/`reason`/`linkDeclId`) n'avait **aucun
-  décorateur `class-validator`** → le `ValidationPipe` global
-  (`whitelist: true`) les effaçait silencieusement avant qu'ils
-  n'atteignent le contrôleur, donc `decide()` ne recevait jamais l'action
-  réelle. Corrigé par l'ajout de `@IsIn`/`@IsOptional`/`@IsString`/
-  `@IsNotEmpty` sur ces champs (`src/matching/dto/matching.dto.ts`), **sans
-  changer les noms/la forme des champs**. Vérifié manuellement : `confirm`,
-  `reject` (avec `reason`) et `complement` persistent bien `status` (et
-  `rejectReason`) et sont visibles dans un `GET /matching/queue` suivant.
-  **À garder en tête pour tout futur DTO d'entrée** : un champ sans
-  décorateur `class-validator` est silencieusement supprimé par le
-  `ValidationPipe` whitelist — vérifier systématiquement les DTO de
-  requête (pas les DTO de réponse, qui n'ont pas besoin de validateurs).
-- Repli mémoire : les objets internes (`declAId`/`declBId`) sont bien
-  retirés avant toute sortie HTTP/WS (`toPublicDto`) — a été corrigé après
-  détection manuelle d'une fuite de ces champs dans `GET /matching/queue`
-  en mode dégradé (voir `matching.service.ts`).
-
-### RealtimeModule
-
-- Authentifie désormais la connexion WebSocket (même mécanisme que l'API
-  REST — en-tête `x-dev-user` du handshake, via le même `AUTH_PROVIDER`) :
-  une connexion non authentifiée est refusée (`disconnect`). Salon
-  `tenant:place` (événements de place) + salon `tenant:<companyId>` pour un
-  utilisateur rattaché à une compagnie (prêt pour de futurs événements
-  scopés, ex. `recours.timer`).
-- `claim.ingested` émis par `ClaimsService.importFile` ; `match.updated`
-  émis par `MatchingService.decide()` et par
-  `MatchingService.ingestClaim()` (recalcul après import).
-- Toujours en mémoire (pas de pub/sub Redis) — un seul process backend
-  supporté pour l'instant, TODO inchangé (voir §7).
-
-### CockpitModule
-
-- `GET /cockpit/summary` agrège désormais les vraies données de
-  `ClaimsModule`/`MatchingModule` (forme de réponse inchangée). Hypothèses
-  documentées en tête de `cockpit.module.ts` (dossiers du jour = créés
-  aujourd'hui ; à apparier = file `A_CONFIRMER` ; en retard = dossiers
-  `A_APPARIER` depuis plus de 7 jours, faute de timer `RecoursModule` réel ;
-  compensation à venir = somme des montants des dossiers non réglés) — à
-  affiner une fois `RecoursModule`/`SettlementModule` réels.
+1. **`RecoursService.settle()`** (faille PO) : acceptait un montant
+   librement choisi par l'appelant (`dto.amount`) et ne vérifiait que
+   "être partie" (pas le bon côté). Corrigé : toujours au montant du
+   recours, restreint à la compagnie débitrice (`to`). `SettleRecoursDto`
+   est désormais un corps vide.
+2. **`SettlementModule` sans scoping tenant** (faille PO) : `GET
+   /settlement/monthly/:period` et `GET /settlement/quarter/:q`
+   n'étaient filtrés par aucune compagnie — n'importe quel
+   `CORRESPONDANT_IDA`/`TRESORIER` voyait les bordereaux et la matrice de
+   compensation de TOUTES les compagnies concurrentes. Corrigé (voir
+   `scopeQuarterForUser`/le filtre dans `monthly()`).
+3. **`MeteringService.updateGrid` / `RbacService.setMatrix`** (bug
+   Testeur, risque de verrouillage total) : un `PUT` partiel (un seul
+   inducteur, ou un seul rôle) remplaçait TOUT le reste en bloc (`{
+   ...old, ...patch }` sur un objet contenant un tableau/sous-objet).
+   Corrigé : fusion par clé (`metric`/`role`) plutôt que remplacement en
+   bloc. Vérifié manuellement : un `PUT` avec un seul inducteur/rôle ne
+   touche plus que lui.
+4. **Repli mémoire manquant sur les écritures** (bug Testeur) :
+   `ExpertsService.create/update` et
+   `AdherentsService.createCompany/updateCompany/createAgency/updateAgency`
+   n'avaient aucun `withDegradedFallback` (contrairement aux `list`/`get`)
+   — 500 garanti sans PostgreSQL. Corrigé pour les 6 méthodes, avec repli
+   sur les tableaux `MEMORY_*` déjà utilisés par `list`.
+5. **Authentification WebSocket impossible depuis un vrai navigateur**
+   (bug Testeur) : `RealtimeGateway` ne lisait que l'en-tête
+   `x-dev-user`, qu'un navigateur ne peut pas poser sur un handshake
+   WebSocket brut. Corrigé : lu désormais depuis `handshake.auth.devUser`/
+   `token` (transmis par le client Socket.IO), avec repli sur l'en-tête
+   réel pour les clients non-navigateur (curl, tests). Vérifié
+   manuellement dans un vrai navigateur (voir rapport du Tech Lead) :
+   connexion refusée sans `auth`, acceptée avec.
+6. **Enum de sévérité fraude incohérent** : back `FAIBLE/MOYEN/ELEVE` vs
+   front `FAIBLE/MOYENNE/ELEVEE`. Aligné sur la convention déjà utilisée
+   par le front (accord féminin avec "gravité").
+7. **Format `companyId` incohérent** dans le mock `AdminModule.users`
+   (`COMP-0001`/`COMP-0002` au lieu des codes 4 lettres `CAAT`/`SAA`
+   utilisés partout ailleurs) — corrigé dans les données de démonstration.
+8. Commentaire périmé dans `monitoring.scoring.ts` (affirmait que
+   Recours/Settlement restent des mocks — faux depuis ce même sprint) —
+   corrigé.
 
 ## Todo-list restante, par priorité
 
-### 1. RecoursModule / SettlementModule / etc. (squelette libre, hors périmètre de ce sprint)
+### 1. Brancher Monitoring/Fraud sur Recours/Commission (maintenant réels)
 
-Logique métier de la section B.2 correspondante, en conservant Swagger à
-jour. Pas touchés dans ce sprint (consigne explicite). Une fois
-`RecoursModule` réel, revoir les hypothèses "en retard"/"compensation à
-venir" du Cockpit (actuellement une approximation sans timer conventionnel
-réel) et le délai de recours de l'Art. 19 (actuellement calculé depuis la
-date de l'accident, pas la date de demande de recours réelle une fois
-celle-ci tracée dans `RecoursModule`).
+`MonitoringModule` (silences/oppositions/pénalités, toujours `null`) et
+dans une moindre mesure `FraudModule` ont été développés dans un worktree
+séparé de `RecoursModule`/`CommissionModule` et ne les consomment donc
+pas, alors que ces deux derniers sont réels depuis ce même sprint. Prochain
+agent : brancher `MonitoringService` sur `RecoursService`/`CommissionService`
+(services publics uniquement) pour calculer réellement ces 3 composantes.
 
-### 2. Persistance transverse à généraliser
+### 2. Scoping tenant de `CommissionModule` — décision à prendre
 
-- `RbacService` : toujours un singleton mémoire (inchangé ce sprint).
-- `LedgerModule` : toujours en mémoire (inchangé ce sprint).
-- **Scoping tenant toujours PAS appliqué** dans `ClaimsService`/
-  `MatchingService` malgré leur passage en "réel" ce sprint : un
-  `CORRESPONDANT_IDA`/`TRESORIER` voit actuellement TOUS les dossiers, pas
-  seulement ceux de sa compagnie. `common/rbac/tenant-scope.ts`
-  (`resolveTenantFilter`/`assertCompanyAccess`) existe déjà et est prêt à
-  être branché sur `ClaimsService.list()`/`get()` (filtrer sur
-  `company`/`counterpartyCompany`) — non fait ce sprint par prudence (le
-  contrat `ListClaimsQueryDto` n'a pas de paramètre tenant explicite, et
-  l'agent Frontend consomme déjà ces routes ; un filtrage serveur silencieux
-  changerait le comportement observé sans changer la forme du DTO — à
-  valider avec le Tech Lead avant de l'activer).
+`GET /commission/cases`/`sanctions` n'ont ni `@Privileges` ni filtre
+compagnie — délibérément **pas corrigé** ce sprint (voir revue Product
+Owner) : pourrait être un choix de transparence de place assumé (les
+sanctions commission sont publiques entre adhérents dans ce type de
+convention), ou un oubli. **À trancher avec l'UAR** avant de scoper ou de
+documenter explicitement comme "transparence voulue".
 
-### 3. Intégrations externes (inchangé)
+### 3. `KeycloakStrategy` ignore les dérogations grant/revoke
 
-- `src/auth/strategies/keycloak.strategy.ts` : JWT/JWKS + mapping rôle.
-- `src/documents/providers/s3.provider.ts` : upload/présignature réelle.
+`src/auth/strategies/keycloak.strategy.ts` appelle
+`this.rbac.effectivePrivileges(role, [], [])` — les dérogations
+individuelles (`AdminModule.users`, écran Paramétrage) sont donc
+silencieusement ignorées une fois basculé en `AUTH_PROVIDER=keycloak`.
+Pas corrigé ce sprint : la correction correcte nécessite que
+`AuthModule` dépende de `AdminModule`/`UsersService`, alors que
+`AdminModule` importe déjà `AuthModule` — dépendance circulaire à
+résoudre proprement (extraire un `PlaceUserDirectory` partagé dans
+`common/`, par exemple) plutôt qu'un `forwardRef()` hâtif. Hors
+périmètre dev actuel (`AUTH_PROVIDER=dev` par défaut) mais à faire avant
+toute bascule Keycloak réelle.
+
+### 4. Position bilatérale de compensation trimestrielle — à confirmer avec l'UAR
+
+`SettlementService.quarter()` retient que la compagnie adverse déclarée
+doit 100% du montant à la compagnie qui a réglé (pas de barème de
+responsabilité partagée). Jugé par le Product Owner comme l'hypothèse la
+plus sensible du sprint — voir le détail dans l'historique de revue, à
+transmettre à l'UAR/CNA avant toute mise en production réelle.
+
+### 5. Délais conventionnels `RecoursModule` — à confirmer avec l'UAR
+
+Art. 10 (30j)/Art. 12 (15j)/Art. 19 "forclusion globale" (180j,
+`RECOURS_ART19_FORCLUSION_DAYS`) sont des valeurs par défaut non chiffrées
+par le dossier technique. Le Product Owner note en particulier que ce
+"délai de forclusion globale" distinct de celui déjà couvert par
+`EligibilityModule` pourrait être un doublon inventé plutôt qu'une vraie
+disposition conventionnelle — à vérifier.
+
+### 6. Reste inchangé depuis les sprints précédents
+
+- `RbacService`/`LedgerModule` : la matrice RBAC est toujours un singleton
+  mémoire (pas persistée en base) ; `LedgerModule` est persisté (sprint 3)
+  mais sa logique de seed reste en mode dégradé par défaut (pas de vraie
+  base dans cet environnement, voir §"Limites connues").
+- Redis : branché en référence uniquement sur `/cockpit/summary` — à
+  étendre à d'autres lectures fréquentes (Stats, Monitoring) si besoin.
 - Paperless : non amorcé.
-- Redis : non branché (cache lecture, pub/sub RealtimeModule).
 
 ## Limites connues à signaler au Testeur
 
-- **Pas de PostgreSQL disponible dans cet environnement** (`docker compose
-  up -d postgres` échoue : pas de démon Docker). Toute la vérification de
-  ce sprint a été faite en **mode dégradé** (repli mémoire) : les entités
-  et la migration (`Migration20260201000000_ClaimsMatching.ts`) sont
-  écrites et type-checkées mais **n'ont jamais été exécutées contre une
-  vraie base** — à valider dès qu'un PostgreSQL est disponible
-  (`npm run migration:up` puis réessayer les mêmes scénarios).
-- En mode dégradé, le repli mémoire est **un singleton par process** : les
-  dossiers/décisions importés disparaissent au redémarrage du serveur
-  (attendu, voir README "Mode dégradé" — pas un bug).
-- Le mapping des 47 colonnes à l'import se fait **par position**, pas par
-  libellé d'en-tête : un fichier dont les colonnes seraient dans un ordre
-  différent du modèle téléchargeable sera mal interprété sans erreur
-  explicite autre que des échecs de validation en cascade. À améliorer
-  (vérification de l'en-tête) si des imports réels divergent du modèle.
-- La liste des pièces obligatoires (Art. 13) et le point de départ du délai
-  de recours (Art. 19, date accident vs date déclaration) sont des
-  **hypothèses documentées**, pas des règles explicitement données par le
-  dossier technique — à faire valider par le métier.
-- `exceljs` a été ajouté aux dépendances (`npm install exceljs@4.4.0`) et
-  fonctionne dans cet environnement ; non testé en conditions réelles avec
-  un classeur `.xlsx` complexe (feuilles multiples, styles) — seul le cas
-  "une feuille, valeurs simples" est couvert par construction.
+- **Pas de PostgreSQL/Redis/MinIO/Keycloak disponibles dans cet
+  environnement** — toute la vérification de ce sprint a été faite en
+  mode dégradé (repli mémoire). Les migrations écrites ce sprint
+  (`Migration20260301000000_RecoursSettlementCommissionLedger.ts`,
+  `Migration20260301000000_FraudAdmin.ts`) sont type-checkées mais
+  **jamais exécutées contre une vraie base** — à valider dès qu'un
+  PostgreSQL est disponible.
+- Le mapping Keycloak (rôle/`company_id`) n'a été vérifié qu'avec des
+  JWT de test signés en mémoire (JWKS mocké) — jamais contre un vrai
+  realm Keycloak.
+- `S3StorageProvider` n'a été vérifié que par lecture de code — jamais
+  testé contre un vrai S3/MinIO (`S3_ENABLED=false` par défaut).
 
-## Vérifications effectuées dans ce sprint
+## Vérifications effectuées dans ce sprint (après fusion + corrections)
 
 - `npx tsc --noEmit` : OK, aucune erreur.
-- `npx nest build` : OK (sortie dans `dist/src/`).
-- `npx jest` : **56/56 tests passent** (5 suites : `AdherentsService`,
-  `eligibility.rules` — 19 cas B.6 avec cas limites, `matching.scoring` —
-  18 cas B.5 avec cas limites, `claim-parser` — 12 cas (CSV, erreurs de
-  type), `claims.service` — 4 scénarios d'intégration import→éligibilité→
-  appariement en mode dégradé).
-- Démarrage réel (`node dist/src/main.js`) **sans PostgreSQL/Redis/MinIO/
-  Keycloak lancés** : démarre proprement, logge le mode dégradé pour
-  chaque appel Claims/Matching, et le scénario suivant a été exécuté
-  manuellement de bout en bout avec `curl` :
-  1. `POST /claims/import` avec un CSV de 2 déclarations du même accident
-     (même n° e-constat, compagnies croisées CAAT/SAA) → rapport
-     `ELIGIBLE_IDA` sur les 2 lignes ;
-  2. `GET /matching/queue` → 2 lignes, score 100, `econstatShared: true`,
-     `level: AUTO`, `status: AUTO_CONFIRME` ;
-  3. `POST /matching/:id/decide` (`reject` avec motif, `confirm`, puis
-     `complement` sur un 2ᵉ import) → `GET /matching/queue` confirme que
-     `status`/`confirmedBy`/`confirmedAt`/`rejectReason` sont bien
-     **persistés** (bug du DTO non validé corrigé, voir plus haut) ;
-  4. `AUDITEUR_CSA` → 403 sur `decide` (RBAC toujours respecté) ; id
-     inconnu → 404 normalisé ;
-  5. `GET /cockpit/summary` → KPIs calculés à partir des dossiers importés
-     (plus de valeurs figées) ;
-  6. `GET /claims` → dossiers importés visibles, champs optionnels
-     (plaques, police, GPS…) renseignés.
-- `GET /referential/wilayas` renvoie bien 69 entrées (codes 01→69) en
-  mode dégradé (inchangé, non touché ce sprint).
+- `npx nest build` : OK.
+- `npx jest` : **128/128 tests passent**, 12 suites.
+- Démarrage réel (`npm run start:dev`, mode dégradé, sans
+  PostgreSQL/Redis/MinIO/Keycloak) + scénarios manuels `curl` après
+  correctifs :
+  - `POST /recours` → `EN_ATTENTE` ; `POST /recours/:id/settle` par la
+    compagnie créditrice (mauvais côté) → 403 ; par la compagnie
+    débitrice avant l'état requis → 409 (garde-fous confirmés).
+  - `PUT /pricing/grid` avec un seul inducteur → les 11 autres inchangés
+    (régression confirmée corrigée) ; `PUT /admin/roles/matrix` avec un
+    seul rôle → les 5 autres rôles gardent leurs privilèges.
+  - `GET /settlement/monthly/:period` et `/quarter/:q` : pas d'erreur
+    pour un rôle scopé compagnie sans dossier sur la période (liste/
+    positions vides, cohérent).
+  - `GET /admin/users` → `companyId` au format `CAAT`/`SAA`.
+  - Connexion WebSocket `/realtime` vérifiée **dans un vrai navigateur**
+    (via le panneau de prévisualisation) : refusée sans `auth.devUser`,
+    acceptée avec (disconnect serveur confirmé dans le premier cas).

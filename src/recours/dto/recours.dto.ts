@@ -46,13 +46,14 @@ export class ContesterRecoursDto {
   motif!: string;
 }
 
-export class SettleRecoursDto {
-  @ApiPropertyOptional({ description: 'Montant réglé, si différent du montant initial du recours' })
-  @IsOptional()
-  @IsNumber()
-  @IsPositive()
-  amount?: number;
-}
+/**
+ * Corps vide : le règlement se fait toujours au montant du recours
+ * (`Recours.amount`), jamais à un montant choisi par l'appelant — voir
+ * `RecoursService.settle` (revue Product Owner, sprint 3 : un montant
+ * librement modifiable par la partie débitrice était un trou de contrôle
+ * financier).
+ */
+export class SettleRecoursDto {}
 
 export class RecoursOppositionDto {
   @ApiProperty() motif!: string;

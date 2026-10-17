@@ -21,8 +21,20 @@ export class RbacService {
     return this.matrix;
   }
 
-  setMatrix(next: RoleMatrix): void {
-    this.matrix = next;
+  /**
+   * Fusionne par rôle puis par privilège plutôt que de remplacer la matrice
+   * en bloc : un payload partiel (un seul rôle, ou un rôle avec seulement
+   * quelques privilèges) ne doit JAMAIS faire perdre leurs privilèges aux
+   * autres rôles. Bug trouvé en revue Testeur, sprint 3 : `this.matrix = next`
+   * provoquait un verrouillage RBAC complet dès qu'un payload partiel était
+   * envoyé (même défaut que `MeteringService.updateGrid`, voir ce fichier).
+   */
+  setMatrix(next: Partial<RoleMatrix>): void {
+    const merged = { ...this.matrix };
+    for (const role of Object.keys(next) as Role[]) {
+      merged[role] = { ...merged[role], ...next[role] };
+    }
+    this.matrix = merged;
   }
 
   /**

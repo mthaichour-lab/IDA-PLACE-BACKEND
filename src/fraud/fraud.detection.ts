@@ -25,7 +25,7 @@
  */
 
 export type FraudCaseType = 'DOUBLON' | 'ECONSTAT_REUTILISE' | 'RECURRENCE_VEHICULE' | 'MONTANT_CALIBRE' | 'INCOHERENCE_AB';
-export type FraudSeverity = 'FAIBLE' | 'MOYEN' | 'ELEVE';
+export type FraudSeverity = 'FAIBLE' | 'MOYENNE' | 'ELEVEE';
 
 export interface FraudClaimInput {
   id: string;
@@ -50,8 +50,8 @@ export interface FraudCaseCandidate {
 
 /** Seuils gravité — pas fixés par le dossier technique (B.9 ne les chiffre pas) : hypothèse documentée. */
 export function severityForScore(score: number): FraudSeverity {
-  if (score >= 70) return 'ELEVE';
-  if (score >= 40) return 'MOYEN';
+  if (score >= 70) return 'ELEVEE';
+  if (score >= 40) return 'MOYENNE';
   return 'FAIBLE';
 }
 

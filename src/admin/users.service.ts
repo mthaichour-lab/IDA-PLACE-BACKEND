@@ -11,8 +11,8 @@ import { PlaceUser } from './entities/place-user.entity';
 /** Repli mémoire — mode dégradé (voir README "Mode dégradé"). Seed identique à l'ancien mock, pour ne pas changer le comportement observé en dev sans base. */
 const MEMORY_USERS: PlaceUserViewDto[] = [
   { id: 'u-1', name: 'Opérateur Place (dev)', email: 'operateur@finlab.dz', role: 'OPERATEUR_PLACE', active: true, grant: [], revoke: [] },
-  { id: 'u-2', name: 'Correspondant CAAT', email: 'correspondant@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'COMP-0001', active: true, grant: [], revoke: [] },
-  { id: 'u-3', name: 'Trésorier SAA', email: 'tresorier@saa.dz', role: 'TRESORIER', companyId: 'COMP-0002', active: false, grant: [], revoke: [] },
+  { id: 'u-2', name: 'Correspondant CAAT', email: 'correspondant@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', active: true, grant: [], revoke: [] },
+  { id: 'u-3', name: 'Trésorier SAA', email: 'tresorier@saa.dz', role: 'TRESORIER', companyId: 'SAA', active: false, grant: [], revoke: [] },
 ];
 
 function toView(u: PlaceUser): PlaceUserViewDto {

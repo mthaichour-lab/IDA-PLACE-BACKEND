@@ -13,10 +13,13 @@
   autre module importées directement) — exception : `AuthModule` est
   `@Global()` car `AuthGuard`/`PrivilegesGuard` sont utilisés par
   pratiquement tous les contrôleurs (B.2 : "tous").
-- **Contrat d'API stable** : les DTO et routes de `ClaimsModule`,
-  `MatchingModule` et `CockpitModule` (écrans 1, 2, 3 — priorité de ce
-  sprint) sont figés dans leur FORME. Le prochain agent Backend remplace
-  les mocks par la vraie logique sans changer les DTO/routes.
+- **Contrat d'API stable** : les DTO et routes de `AuthModule`,
+  `AdherentsModule`, `ExpertsModule`, `ClaimsModule`, `EligibilityModule`,
+  `MatchingModule`, `CockpitModule`, `RealtimeModule` sont figés dans leur
+  FORME (un front réel les consomme). Depuis le sprint 3, s'y ajoutent
+  `RecoursModule`, `SettlementModule`, `CommissionModule`, `LedgerModule`
+  (persisté) — voir §4. Le prochain agent Backend remplace les mocks
+  restants par de la vraie logique sans changer les DTO/routes déjà figés.
 - **Mode dégradé explicite** : voir README.md. Jamais de triche sécurité.
 
 ## 2. Comment ajouter un module
@@ -53,11 +56,11 @@
   ET bloque toute méthode HTTP mutante pour `AUDITEUR_CSA`, indépendamment
   de la matrice.
 - `common/rbac/tenant-scope.ts` : scoping tenant (un `CORRESPONDANT_IDA`/
-  `TRESORIER` ne voit que sa compagnie) — **pas encore appliqué dans les
-  services existants** (voir HANDOFF.md : `AdherentsService` ne filtre pas
-  encore par tenant, à faire quand `ClaimsModule`/`RecoursModule`
-  deviendront réels, car eux seuls ont une notion claire de
-  "dossier appartenant à une compagnie").
+  `TRESORIER` ne voit que sa compagnie) — appliqué depuis le sprint 3 dans
+  `ClaimsService` (`list`/`get`), `RecoursService` (tous les accès) et
+  `SettlementService` (`monthly`/`quarter`). **Toujours pas appliqué** dans
+  `AdherentsService`/`CommissionService` (voir HANDOFF.md §3 pour l'état
+  exact et la question ouverte sur `CommissionModule`).
 
 ## 4. État d'avancement module par module
 
@@ -69,18 +72,20 @@
 | `ClaimsModule` | **RÉEL** (sprint 2) | Entité `Claim` + migration, parsing réel Excel (`exceljs`)/CSV (parseur maison), verdict délégué à `EligibilityModule`, persistance (+ repli mémoire), déclenche l'appariement et émet `claim.ingested`. Voir HANDOFF.md. |
 | `EligibilityModule` | **RÉEL** (sprint 2) | Règles B.6 (Art. 3/4/5-6/13/19/28) en fonctions pures testées (`eligibility.rules.spec.ts`), config paramétrable par env. |
 | `MatchingModule` | **RÉEL** (sprint 2) | Clé exacte/composite + score pondéré en fonctions pures testées (`matching.scoring.spec.ts`), entité `MatchQueueItem` + migration, décisions persistées (+ repli mémoire), émet `match.updated`. Voir HANDOFF.md. |
-| `RecoursModule` | **MOCK minimal** | Registre + transition, pas de timers conventionnels réels. |
-| `SettlementModule` | **MOCK minimal** | Synthèse mensuelle + compensation trimestrielle, valeurs calculées à la volée mais non persistées. |
-| `CommissionModule` | **MOCK minimal** | File de conciliation, pénalité, PV — pas de persistance. |
-| `MonitoringModule` | **MOCK minimal** | Scoring composite avec les VRAIES pondérations B.2 écran 8, valeurs calculées en dur. |
-| `FraudModule` | **MOCK minimal** | Cas + journal d'actions, pas de détection réelle. |
-| `MeteringModule` | **MOCK (grille réelle)** | Grille tarifaire TARIF-2026.01 = valeurs réelles du dossier (B.8), calcul de facture réel à partir de mesures mockées. Pas de collecte OpenTelemetry. |
-| `StatsModule` | **MOCK** | Réutilise le vrai référentiel des 69 wilayas, mesures aléatoires déterministes. |
-| `LedgerModule` | **RÉEL (logique de chaînage)** | Chaînage SHA-256 `hash(n)=f(event,hash(n-1))` réellement implémenté et vérifiable (`GET /ledger/verify`), stockage en mémoire (non append-only en base — TODO). |
-| `AdminModule` | **PARTIEL** | `GET/PUT /admin/roles/matrix` **RÉEL** (branché sur `RbacService`, effet immédiat sur les autorisations). `GET/POST /admin/users` = mock. |
-| `DocumentsModule` | **PARTIEL** | Interface `StorageProvider` réelle + `LocalFsStorageProvider` fonctionnel (mode dégradé assumé) ; `S3StorageProvider` = TODO explicite ; pas d'intégration Paperless. |
-| `RealtimeModule` | **RÉEL (partiel)** (sprint 2) | Gateway Socket.IO (`/realtime`) authentifiée (même `AUTH_PROVIDER` que l'API REST), salons `tenant:place`/`tenant:<companyId>`. Émet réellement `claim.ingested` (ClaimsModule) et `match.updated` (MatchingModule). Toujours en mémoire (pas de pub/sub Redis) — un seul process backend. |
-| `CockpitModule` *(additionnel)* | **RÉEL** (sprint 2) | `GET /cockpit/summary` — agrège les vraies données de ClaimsModule/MatchingModule (forme inchangée). Hypothèses documentées dans le fichier (voir HANDOFF.md). |
+| `RecoursModule` | **RÉEL** (sprint 3) | Machine à états + timers conventionnels Art. 10/12/19 (fonctions pures testées, `recours.rules.spec.ts`), persistance + repli mémoire, RBAC par côté (`from`/`to`), scoping tenant, intégration Ledger/Realtime (`recours.timer`). Voir HANDOFF.md. |
+| `SettlementModule` | **RÉEL** (sprint 3) | Synthèse mensuelle + compensation trimestrielle (positions bilatérales + net multilatéral) persistées, scoping tenant (B.7). Réutilise `MeteringService` (grille TARIF-2026.01) pour un frais de traitement indicatif. |
+| `CommissionModule` | **RÉEL** (sprint 3) | File de conciliation (dérivée des recours à l'état `COMMISSION`), pénalités/sanctions et PV persistés. **Pas de scoping tenant** (question ouverte, voir HANDOFF.md §3). |
+| `MonitoringModule` | **RÉEL (partiel)** (sprint 3) | Pondérations B.2 écran 8 inchangées ; délais/qualité données/forclusions/demandes tardives calculés réellement (Claims/Eligibility), silences/oppositions/pénalités toujours `null` explicite (dépendent de Recours/Commission, pas encore branchés malgré leur passage en réel — voir HANDOFF.md). |
+| `FraudModule` | **RÉEL** (sprint 3) | 5 détections réelles (doublons, e-constat réutilisé, récurrence véhicule, montants calibrés, incohérences A/B) + journal des actions suspectes, persistés. Sévérités `FAIBLE`/`MOYENNE`/`ELEVEE`. |
+| `MeteringModule` | **MOCK (grille réelle)** | Grille tarifaire TARIF-2026.01 = valeurs réelles du dossier (B.8), calcul de facture réel à partir de mesures mockées. `MeteringService` extrait (sprint 3) pour réutilisation par `SettlementModule`. `updateGrid` fusionne par clé (bug de remplacement en bloc corrigé en revue Testeur, sprint 3). Pas de collecte OpenTelemetry. |
+| `StatsModule` | **RÉEL (partiel)** (sprint 3) | Déclarations/montants réels par wilaya et activité mensuelle réelle par canal (Claims). "Pour 100k hab." et quelques mesures (Annexes 2, oppositions, indemnisés) omises faute de données plutôt qu'inventées — voir HANDOFF.md. |
+| `LedgerModule` | **RÉEL (persisté)** (sprint 3) | Chaînage SHA-256 `hash(n)=f(event,hash(n-1))` désormais append-only en base (était en mémoire), API publique (`GET /ledger`, `GET /ledger/verify`) inchangée. |
+| `AdminModule` | **RÉEL** (sprint 3) | `GET/PUT /admin/roles/matrix` réel (fusionne par rôle/privilège depuis la revue Testeur — un payload partiel ne verrouille plus le RBAC). `AdminModule.users` réel : CRUD complet, pagination 6/p, grant/revoke par utilisateur. |
+| `DocumentsModule` | **PARTIEL** | Interface `StorageProvider` réelle + `LocalFsStorageProvider` fonctionnel (mode dégradé assumé) ; `S3StorageProvider` réel (sprint 3, SDK S3/MinIO, URL pré-signées ~15 min) ; pas d'intégration Paperless. |
+| `RealtimeModule` | **RÉEL (partiel)** (sprint 3) | Gateway Socket.IO (`/realtime`), salons `tenant:place`/`tenant:<companyId>`. Authentification via `handshake.auth.devUser`/`token` (sprint 3 : un navigateur ne peut pas poser d'en-tête personnalisé sur un WebSocket brut — le header `x-dev-user` reste accepté en repli pour les clients non-navigateur). Émet `claim.ingested`, `match.updated`, `recours.timer`. `EventEmitter` interne (`onEvent`) pour que FraudModule observe `match.updated` sans dépendance directe. Toujours en mémoire (pas de pub/sub Redis) — un seul process backend. |
+| `AuthModule` (`KeycloakStrategy`) | **RÉEL** (sprint 3) | JWT/JWKS RS256 (cache 10 min), mapping rôle Keycloak → RBAC interne, zero-trust (erreur explicite si mal configuré). ⚠️ Ignore les dérogations grant/revoke par utilisateur (`AdminModule.users`) — câblage non fait pour éviter une dépendance circulaire `AuthModule`↔`AdminModule` (voir HANDOFF.md). |
+| Cache Redis | **RÉEL (minimal)** (sprint 3) | `common/cache/` — `REDIS_ENABLED`, repli no-op explicite. Branché en référence sur `GET /cockpit/summary` (TTL 10s). |
+| `CockpitModule` *(additionnel)* | **RÉEL** (sprint 2) | `GET /cockpit/summary` — agrège les vraies données de ClaimsModule/MatchingModule (forme inchangée), mis en cache (TTL 10s, sprint 3). Hypothèses documentées dans le fichier (voir HANDOFF.md). |
 
 ## 5. Pourquoi un 18ᵉ module (`CockpitModule`) ?
 

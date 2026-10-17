@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { FRAUD_ACTION_TYPES } from '../entities/fraud-action.entity';
 
 export const FRAUD_CASE_TYPES = ['DOUBLON', 'ECONSTAT_REUTILISE', 'RECURRENCE_VEHICULE', 'MONTANT_CALIBRE', 'INCOHERENCE_AB'] as const;
-export const FRAUD_SEVERITIES = ['FAIBLE', 'MOYEN', 'ELEVE'] as const;
+export const FRAUD_SEVERITIES = ['FAIBLE', 'MOYENNE', 'ELEVEE'] as const;
 
 export class FraudCaseViewDto {
   @ApiProperty() id!: string;

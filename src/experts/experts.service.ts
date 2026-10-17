@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
+import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { CreateExpertDto, ExpertViewDto, UpdateExpertDto } from './dto/expert.dto';
@@ -31,26 +32,62 @@ export class ExpertsService {
     );
   }
 
+  /**
+   * ⚠️ Corrigé en revue Testeur, sprint 3 : `create`/`update` n'avaient
+   * aucun repli mémoire (contrairement à `list`) — un simple `POST`/`PUT`
+   * levait une erreur 500 dès que PostgreSQL était absent, alors que le
+   * README promet que "l'app démarre toujours, le repli est explicite".
+   */
   async create(dto: CreateExpertDto): Promise<ExpertViewDto> {
-    const e = this.repo.create({
-      name: dto.name,
-      firm: dto.firm,
-      agrement: dto.agrement,
-      wilayas: dto.wilayas ?? [],
-      specialties: dto.specialties ?? [],
-      companies: dto.companies ?? [],
-      rib: dto.rib,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-    await this.repo.getEntityManager().persistAndFlush(e);
-    return toView(e);
+    return withDegradedFallback(
+      'ExpertsService.create',
+      async () => {
+        const e = this.repo.create({
+          name: dto.name,
+          firm: dto.firm,
+          agrement: dto.agrement,
+          wilayas: dto.wilayas ?? [],
+          specialties: dto.specialties ?? [],
+          companies: dto.companies ?? [],
+          rib: dto.rib,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await this.repo.getEntityManager().persistAndFlush(e);
+        return toView(e);
+      },
+      () => {
+        const view: ExpertViewDto = {
+          id: randomUUID(),
+          name: dto.name,
+          firm: dto.firm,
+          agrement: dto.agrement,
+          wilayas: dto.wilayas ?? [],
+          specialties: dto.specialties ?? [],
+          companies: dto.companies ?? [],
+          status: ExpertStatus.ACTIF,
+        };
+        MEMORY_EXPERTS.push(view);
+        return view;
+      },
+    );
   }
 
   async update(id: string, dto: UpdateExpertDto): Promise<ExpertViewDto> {
-    const e = await this.repo.findOne({ id });
-    if (!e) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Expert introuvable.' });
-    this.repo.assign(e, dto as Partial<Expert>);
-    await this.repo.getEntityManager().flush();
-    return toView(e);
+    return withDegradedFallback(
+      'ExpertsService.update',
+      async () => {
+        const e = await this.repo.findOne({ id });
+        if (!e) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Expert introuvable.' });
+        this.repo.assign(e, dto as Partial<Expert>);
+        await this.repo.getEntityManager().flush();
+        return toView(e);
+      },
+      () => {
+        const e = MEMORY_EXPERTS.find((m) => m.id === id);
+        if (!e) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Expert introuvable (mode dégradé).' });
+        Object.assign(e, dto);
+        return e;
+      },
+    );
   }
 }

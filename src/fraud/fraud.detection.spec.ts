@@ -16,9 +16,9 @@ describe('fraud.detection (fonctions pures)', () => {
   describe('severityForScore', () => {
     it('FAIBLE < 40, MOYEN [40,70), ELEVE >= 70', () => {
       expect(severityForScore(10)).toBe('FAIBLE');
-      expect(severityForScore(40)).toBe('MOYEN');
-      expect(severityForScore(69)).toBe('MOYEN');
-      expect(severityForScore(70)).toBe('ELEVE');
+      expect(severityForScore(40)).toBe('MOYENNE');
+      expect(severityForScore(69)).toBe('MOYENNE');
+      expect(severityForScore(70)).toBe('ELEVEE');
     });
   });
 

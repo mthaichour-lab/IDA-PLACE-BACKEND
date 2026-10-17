@@ -52,8 +52,28 @@ export class MeteringService {
     return PRICE_GRID;
   }
 
+  /**
+   * Fusionne par clé plutôt que de remplacer en bloc : un payload partiel
+   * (ex. un seul inducteur de `metrics`, ou `subscription` sans `metrics`)
+   * ne doit JAMAIS faire disparaître le reste de la grille. Bug trouvé en
+   * revue Testeur, sprint 3 : `{ ...PRICE_GRID, ...patch }` remplaçait tout
+   * le tableau `metrics` dès qu'il était présent dans le payload, même
+   * partiel — risque de verrouillage de place (grille + matrice de rôles
+   * partagent le même défaut, voir `AdminController.putRolesMatrix`).
+   */
   updateGrid(patch: Partial<PriceGrid>): PriceGrid {
-    PRICE_GRID = { ...PRICE_GRID, ...patch };
+    const metrics = patch.metrics
+      ? PRICE_GRID.metrics.map((m) => {
+          const update = patch.metrics!.find((p) => p.metric === m.metric);
+          return update ? { ...m, ...update } : m;
+        })
+      : PRICE_GRID.metrics;
+    PRICE_GRID = {
+      ...PRICE_GRID,
+      ...patch,
+      subscription: patch.subscription ? { ...PRICE_GRID.subscription, ...patch.subscription } : PRICE_GRID.subscription,
+      metrics,
+    };
     return PRICE_GRID;
   }
 

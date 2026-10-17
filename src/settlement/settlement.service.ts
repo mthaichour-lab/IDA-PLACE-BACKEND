@@ -3,6 +3,8 @@ import { EntityRepository } from '@mikro-orm/postgresql';
 import { ConflictException, Injectable } from '@nestjs/common';
 import { ClaimsService } from '../claims/claims.service';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { MeteringService } from '../metering/metering.service';
 import { MonthlySettlementDto, QuarterCompensationDto, SettlementCompanyLineDto } from './dto/settlement.dto';
 import { BilateralPosition, CompensationQuarter, NetPosition } from './entities/compensation-quarter.entity';
@@ -82,7 +84,14 @@ export class SettlementService {
     private readonly metering: MeteringService,
   ) {}
 
-  async monthly(period: string): Promise<MonthlySettlementDto> {
+  /**
+   * B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que la ligne de SA
+   * compagnie (jamais le bordereau mensuel des compagnies concurrentes) ;
+   * les rôles "place" (dont `AUDITEUR_CSA`) voient toutes les compagnies.
+   * Trou de sécurité comblé en revue Product Owner, sprint 3 — l'endpoint
+   * n'était pas scopé du tout jusqu'ici.
+   */
+  async monthly(period: string, user?: AuthenticatedUser): Promise<MonthlySettlementDto> {
     const range = parseMonthPeriod(period);
     const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
     const inPeriod = allClaims.filter((c) => isWithinRange(c.accidentDate || c.createdAt, range));
@@ -90,8 +99,11 @@ export class SettlementService {
     const companies = new Set<string>();
     for (const c of inPeriod) if (c.company) companies.add(c.company);
 
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const targetCompanies = tenant ? (companies.has(tenant) ? [tenant] : []) : Array.from(companies);
+
     const lines: SettlementCompanyLineDto[] = [];
-    for (const company of companies) {
+    for (const company of targetCompanies) {
       lines.push(await this.monthlyForCompany(period, company, inPeriod));
     }
     lines.sort((a, b) => a.company.localeCompare(b.company));
@@ -184,7 +196,25 @@ export class SettlementService {
     return closed;
   }
 
-  async quarter(q: string): Promise<QuarterCompensationDto> {
+  /**
+   * B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les positions
+   * bilatérales où sa compagnie est partie, et uniquement son propre net
+   * (jamais la matrice complète des créances/dettes entre concurrents) ;
+   * les rôles "place" voient tout. Le `net` global reste calculé sur
+   * l'ensemble des positions avant filtrage (sinon le net de la compagnie
+   * serait faux). Trou de sécurité comblé en revue Product Owner, sprint 3.
+   */
+  private scopeQuarterForUser(dto: QuarterCompensationDto, user?: AuthenticatedUser): QuarterCompensationDto {
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    if (!tenant) return dto;
+    return {
+      ...dto,
+      positions: dto.positions.filter((p) => p.from === tenant || p.to === tenant),
+      net: dto.net.filter((n) => n.company === tenant),
+    };
+  }
+
+  async quarter(q: string, user?: AuthenticatedUser): Promise<QuarterCompensationDto> {
     const existing = await withDegradedFallback(
       'SettlementService.quarter.read',
       async () => {
@@ -193,7 +223,7 @@ export class SettlementService {
       },
       () => MEMORY_QUARTER.get(q),
     );
-    if (existing?.status === 'SCELLE') return existing; // trimestre scellé — pas de recalcul
+    if (existing?.status === 'SCELLE') return this.scopeQuarterForUser(existing, user); // trimestre scellé — pas de recalcul
 
     const range = parseQuarterPeriod(q);
     const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
@@ -252,7 +282,7 @@ export class SettlementService {
       },
     );
 
-    return dto;
+    return this.scopeQuarterForUser(dto, user);
   }
 
   async sealQuarter(q: string): Promise<QuarterCompensationDto> {

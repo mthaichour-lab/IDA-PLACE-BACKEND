@@ -50,7 +50,23 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   async handleConnection(client: Socket): Promise<void> {
-    const user = await this.authProvider.resolve({ headers: client.handshake.headers as Record<string, unknown> });
+    // ⚠️ Corrigé en revue Testeur, sprint 3 : un navigateur réel ne peut pas
+    // poser d'en-tête personnalisé (`x-dev-user`) sur un handshake WebSocket
+    // brut (contrairement à curl/Node, qui peuvent — repli conservé pour
+    // ceux-ci). Le client Socket.IO transmet donc l'identité dev via
+    // `auth` (`io(url, { auth: { devUser } })`), lu ici depuis
+    // `handshake.auth` et injecté dans un en-tête synthétique pour
+    // réutiliser `AuthProvider.resolve({ headers })` sans changer sa forme
+    // (même interface que `KeycloakStrategy`).
+    const auth = (client.handshake.auth ?? {}) as { devUser?: unknown; token?: string };
+    const headers: Record<string, unknown> = { ...client.handshake.headers };
+    if (auth.devUser !== undefined) {
+      headers['x-dev-user'] = typeof auth.devUser === 'string' ? auth.devUser : JSON.stringify(auth.devUser);
+    }
+    if (auth.token) {
+      headers['authorization'] = `Bearer ${auth.token}`;
+    }
+    const user = await this.authProvider.resolve({ headers });
     if (!user) {
       this.logger.warn(`Connexion WS refusée (non authentifiée): ${client.id}`);
       client.emit('error', { code: 'UNAUTHORIZED', message: 'Authentification requise (en-tête x-dev-user).' });

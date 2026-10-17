@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
+import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { CreateAgencyDto, AgencyViewDto, UpdateAgencyDto } from './dto/agency.dto';
@@ -85,28 +86,65 @@ export class AdherentsService {
     );
   }
 
+  /**
+   * ⚠️ Corrigé en revue Testeur, sprint 3 : `create*`/`update*` (compagnies
+   * ET agences) n'avaient aucun repli mémoire (contrairement à `list*`/
+   * `get*`) — 500 garanti dès que PostgreSQL était absent.
+   */
   async createCompany(dto: CreateCompanyDto): Promise<CompanyViewDto> {
-    const c = this.companies.create({
-      code: dto.code,
-      name: dto.name,
-      nameAr: dto.nameAr,
-      color: dto.color,
-      kind: dto.kind,
-      feedMode: dto.feedMode,
-      status: dto.status,
-      delayOverrides: dto.delayOverrides,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-    await this.companies.getEntityManager().persistAndFlush(c);
-    return toCompanyView(c);
+    return withDegradedFallback(
+      'AdherentsService.createCompany',
+      async () => {
+        const c = this.companies.create({
+          code: dto.code,
+          name: dto.name,
+          nameAr: dto.nameAr,
+          color: dto.color,
+          kind: dto.kind,
+          feedMode: dto.feedMode,
+          status: dto.status,
+          delayOverrides: dto.delayOverrides,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await this.companies.getEntityManager().persistAndFlush(c);
+        return toCompanyView(c);
+      },
+      () => {
+        const view = {
+          id: randomUUID(),
+          code: dto.code,
+          name: dto.name,
+          nameAr: dto.nameAr,
+          color: dto.color,
+          kind: dto.kind,
+          feedMode: dto.feedMode,
+          apiKeyMasked: maskKey(undefined),
+          status: dto.status,
+          delayOverrides: dto.delayOverrides,
+        };
+        MEMORY_COMPANIES.push(view as (typeof MEMORY_COMPANIES)[number]);
+        return view as unknown as CompanyViewDto;
+      },
+    );
   }
 
   async updateCompany(id: string, dto: UpdateCompanyDto): Promise<CompanyViewDto> {
-    const c = await this.companies.findOne({ id });
-    if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
-    this.companies.assign(c, dto as Partial<Company>);
-    await this.companies.getEntityManager().flush();
-    return toCompanyView(c);
+    return withDegradedFallback(
+      'AdherentsService.updateCompany',
+      async () => {
+        const c = await this.companies.findOne({ id });
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
+        this.companies.assign(c, dto as Partial<Company>);
+        await this.companies.getEntityManager().flush();
+        return toCompanyView(c);
+      },
+      () => {
+        const c = MEMORY_COMPANIES.find((m) => m.id === id);
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
+        Object.assign(c, dto);
+        return c as unknown as CompanyViewDto;
+      },
+    );
   }
 
   // ---- Agencies --------------------------------------------------------
@@ -132,32 +170,66 @@ export class AdherentsService {
   }
 
   async createAgency(dto: CreateAgencyDto): Promise<AgencyViewDto> {
-    const company = await this.companies.findOneOrFail({ id: dto.companyId });
-    const wilaya = dto.wilayaCode ? await this.wilayas.findOne({ code: dto.wilayaCode }) : undefined;
-    const parent = dto.parentId ? await this.agencies.findOne({ id: dto.parentId }) : undefined;
-    const a = this.agencies.create({
-      company,
-      code: dto.code,
-      name: dto.name,
-      type: dto.type,
-      wilaya: wilaya ?? undefined,
-      parent: parent ?? undefined,
-      manager: dto.manager,
-      phone: dto.phone,
-      email: dto.email,
-      address: dto.address,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-    await this.agencies.getEntityManager().persistAndFlush(a);
-    return toAgencyView(a);
+    return withDegradedFallback(
+      'AdherentsService.createAgency',
+      async () => {
+        const company = await this.companies.findOneOrFail({ id: dto.companyId });
+        const wilaya = dto.wilayaCode ? await this.wilayas.findOne({ code: dto.wilayaCode }) : undefined;
+        const parent = dto.parentId ? await this.agencies.findOne({ id: dto.parentId }) : undefined;
+        const a = this.agencies.create({
+          company,
+          code: dto.code,
+          name: dto.name,
+          type: dto.type,
+          wilaya: wilaya ?? undefined,
+          parent: parent ?? undefined,
+          manager: dto.manager,
+          phone: dto.phone,
+          email: dto.email,
+          address: dto.address,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await this.agencies.getEntityManager().persistAndFlush(a);
+        return toAgencyView(a);
+      },
+      () => {
+        const view = {
+          id: randomUUID(),
+          companyId: dto.companyId,
+          code: dto.code,
+          name: dto.name,
+          type: dto.type,
+          parentId: dto.parentId,
+          wilayaCode: dto.wilayaCode,
+          manager: dto.manager,
+          phone: dto.phone,
+          email: dto.email,
+          address: dto.address,
+          status: 'ACTIF' as const,
+        };
+        MEMORY_AGENCIES.push(view as unknown as (typeof MEMORY_AGENCIES)[number]);
+        return view as unknown as AgencyViewDto;
+      },
+    );
   }
 
   async updateAgency(id: string, dto: UpdateAgencyDto): Promise<AgencyViewDto> {
-    const a = await this.agencies.findOneOrFail({ id }, { populate: ['company', 'wilaya', 'parent'] });
-    const wilaya = dto.wilayaCode ? await this.wilayas.findOne({ code: dto.wilayaCode }) : a.wilaya;
-    this.agencies.assign(a, { ...dto, wilaya } as Partial<Agency>);
-    await this.agencies.getEntityManager().flush();
-    return toAgencyView(a);
+    return withDegradedFallback(
+      'AdherentsService.updateAgency',
+      async () => {
+        const a = await this.agencies.findOneOrFail({ id }, { populate: ['company', 'wilaya', 'parent'] });
+        const wilaya = dto.wilayaCode ? await this.wilayas.findOne({ code: dto.wilayaCode }) : a.wilaya;
+        this.agencies.assign(a, { ...dto, wilaya } as Partial<Agency>);
+        await this.agencies.getEntityManager().flush();
+        return toAgencyView(a);
+      },
+      () => {
+        const a = MEMORY_AGENCIES.find((m) => m.id === id);
+        if (!a) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Agence introuvable (mode dégradé).' });
+        Object.assign(a, dto);
+        return a as unknown as AgencyViewDto;
+      },
+    );
   }
 
   // ---- Wilayas (référentiel partagé) -----------------------------------

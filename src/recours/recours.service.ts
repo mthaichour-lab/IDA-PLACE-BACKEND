@@ -312,34 +312,43 @@ export class RecoursService {
     return result;
   }
 
-  /** Règlement (accepté tacitement ou tranché en commission) — déclenché par le Trésorier (`pay`). */
-  async settle(id: string, dto: SettleRecoursDto, user: AuthenticatedUser): Promise<RecoursViewDto> {
+  /**
+   * Règlement (accepté tacitement ou tranché en commission) — déclenché par
+   * la compagnie débitrice (`to`, celle qui doit reverser le montant), avec
+   * le privilège `pay` (`TRESORIER`). Toujours au montant du recours
+   * (`Recours.amount`) : ni la compagnie créditrice ni la compagnie
+   * débitrice ne peuvent fixer unilatéralement un autre montant depuis cet
+   * endpoint (revue Product Owner, sprint 3 — un `dto.amount` librement
+   * modifiable constituait un trou de contrôle financier). Restreint à la
+   * compagnie `to` (et non simplement "être partie") pour la même raison :
+   * c'est la débitrice qui atteste avoir payé, pas la créditrice qui
+   * s'auto-déclare payée.
+   */
+  async settle(id: string, _dto: SettleRecoursDto, user: AuthenticatedUser): Promise<RecoursViewDto> {
     const now = new Date();
     const result = await withDegradedFallback(
       'RecoursService.settle',
       async () => {
         const entity = await this.repo.findOne({ id });
         if (!entity) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Recours introuvable.' });
-        this.assertVisible(toView(entity), user);
+        this.assertSideAndVisibility(entity, user, 'to');
         if (entity.state !== 'ACCEPTE_TACITE' && entity.state !== 'COMMISSION') {
           throw new ConflictException({ code: 'CONFLICT', message: `Règlement impossible depuis l'état ${entity.state}.` });
         }
         entity.settledAt = now;
         entity.state = 'REGLE';
-        if (dto.amount !== undefined) entity.amount = dto.amount;
         await this.repo.getEntityManager().flush();
         return toView(entity);
       },
       () => {
         const row = this.memory.find((r) => r.id === id);
         if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Recours introuvable (mode dégradé).' });
-        this.assertVisible(row, user);
+        this.assertSideAndVisibility(row, user, 'to');
         if (row.state !== 'ACCEPTE_TACITE' && row.state !== 'COMMISSION') {
           throw new ConflictException({ code: 'CONFLICT', message: `Règlement impossible depuis l'état ${row.state}.` });
         }
         row.settledAt = now.toISOString();
         row.state = 'REGLE';
-        if (dto.amount !== undefined) row.amount = dto.amount;
         return row;
       },
     );
