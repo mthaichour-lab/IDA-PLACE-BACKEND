@@ -1,45 +1,38 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
-import { buildWilayaSeeds } from '../adherents/wilayas.data';
+import { ClaimsModule } from '../claims/claims.module';
+import { StatsService } from './stats.service';
 
 /**
- * StatsModule — écran 11 "Statistiques de la place", B.2.
- * TODO(backend-agent): voir §B.2, agréger réellement les déclarations par
- * wilaya (ClaimsModule) et les séries temporelles (Annexes 2 émises,
- * oppositions, assurés indemnisés, adoption e-constat mobile vs agence) au
- * lieu des valeurs aléatoires déterministes ci-dessous.
+ * StatsModule — écran 11 "Statistiques de la place", B.2. Agrégation RÉELLE
+ * depuis `ClaimsModule` (voir `stats.service.ts` pour le détail des
+ * métriques omises plutôt qu'inventées : population par wilaya, Annexes 2/
+ * oppositions/indemnisés, mobile vs agence).
  */
 @ApiTags('stats')
 @ApiBearerAuth()
 @Controller('stats')
 @UseGuards(AuthGuard)
 class StatsController {
+  constructor(private readonly service: StatsService) {}
+
   @Get('wilayas')
-  @ApiOperation({ summary: 'Carte en tuiles des 69 wilayas (grille 13×8) — déclarations/montants/pour 100k hab. (mock)' })
+  @ApiOperation({ summary: 'Carte en tuiles des 69 wilayas (grille 13×8) — déclarations/montants réels (voir stats.service.ts : "pour 100k hab." omis, pas de référentiel de population)' })
   wilayas() {
-    return buildWilayaSeeds().map((w, i) => ({
-      ...w,
-      declarations: 20 + ((i * 37) % 480),
-      montants: 500000 + ((i * 91333) % 9000000),
-      pour100k: 5 + ((i * 13) % 90),
-    }));
+    return this.service.wilayas();
   }
 
   @Get('monthly')
-  @ApiOperation({ summary: "Activité mensuelle de la place (déclarations, Annexes 2, oppositions, assurés indemnisés) — mock" })
+  @ApiOperation({ summary: "Activité mensuelle réelle (déclarations, par mois d'accident) + canal (e-constat vs autres) — Annexes 2/oppositions/indemnisés omis (RecoursModule/SettlementModule non réels, voir stats.service.ts)" })
   monthly() {
-    return Array.from({ length: 12 }).map((_, i) => ({
-      month: `2026-${String(i + 1).padStart(2, '0')}`,
-      declarations: 1200 + i * 60,
-      annexes2: 900 + i * 40,
-      oppositions: 80 + (i % 5) * 10,
-      indemnises: 1000 + i * 55,
-      econstatMobile: 55 + (i % 10),
-      econstatAgence: 45 - (i % 10),
-    }));
+    return this.service.monthly();
   }
 }
 
-@Module({ controllers: [StatsController] })
+@Module({
+  imports: [ClaimsModule],
+  controllers: [StatsController],
+  providers: [StatsService],
+})
 export class StatsModule {}

@@ -133,6 +133,30 @@ export class MatchingService {
     return paginateArray(rows, query.page, query.pageSize);
   }
 
+  /**
+   * Paires appariées (déclaration A / déclaration B) avec leurs id `Claim`
+   * internes (`declAId`/`declBId`), pour un module RÉEL qui a besoin de
+   * ré-interroger `ClaimsService` par id (ex. `FraudModule` — incohérences
+   * A/B, B.9) — contrairement à `MatchQueueItemDto` (contrat HTTP stable),
+   * ces id ne sont jamais exposés en dehors du back-end. Ne retourne que les
+   * lignes effectivement appariées (`declBId` défini).
+   */
+  async listInternalPairs(): Promise<Array<{ declAId: string; declBId: string; score: number; status: string }>> {
+    return withDegradedFallback(
+      'MatchingService.listInternalPairs',
+      async () => {
+        const rows = await this.repo.findAll();
+        return rows
+          .filter((r) => !!r.declBId)
+          .map((r) => ({ declAId: r.declAId, declBId: r.declBId as string, score: r.score, status: r.status }));
+      },
+      () =>
+        this.memory
+          .filter((r) => !!r.declBId)
+          .map((r) => ({ declAId: r.declAId, declBId: r.declBId as string, score: r.score, status: r.status })),
+    );
+  }
+
   async counters(): Promise<Record<string, number>> {
     const rows = await this.findAllDtos();
     return {

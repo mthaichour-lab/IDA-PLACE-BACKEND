@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Module, Post, Put, UseGuards } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { Body, Controller, Get, Module, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthModule } from '../auth/auth.module';
 import { Privileges } from '../common/decorators/privileges.decorator';
@@ -6,29 +7,29 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { RbacService } from '../common/rbac/rbac.service';
 import { ROLES } from '../common/rbac/roles-privileges';
-
-/** Miroir applicatif `PlaceUser` — mock en mémoire (persistance réelle = TODO). */
-const MOCK_USERS = [
-  { id: 'u-1', name: 'Opérateur Place (dev)', email: 'operateur@finlab.dz', role: 'OPERATEUR_PLACE', active: true, grant: [], revoke: [] },
-  { id: 'u-2', name: 'Correspondant CAAT', email: 'correspondant@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'COMP-0001', active: true, grant: [], revoke: [] },
-  { id: 'u-3', name: 'Trésorier SAA', email: 'tresorier@saa.dz', role: 'TRESORIER', companyId: 'COMP-0002', active: false, grant: [], revoke: [] },
-];
+import { CreatePlaceUserDto, ListPlaceUsersQueryDto, UpdatePlaceUserDto } from './dto/place-user.dto';
+import { PlaceUser } from './entities/place-user.entity';
+import { UsersService } from './users.service';
 
 /**
  * AdminModule — écran 14 "Paramétrage" (super admin), B.2/B.7.
  *
- * La matrice rôles × privilèges (`GET/PUT /admin/roles/matrix`) est RÉELLE
- * (branchée sur `RbacService`, partagée avec `PrivilegesGuard`) : toute
- * modification ici change immédiatement les autorisations effectives de
- * l'API. Les utilisateurs (`/admin/users`) restent mockés.
+ * `GET/PUT /admin/roles/matrix` RÉEL (inchangé — branché sur `RbacService`).
+ * `/admin/users` désormais RÉEL (sprint 3) : CRUD complet (`PlaceUser`,
+ * entité + migration), pagination 6/p, compte actif/suspendu, dérogations
+ * de privilèges par utilisateur (grant/revoke, B.3 "PlaceUser"). `GET
+ * /admin/users` passe d'un tableau brut (ancien mock) à un résultat PAGINÉ
+ * (`{page, total, items}`, cohérent avec le reste de l'API, B.11) — c'est
+ * un changement de forme assumé et documenté (voir rapport de fin de
+ * sprint) : `AdminModule.users` N'ÉTAIT PAS dans la liste des contrats
+ * figés (ClaimsModule/MatchingModule/CockpitModule/Auth/Adherents/Experts),
+ * et était explicitement "mock, non persisté" jusqu'ici.
  *
- * TODO(backend-agent): voir §B.2/B.7 :
- *  - persister `PlaceUser` (entité + migration) au lieu de `MOCK_USERS` ;
+ * TODO(backend-agent) — voir aussi `entities/place-user.entity.ts` :
  *  - synchroniser avec Keycloak (réconciliation rôle/groupe) une fois
- *    `KeycloakStrategy` implémenté ;
+ *    `KeycloakStrategy` branché sur ce miroir applicatif ;
  *  - persister `RolePermMatrix` en base au lieu du singleton mémoire de
- *    `RbacService` (actuellement perdu au redémarrage — acceptable en
- *    socle, pas en production) ;
+ *    `RbacService` (toujours perdu au redémarrage — acceptable en socle) ;
  *  - dashboard des coûts (revenu par inducteur) — brancher sur MeteringModule.
  */
 @ApiTags('admin')
@@ -36,22 +37,29 @@ const MOCK_USERS = [
 @Controller('admin')
 @UseGuards(AuthGuard, PrivilegesGuard)
 class AdminController {
-  constructor(private readonly rbac: RbacService) {}
+  constructor(
+    private readonly rbac: RbacService,
+    private readonly users: UsersService,
+  ) {}
 
   @Get('users')
-  @Privileges('admin')
-  @ApiOperation({ summary: 'Utilisateurs & accès (mock)' })
-  users() {
-    return MOCK_USERS;
+  @ApiOperation({ summary: 'Utilisateurs & accès — RÉEL, paginé (6/p)' })
+  listUsers(@Query() q: ListPlaceUsersQueryDto) {
+    return this.users.list(q.page, q.pageSize);
   }
 
   @Post('users')
   @Privileges('admin')
-  @ApiOperation({ summary: "Création d'un utilisateur (mock, non persisté)" })
-  createUser(@Body() body: Partial<(typeof MOCK_USERS)[number]>) {
-    const user = { id: `u-${MOCK_USERS.length + 1}`, active: true, grant: [], revoke: [], ...body } as (typeof MOCK_USERS)[number];
-    MOCK_USERS.push(user);
-    return user;
+  @ApiOperation({ summary: "Création d'un utilisateur (RÉEL, persisté)" })
+  createUser(@Body() dto: CreatePlaceUserDto) {
+    return this.users.create(dto);
+  }
+
+  @Put('users/:id')
+  @Privileges('admin')
+  @ApiOperation({ summary: "Mise à jour d'un utilisateur — statut actif/suspendu, dérogations grant/revoke (RÉEL, persisté)" })
+  updateUser(@Param('id') id: string, @Body() dto: UpdatePlaceUserDto) {
+    return this.users.update(id, dto);
   }
 
   @Get('roles/matrix')
@@ -69,5 +77,9 @@ class AdminController {
   }
 }
 
-@Module({ imports: [AuthModule], controllers: [AdminController] })
+@Module({
+  imports: [AuthModule, MikroOrmModule.forFeature([PlaceUser])],
+  controllers: [AdminController],
+  providers: [UsersService],
+})
 export class AdminModule {}

@@ -1,10 +1,13 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { CacheService } from '../common/cache/cache.service';
 import { ClaimsModule } from '../claims/claims.module';
 import { ClaimsService } from '../claims/claims.service';
 import { MatchingModule } from '../matching/matching.module';
 import { MatchingService } from '../matching/matching.service';
+
+const SUMMARY_CACHE_TTL_SECONDS = 10;
 
 const LATE_THRESHOLD_DAYS = 7;
 
@@ -34,11 +37,20 @@ class CockpitController {
   constructor(
     private readonly claims: ClaimsService,
     private readonly matching: MatchingService,
+    private readonly cache: CacheService,
   ) {}
 
   @Get('summary')
-  @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (dossiers du jour, à apparier, en retard, compensation à venir)' })
+  @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (dossiers du jour, à apparier, en retard, compensation à venir) — mis en cache (Redis si REDIS_ENABLED, sinon recalculé à chaque appel, voir cache.service.ts)' })
   async summary() {
+    // Sprint 3 : référence réutilisable de cache de lecture (CacheService,
+    // voir common/cache). TTL volontairement court (10s) : le cockpit doit
+    // rester quasi temps réel, le cache n'économise que les appels en
+    // rafale (ex. plusieurs onglets ouverts) — pas de rupture de forme.
+    return this.cache.getOrSet('cockpit:summary', SUMMARY_CACHE_TTL_SECONDS, () => this.computeSummary());
+  }
+
+  private async computeSummary() {
     const [{ items: allClaims }, matchCounters] = await Promise.all([
       this.claims.list({ page: 1, pageSize: 100_000 }),
       this.matching.counters(),
