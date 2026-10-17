@@ -2,10 +2,11 @@
 
 Règle absolue : **ne change pas la forme des DTO/endpoints existants**
 (`ClaimsModule`, `MatchingModule`, `CockpitModule`, `AdherentsModule`,
-`ExpertsModule`, `AuthModule`) — implémente la logique métier **derrière**
-ces contrats, que le front consomme déjà. Si un besoin impose vraiment un
-changement de forme, passe par une nouvelle version d'API (`/api/v2`,
-C.4) plutôt qu'une rupture silencieuse sur `/api/v1`.
+`ExpertsModule`, `AuthModule`, et depuis la vague 2 : `RecoursModule`,
+`SettlementModule`, `CommissionModule`) — implémente la logique métier
+**derrière** ces contrats, que le front consomme déjà. Si un besoin impose
+vraiment un changement de forme, passe par une nouvelle version d'API
+(`/api/v2`, C.4) plutôt qu'une rupture silencieuse sur `/api/v1`.
 
 ## Réel vs mocké — résumé rapide (mis à jour, sprint 2)
 
@@ -238,3 +239,275 @@ celle-ci tracée dans `RecoursModule`).
      (plaques, police, GPS…) renseignés.
 - `GET /referential/wilayas` renvoie bien 69 entrées (codes 01→69) en
   mode dégradé (inchangé, non touché ce sprint).
+
+---
+
+## Vague 2 — RecoursModule, SettlementModule, CommissionModule (réel)
+
+Règle respectée : les routes `GET /recours?filter&page` et
+`POST /recours/{id}/transition`, ainsi que `GET /settlement/monthly/{period}`
+et `GET /settlement/quarter/{q}` (B.11), sont CONSERVÉES. Leur corps de
+réponse, auparavant un squelette libre ("mock minimal, peu de contraintes
+de forme" — ARCHITECTURE.md §4 avant cette vague), est désormais la vraie
+forme réelle et doit être traité comme stable à partir de maintenant (voir
+ARCHITECTURE.md §1, mis à jour). `CommissionModule` n'avait aucune route
+imposée par B.11 : ses routes ont été conçues proprement, en cohérence avec
+le reste de l'API (préfixe `/api/v1`, pagination `{page,total,items}` 6/p,
+erreurs normalisées `{code,message,details}`).
+
+### RecoursModule (écran 4 — Échanges Annexes 2/3/4)
+
+- Entité `Recours` (MikroORM, `src/recours/entities/recours.entity.ts`)
+  conforme à B.3 : `id, claimId, from, to, state, requestSentAt, responseAt,
+  opposition{...}, contestation{...}, commissionAt, settledAt, amount` (+
+  `resolution` additionnel, documentant COMMENT le recours s'est conclu —
+  utile pour la fiche détail de l'écran 4). Migration :
+  `src/migrations/Migration20260301000000_RecoursSettlementCommission.ts`.
+- Machine d'état + timers conventionnels en fonctions **pures** testées
+  (`src/recours/recours.rules.ts`, 7 états : `EN_ATTENTE, OPPOSITION,
+  CONTESTATION, COMMISSION, REGLE, REJETE, FORCLOS` — cohérents avec le
+  vocabulaire déjà présent dans `CLAIM_STATES`, `src/claims/dto/claim.dto.ts`,
+  qui citait déjà `EN_RECOURS/REGLE/FORCLOS`) :
+  - **Art. 10** (silence = acceptation tacite) : si aucune réponse de la
+    compagnie adverse dans `silenceDays` jours après l'envoi
+    (`requestSentAt`), le recours bascule automatiquement en `REGLE`.
+  - **Art. 12** (opposition non traitée = réputée fondée) : si une
+    opposition en cours n'est pas tranchée dans `oppositionDays` jours, le
+    recours bascule en `REJETE` (`opposition.status = FONDEE_TACITE`).
+  - **Art. 19** (forclusion globale) : au-delà de `forclusionMonths` mois
+    depuis `requestSentAt`, le recours bascule en `FORCLOS`, PRIORITAIRE sur
+    tout autre sous-état (vérifié en premier dans
+    `applyAutomaticTransitions`).
+  - Ces transitions AUTOMATIQUES sont appliquées **paresseusement** (lazy) :
+    `RecoursService` les évalue à chaque lecture (`list`/`get`/`counters`)
+    et écriture (`transition`), faute d'ordonnanceur (cron) dans ce sprint
+    — voir limite connue ci-dessous.
+  - Transitions MANUELLES (validation humaine) via
+    `POST /recours/{id}/transition` : `accepter, opposer, lever_opposition,
+    contester, transmettre_commission, cloturer_commission_favorable,
+    cloturer_commission_defavorable` — choix délibéré d'un champ `action`
+    validé (`@IsIn`) plutôt qu'un `toState` libre (le mock initial), pour
+    éviter la classe de bug déjà rencontrée au sprint 2 sur `MatchDecisionDto`
+    (champ sans validateur silencieusement effacé par le `ValidationPipe`
+    whitelist) et pour garantir que seules les transitions métier valides
+    sont possibles (machine d'état stricte, `isActionAllowed`).
+  - `countdownBar` : `computeTimerState` calcule côté serveur le timer actif
+    (type, échéance, jours restants, expiré) exposé dans `timer` sur chaque
+    `RecoursViewDto` — le front n'a **aucun** calcul de délai à faire (C.1).
+  - ⚠️ **HYPOTHÈSE À VALIDER PAR LE MÉTIER** : le dossier technique cite les
+    Art. 10/12/19 mais ne fixe pas la durée exacte des délais Art.10
+    (silence) et Art.12 (opposition) — seul le délai de forclusion de 6
+    mois (Art.19) est donné (B.6, réutilisé ici via la MÊME variable
+    d'environnement que `EligibilityModule`, `ELIGIBILITY_RECOURS_MAX_MONTHS`,
+    cohérence demandée par la mission). Valeurs par défaut choisies,
+    paramétrables par environnement :
+    `RECOURS_SILENCE_DAYS` (défaut **30 jours**),
+    `RECOURS_OPPOSITION_DAYS` (défaut **15 jours**). À confirmer avec le
+    métier avant mise en production.
+  - Endpoints additionnels (non rompant le contrat B.11, simple ajout) :
+    `GET /recours/counters` (compteurs par onglet, même esprit que
+    `GET /matching/queue/counters`), `GET /recours/{id}` (fiche détail,
+    requise par A.4 "fiche détail par recours" mais absente de la liste
+    d'exemples B.11), `POST /recours` (enregistrement d'un nouveau recours
+    — nécessaire puisque rien d'autre ne peuplait le registre : privilège
+    `insert`).
+  - Événement temps réel `recours.timer` (déjà prévu dans le type
+    `RealtimeEvent` de `RealtimeModule`, non modifié) émis à chaque
+    transition (automatique ou manuelle).
+  - Repli mémoire (mode dégradé) : **attention à ne jamais confondre une
+    exception MÉTIER (404 "introuvable", 400 "transition invalide") avec
+    une bascule en mode dégradé** — `withDegradedFallback` catche N'IMPORTE
+    QUELLE exception levée dans son callback DB, y compris les nôtres.
+    `RecoursService.transition()` (et son équivalent dans
+    `CommissionService`) contourne volontairement ce piège via
+    `loadForTransition`/`loadCaseForMutation` : la lecture (DB ou mémoire)
+    est séparée de la levée des exceptions métier, pour ne jamais masquer
+    un 400 derrière un faux "404 mode dégradé" (voir commentaire dans le
+    code). **À vérifier/généraliser** : ce même piège existe potentiellement
+    déjà dans `MatchingService.decide()` (sprint 2, non touché ici — sa
+    `NotFoundException` lève le même type d'exception dans les deux
+    branches, donc le symptôme ne s'y voit pas, mais le mécanisme est le
+    même) ; à garder en tête pour tout futur service qui lèverait des
+    exceptions de types différents entre le chemin DB et le chemin mémoire.
+
+### SettlementModule (écrans 5 et 6)
+
+- Dépend de `RecoursModule` (lecture seule, interface publique
+  `RecoursService.listAll()` — jamais l'entité `Recours`, voir
+  ARCHITECTURE.md). Fonctions pures de parsing/netting dans
+  `src/settlement/settlement.rules.ts`, testées (`settlement.rules.spec.ts`).
+- **Cycle mensuel** (`GET /settlement/monthly/{period}`, ex: `period=2026-01`) :
+  regroupe les recours par compagnie **demanderesse** (`from`) sur leur
+  **mois d'envoi** (`requestSentAt`) — hypothèse documentée, le dossier
+  technique ne précisant pas cette convention. Expose `claimsCount`,
+  `resolvedCount` (état d'avancement réel : combien sont déjà
+  `REGLE/REJETE/FORCLOS`), `totalAmount`, `status` (`EN_COURS`/`CLOTURE`).
+  `POST /settlement/monthly/{period}/close` (privilège `synth`) persiste une
+  clôture (`SettlementClosure`, entité additionnelle — voir ci-dessous) et
+  génère un `bordereauRef` ; idempotent par compagnie+période (409 sinon).
+- **Compensation trimestrielle** (`GET /settlement/quarter/{q}`, ex:
+  `q=2026-Q1`) : calculée **uniquement à partir des recours RÉGLÉS**
+  (`state === 'REGLE'`, conformément à la mission), sur leur date de
+  règlement (`settledAt`) si connue, sinon leur date d'envoi en repli
+  (hypothèse documentée — `settledAt` n'est jamais encore posé
+  automatiquement dans ce sprint, voir limite ci-dessous). Deux résultats :
+  - `positions` : netting **bilatéral** (`computeBilateralNetPositions`) —
+    réduit chaque paire {A,B} à une seule direction nette ; une paire
+    parfaitement compensée disparaît.
+  - `net` : compensation **multilatérale** (`computeMultilateralNetPositions`)
+    — position nette unique par compagnie vis-à-vis de la "place"
+    (chambre de compensation). Invariant garanti et testé : la somme de
+    toutes les positions nettes est toujours 0. Contrairement au netting
+    bilatéral, elle annule aussi les cycles à 3 compagnies ou plus (test
+    dédié dans `settlement.rules.spec.ts` : un cycle A→B→C→A de montants
+    égaux donne 300 de brut bilatéral mais 0 de net multilatéral partout —
+    c'est précisément l'intérêt de la compensation multilatérale par
+    rapport au règlement bilatéral pair à pair).
+  - `POST /settlement/quarter/{q}/close` (privilège `synth`) : idempotent
+    (409 si déjà clôturé), génère le bordereau trimestriel.
+- Entité additionnelle `SettlementClosure` (non nommée dans B.3, qui ne
+  détaille que `Recours`/`Invoice`) : trace une clôture (scope MONTHLY ou
+  QUARTERLY, période, compagnie si mensuelle, bordereau, auteur, date) —
+  nécessaire pour qu'une clôture survive un redémarrage et ne soit jamais
+  rejouée deux fois. Migration incluse dans
+  `Migration20260301000000_RecoursSettlementCommission.ts`.
+- **Non fait, hors périmètre de cette vague** : génération réelle d'un
+  bordereau PDF/Excel téléchargeable (B.10/DocumentsModule) — seul un
+  `bordereauRef` (identifiant) est généré ; `Invoice` (B.3) n'est pas
+  branché ici (c'est plutôt `MeteringModule`, déjà réel pour la grille
+  tarifaire, qui s'en charge pour la facturation d'infrastructure — à ne
+  pas confondre avec les bordereaux de compensation IDA).
+
+### CommissionModule (écran 7)
+
+- Entités additionnelles (non nommées dans B.3, documentées ici) :
+  `CommissionCase` (`id, recoursId, claimId, companyA, companyB, amount,
+  motif, status, scheduledAt, decidedAt?, decision?, pv?`) et `Sanction`
+  (`id, commissionCaseId?, companyCode, type, amount?, reason, orderedAt,
+  orderedBy`). Migration incluse dans
+  `Migration20260301000000_RecoursSettlementCommission.ts`.
+- Machine d'état séquentielle et testée (`commission.rules.ts`) :
+  `A_INSTRUIRE -> EN_DELIBERE -> PRONONCE`, jamais de retour en arrière ni
+  de saut d'étape (`canAdvanceCaseStatus`) — `POST /commission/cases/{id}/decide`
+  est donc refusé (400) si le dossier n'est pas passé par
+  `POST /commission/cases/{id}/deliberate` au préalable.
+- `POST /commission/cases` dénormalise `claimId`/`companyA`/`companyB`/
+  `amount` depuis le recours (`RecoursService.get()`, lecture seule, 404
+  normalisé si le recours n'existe pas) — **limite connue, choix
+  architectural délibéré** : `RecoursModule -> CommissionModule` n'existe
+  PAS (pas d'appel automatique quand un recours passe en `COMMISSION` via
+  `transmettre_commission`) pour éviter tout cycle de modules
+  (`CommissionModule` dépend déjà de `RecoursModule` en lecture). Le
+  correspondant doit donc, en deux temps : (1) transitionner le recours
+  (`transmettre_commission`) puis (2) ouvrir le dossier de commission
+  (`POST /commission/cases`). Piste d'amélioration pour une vague
+  ultérieure : automatiser ce couplage via un événement
+  (`RealtimeGateway.emitEvent`, déjà utilisé pour la diffusion WebSocket,
+  pourrait aussi servir de bus interne léger) plutôt qu'un appel de service
+  direct qui créerait un cycle.
+- `POST /commission/cases/{id}/penalty` et `.../sanction` valident que la
+  compagnie visée (`companyCode`) est bien partie au recours
+  (`isCompanyPartyToCase`, 400 sinon) — sanction/pénalité toujours
+  rattachée au bon dossier, jamais à une compagnie tierce par erreur.
+- `POST /commission/cases/{id}/pv-sign` n'est permis qu'après le prononcé
+  (`status === 'PRONONCE'`, 400 sinon) — le PV scelle une décision déjà
+  rendue, jamais une délibération en cours.
+- Endpoints : `GET/POST /commission/cases[...]`, `GET /commission/sanctions`
+  (registre paginé, filtrable par compagnie — utile pour une future
+  intégration avec `MonitoringModule`, non faite ici, hors périmètre).
+- **Non fait, hors périmètre de cette vague** : génération réelle du PV en
+  document téléchargeable (B.10/DocumentsModule) — seule une référence
+  (`pv.ref`) est générée ; lien `MonitoringModule` (le scoring de conformité
+  B.2 écran 8 pondère notamment les sanctions à 5 % — `MonitoringModule`
+  reste un mock avec des valeurs en dur, non branché sur
+  `GET /commission/sanctions` dans cette vague).
+
+### Limites connues à transmettre à la vague suivante (Monitoring/Fraud/Metering/Stats) et au Testeur
+
+1. **Scoping tenant toujours pas appliqué** (voir ARCHITECTURE.md §3) :
+   `RecoursService`/`SettlementService`/`CommissionService` exposent
+   l'intégralité des données à tout rôle authentifié, y compris
+   `CORRESPONDANT_IDA`/`TRESORIER` qui ne devraient voir que leur propre
+   compagnie (B.7, minimisation loi 18-07). `resolveTenantFilter`/
+   `assertCompanyAccess` (`common/rbac/tenant-scope.ts`) existent et sont
+   prêts à être branchés — non fait par prudence (mêmes raisons que pour
+   ClaimsModule au sprint 2 : pas de paramètre tenant dans les DTO de
+   requête actuels, agents Frontend/Testeur consomment déjà ces routes).
+2. **Timers Art.10/12 évalués paresseusement (lazy), pas d'ordonnanceur
+   dédié** : un recours dont le timer a expiré ne bascule d'état QUE lors
+   de la prochaine lecture/écriture le concernant (`GET /recours`,
+   `GET /recours/{id}`, `POST /recours/{id}/transition`, ou indirectement
+   via `SettlementService`/`CommissionService` qui appellent
+   `RecoursService.listAll()`). En l'absence de tout accès pendant
+   plusieurs mois, un recours resterait affiché `EN_ATTENTE` alors que son
+   délai est dépassé, jusqu'au prochain accès. Piste pour la vague
+   suivante : un job planifié (ex: cron NestJS `@nestjs/schedule`, non
+   installé) qui appelle périodiquement `RecoursService.listAll()` (ou une
+   méthode dédiée) pour forcer l'évaluation et émettre `recours.timer` même
+   sans consultation — pas fait ici pour rester dans le périmètre (aucune
+   dépendance de planification n'était déjà présente dans le projet).
+3. **`settledAt` jamais posé automatiquement** : la compensation
+   trimestrielle retombe sur `requestSentAt` en l'absence de `settledAt`
+   (hypothèse documentée ci-dessus). Aucune méthode ne pose `settledAt`
+   pour l'instant (ni `RecoursService`, ni `SettlementService`) — à
+   décider : est-ce `SettlementService.closeQuarterly()` qui devrait
+   marquer `settledAt = now()` sur chaque recours inclus dans le
+   bordereau clôturé (verrouillant alors la position déjà clôturée pour
+   les trimestres suivants) ? Choix métier à trancher avant la vague
+   suivante.
+4. **`RecoursModule -> CommissionModule` reste manuel en deux temps** (voir
+   plus haut) — aucune automatisation de la création du dossier de
+   conciliation à la transmission d'un recours.
+5. **Pas de PostgreSQL disponible dans cet environnement** (inchangé depuis
+   le sprint 2) : toute la vérification de cette vague (tests Jest +
+   scénario manuel `curl` de bout en bout, voir ci-dessous) a été faite en
+   **mode dégradé** (repli mémoire). Les 3 nouvelles entités et la migration
+   (`Migration20260301000000_RecoursSettlementCommission.ts`) sont écrites
+   et type-checkées mais **n'ont jamais été exécutées contre une vraie
+   base** — à valider dès qu'un PostgreSQL est disponible
+   (`npm run migration:up` puis réessayer les mêmes scénarios).
+6. **`MonitoringModule` reste un mock** avec des pondérations en dur (B.2
+   écran 8 : délais 30 %, silences 15 %, oppositions 15 %, qualité données
+   15 %, forclusions 10 %, demandes tardives 10 %, pénalités 5 %) — toutes
+   les données sources existent désormais réellement
+   (`RecoursService.listAll()` pour délais/silences/oppositions/
+   forclusions, `CommissionService.listSanctions()` pour les pénalités) :
+   c'est la vague suivante qui doit les brancher, cette vague n'y a pas
+   touché (hors périmètre explicite de la mission).
+
+### Vérifications effectuées dans cette vague
+
+- `npx tsc --noEmit` : OK, aucune erreur.
+- `npx nest build` : OK.
+- `npx jest` : **132/132 tests passent** (11 suites, dont les 56 tests du
+  sprint 2 inchangés + 76 nouveaux : `recours.rules.spec.ts` (24 cas, timers
+  Art.10/12/19 avec cas limites exacts aux échéances), `recours.service.spec.ts`
+  (11 scénarios d'intégration en mode dégradé), `settlement.rules.spec.ts`
+  (19 cas, dont le cycle à 3 compagnies et l'invariant somme nette = 0),
+  `settlement.service.spec.ts` (6 scénarios), `commission.rules.spec.ts`
+  (7 cas), `commission.service.spec.ts` (9 scénarios).
+- Démarrage réel (`node dist/src/main.js`) **sans PostgreSQL/Redis/MinIO/
+  Keycloak lancés** : démarre proprement (tous les modules s'initialisent,
+  toutes les routes se mappent, y compris les nouvelles). Scénario manuel
+  `curl` de bout en bout exécuté :
+  1. `POST /recours` (CAAT→SAA, 85 000 DA) → `EN_ATTENTE`, `timer.timerType
+     = SILENCE_ART10`, `remainingDays = 30` ;
+  2. `POST /recours/{id}/transition` `opposer` → `OPPOSITION`,
+     `timer.timerType = OPPOSITION_ART12` ; `contester` → `CONTESTATION`,
+     timer retombe sur `FORCLUSION_ART19` ; `transmettre_commission` →
+     `COMMISSION` ;
+  3. `POST /recours/{id}/transition` `accepter` depuis `COMMISSION` → `400
+     INVALID_TRANSITION` (machine d'état respectée) ;
+  4. `POST /commission/cases` avec ce `recoursId` → dossier créé,
+     `companyA/companyB/amount` bien dénormalisés depuis le recours ;
+     `deliberate` → `EN_DELIBERE` ; `decide` (`RECOURS_FONDE`) →
+     `PRONONCE` ; `pv-sign` → `pv.ref` posé ; `penalty` sur `SAA` (partie)
+     → OK ; `penalty` sur `CASH` (tiers) → `400 BAD_REQUEST` ;
+  5. `x-dev-user: AUDITEUR_CSA` sur `POST /recours/{id}/transition` → `403
+     FORBIDDEN` (RBAC lecture seule toujours respecté) ;
+  6. Deux recours supplémentaires créés et acceptés (CAAT→SAA 100 000,
+     SAA→CAAT 30 000) → `GET /settlement/monthly/{period}` affiche bien
+     `claimsCount`/`resolvedCount`/`totalAmount` par compagnie ;
+     `GET /settlement/quarter/{q}` affiche `positions: [{CAAT→SAA,
+     70000}]` (netting bilatéral 100000-30000) et `net` avec somme nette
+     ≈ 0 ; `POST .../close` idempotent (409 à la 2ᵉ tentative).

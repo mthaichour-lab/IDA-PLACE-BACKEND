@@ -14,9 +14,15 @@
   `@Global()` car `AuthGuard`/`PrivilegesGuard` sont utilisés par
   pratiquement tous les contrôleurs (B.2 : "tous").
 - **Contrat d'API stable** : les DTO et routes de `ClaimsModule`,
-  `MatchingModule` et `CockpitModule` (écrans 1, 2, 3 — priorité de ce
-  sprint) sont figés dans leur FORME. Le prochain agent Backend remplace
-  les mocks par la vraie logique sans changer les DTO/routes.
+  `MatchingModule` et `CockpitModule` (écrans 1, 2, 3 — priorité du sprint 2)
+  sont figés dans leur FORME. Depuis la vague 2, s'ajoutent à cette liste
+  `RecoursModule` (écran 4), `SettlementModule` (écrans 5/6) et
+  `CommissionModule` (écran 7) : leurs routes `GET/POST /recours*`,
+  `GET/POST /settlement/*` et `GET/POST /commission/*` sont désormais la
+  vraie forme réelle (plus un squelette libre) et ne doivent plus changer de
+  FORME sans nouvelle version d'API (`/api/v2`). Le prochain agent Backend
+  (Monitoring/Fraud/Metering/Stats) remplace les mocks restants par la
+  vraie logique sans changer les DTO/routes déjà réels.
 - **Mode dégradé explicite** : voir README.md. Jamais de triche sécurité.
 
 ## 2. Comment ajouter un module
@@ -53,11 +59,16 @@
   ET bloque toute méthode HTTP mutante pour `AUDITEUR_CSA`, indépendamment
   de la matrice.
 - `common/rbac/tenant-scope.ts` : scoping tenant (un `CORRESPONDANT_IDA`/
-  `TRESORIER` ne voit que sa compagnie) — **pas encore appliqué dans les
-  services existants** (voir HANDOFF.md : `AdherentsService` ne filtre pas
-  encore par tenant, à faire quand `ClaimsModule`/`RecoursModule`
-  deviendront réels, car eux seuls ont une notion claire de
-  "dossier appartenant à une compagnie").
+  `TRESORIER` ne voit que sa compagnie) — **toujours pas appliqué dans les
+  services existants**, y compris `ClaimsService`/`MatchingService` (réels
+  depuis le sprint 2) et `RecoursService`/`SettlementService`/
+  `CommissionService` (réels depuis la vague 2) : tous exposent
+  aujourd'hui l'intégralité des dossiers/recours/compensations à tout rôle
+  authentifié, quelle que soit sa compagnie de rattachement. Voir
+  HANDOFF.md §"Limites connues" — le câblage reste volontairement différé
+  (mêmes raisons : aucun paramètre tenant explicite dans les DTO de requête
+  actuels, et les agents Frontend/Testeur consomment déjà ces routes sans
+  filtre serveur ; à valider avec le Tech Lead avant activation).
 
 ## 4. État d'avancement module par module
 
@@ -69,9 +80,9 @@
 | `ClaimsModule` | **RÉEL** (sprint 2) | Entité `Claim` + migration, parsing réel Excel (`exceljs`)/CSV (parseur maison), verdict délégué à `EligibilityModule`, persistance (+ repli mémoire), déclenche l'appariement et émet `claim.ingested`. Voir HANDOFF.md. |
 | `EligibilityModule` | **RÉEL** (sprint 2) | Règles B.6 (Art. 3/4/5-6/13/19/28) en fonctions pures testées (`eligibility.rules.spec.ts`), config paramétrable par env. |
 | `MatchingModule` | **RÉEL** (sprint 2) | Clé exacte/composite + score pondéré en fonctions pures testées (`matching.scoring.spec.ts`), entité `MatchQueueItem` + migration, décisions persistées (+ repli mémoire), émet `match.updated`. Voir HANDOFF.md. |
-| `RecoursModule` | **MOCK minimal** | Registre + transition, pas de timers conventionnels réels. |
-| `SettlementModule` | **MOCK minimal** | Synthèse mensuelle + compensation trimestrielle, valeurs calculées à la volée mais non persistées. |
-| `CommissionModule` | **MOCK minimal** | File de conciliation, pénalité, PV — pas de persistance. |
+| `RecoursModule` | **RÉEL** (vague 2) | Entité `Recours` + migration, machine d'état + timers conventionnels Art.10/12/19 en fonctions pures testées (`recours.rules.spec.ts`), persistance (+ repli mémoire), `countdownBar` calculée serveur. Voir HANDOFF.md. |
+| `SettlementModule` | **RÉEL** (vague 2) | Synthèse mensuelle par compagnie et compensation multilatérale trimestrielle calculées à partir des vrais `Recours` (RecoursModule), clôtures persistées (`SettlementClosure` + migration), netting bilatéral/multilatéral en fonctions pures testées (`settlement.rules.spec.ts`). Voir HANDOFF.md. |
+| `CommissionModule` | **RÉEL** (vague 2) | File de conciliation (`CommissionCase`) + pénalités/sanctions (`Sanction`) + PV, entités + migration, machine d'état séquentielle testée (`commission.rules.spec.ts`), dénormalisation depuis `RecoursModule` (lecture seule) à l'ouverture d'un dossier. Voir HANDOFF.md. |
 | `MonitoringModule` | **MOCK minimal** | Scoring composite avec les VRAIES pondérations B.2 écran 8, valeurs calculées en dur. |
 | `FraudModule` | **MOCK minimal** | Cas + journal d'actions, pas de détection réelle. |
 | `MeteringModule` | **MOCK (grille réelle)** | Grille tarifaire TARIF-2026.01 = valeurs réelles du dossier (B.8), calcul de facture réel à partir de mesures mockées. Pas de collecte OpenTelemetry. |
