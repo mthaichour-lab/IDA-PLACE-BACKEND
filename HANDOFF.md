@@ -7,6 +7,23 @@ et depuis ce sprint `RecoursModule`, `SettlementModule`,
 `CommissionModule`, `LedgerModule`) — implémente la logique métier
 **derrière** ces contrats. Rupture de forme → `/api/v2`, jamais silencieuse.
 
+## ⚠️ 2026-10-17 — Le dossier technique de référence est maintenant disponible
+
+Le document cité partout dans ce code (`IDA_Place_Dossier_Technique.md`,
+jusqu'ici introuvable sur cette machine) est maintenant sur le poste de
+l'utilisateur : `C:\Users\mthai\Desktop\IDA\IDA_Place_Dossier_Technique.md`
++ un guide utilisateur illustré, `Guide_IDA_Place.docx` (16 captures
+d'écran de référence, une par écran). Pagination : ce dépôt était déjà
+conforme (6/p partout, `DEFAULT_PAGE_SIZE`) — c'est le **frontend** qui
+avait dérivé à 7/p (corrigé côté front, voir son HANDOFF.md). En
+revanche plusieurs captures du guide montrent des écrans nettement plus
+riches que les DTO actuels (ex. `/stats` : code de barème Art. 14 par
+dossier (B01-B11), catégorie de véhicule, baseline IRSAM pour comparer
+les délais — aucun de ces champs n'existe sur `Claim` aujourd'hui).
+Avant d'étendre un module pour coller à une capture, vérifier d'abord
+si le dossier technique fournit la donnée source (sinon : documenter
+l'hypothèse ou omettre proprement, ne jamais l'inventer).
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même
