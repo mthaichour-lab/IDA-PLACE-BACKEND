@@ -54,38 +54,46 @@ bon côté accepté, mauvais côté refusé (403), compagnie tierce refusée sur
 `AdminModule` (roles/matrix + users), `DocumentsModule.S3StorageProvider`,
 cache Redis minimal.
 
-**Réel partiel** : `MonitoringModule` (délais/qualité données/forclusions/
-demandes tardives réels ; silences/oppositions/pénalités `null` explicite
-— voir §2), `StatsModule` (déclarations/montants/activité réels, "pour
-100k hab." et quelques mesures omises faute de données).
+**Réel partiel** : `StatsModule` (déclarations/montants/activité réels,
+"pour 100k hab." et quelques mesures omises faute de données).
 
 **Mock (grille réelle)** : `MeteringModule`.
 
+## Sprint 3 bis — fait depuis la réconciliation
+
+1. **Monitoring branché sur Recours/Commission** : `silences`/
+   `oppositions` (`RecoursService.listAll()`, champ `resolution.kind`) et
+   `penalites` (`CommissionService.listSanctions()`) remplacent les 3
+   placeholders `NON_DISPONIBLE` — toutes les composantes de
+   `MonitoringModule` sont désormais `REEL`. Hypothèses de calcul
+   documentées en tête de `monitoring.scoring.ts` (silences = taux de
+   recours reçus résolus par silence Art.10 ; oppositions = taux
+   d'oppositions reçues non suivies d'effet Art.12 ; pénalités = -20
+   points/sanction) — **à valider avec le métier/l'UAR**, non chiffrées
+   par le dossier technique.
+2. **Scoping tenant de `CommissionModule` tranché par défaut** : appliqué
+   (comme Recours/Settlement) plutôt que laissé en transparence totale —
+   **à confirmer avec l'UAR** si une transparence de place entre
+   adhérents était en fait voulue pour ce module (voir ARCHITECTURE.md §3).
+3. **Frontend `/params`, onglet Utilisateurs** : édition actif/suspendu +
+   dérogations grant/revoke branchée sur `PUT /admin/users/:id` (réel,
+   vérifié en navigateur).
+
 ## Todo-list restante, par priorité
 
-### 1. Brancher Monitoring/Fraud sur Recours/Commission (maintenant réels)
-
-`MonitoringModule` a été développé dans un worktree séparé de
-`RecoursModule`/`CommissionModule` et ne les consomme donc pas, alors
-qu'ils sont réels depuis ce même sprint (services publics
-`RecoursService`/`CommissionService` disponibles). Prochain agent :
-brancher silences/oppositions (`RecoursService`) et pénalités
-(`CommissionService`) dans `monitoring.service.ts` pour remplacer les 3
-composantes `NON_DISPONIBLE` restantes.
-
-### 2. Scoping tenant de `CommissionModule` — décision à prendre
-
-`GET /commission/cases`/`sanctions` n'ont ni `@Privileges` ni filtre
-compagnie — pourrait être un choix de transparence de place assumé, ou un
-oubli. **À trancher avec l'UAR.**
-
-### 3. `KeycloakStrategy` ignore les dérogations grant/revoke
+### 1. `KeycloakStrategy` ignore les dérogations grant/revoke
 
 Dépendance circulaire `AuthModule`↔`AdminModule` à résoudre proprement
 (extraire un `PlaceUserDirectory` partagé) avant toute bascule
 `AUTH_PROVIDER=keycloak` réelle. Hors périmètre dev actuel.
 
-### 4. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
+### 2. `MatchingService` reste sans scoping tenant
+
+Repéré en passant (ARCHITECTURE.md §3) pendant l'ajout du scoping sur les
+autres services — hors périmètre de cette revue, à vérifier avant mise en
+production réelle.
+
+### 3. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
 
 - Délais conventionnels `RecoursModule` (Art.10/12/19) — valeurs par
   variable d'environnement, non chiffrées par le dossier.
@@ -94,6 +102,8 @@ Dépendance circulaire `AuthModule`↔`AdminModule` à résoudre proprement
   règlement ou repli date d'envoi) — voir en-tête de
   `settlement.service.ts`.
 - Seuils de gravité anti-fraude, fenêtres de détection (`FraudModule`).
+- Hypothèses de calcul `MonitoringModule` silences/oppositions/pénalités
+  (voir point 1 ci-dessus).
 
 ## Limites connues à signaler au Testeur
 

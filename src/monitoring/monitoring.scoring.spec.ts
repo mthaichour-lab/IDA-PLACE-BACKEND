@@ -3,7 +3,10 @@ import {
   computeDelaisScore,
   computeDemandesTardivesScore,
   computeForclusionsScore,
+  computeOppositionsScore,
+  computePenalitesScore,
   computeQualiteDonneesScore,
+  computeSilencesScore,
   MONITORING_WEIGHTS,
   MonitoringComponentKey,
   MonitoringComponentValue,
@@ -104,6 +107,94 @@ describe('monitoring.scoring (fonctions pures)', () => {
         6,
       );
       expect(r.value).toBe(100);
+    });
+  });
+
+  describe('computeSilencesScore', () => {
+    it('NON_DISPONIBLE si aucun recours reçu (to) n’est résolu', () => {
+      expect(computeSilencesScore([{ from: 'SAA', to: 'CAAT', state: 'EN_ATTENTE' }], 'CAAT')).toEqual({
+        value: null,
+        dataSource: 'NON_DISPONIBLE',
+        sampleSize: 0,
+      });
+    });
+
+    it('score 100 si tous les recours reçus ont été traités activement (pas de silence)', () => {
+      const r = computeSilencesScore(
+        [
+          { from: 'SAA', to: 'CAAT', state: 'OPPOSITION', resolutionKind: undefined },
+          { from: 'SAA', to: 'CAAT', state: 'REGLE', resolutionKind: 'ACCEPTATION_EXPRESSE' },
+        ],
+        'CAAT',
+      );
+      expect(r).toEqual({ value: 100, dataSource: 'REEL', sampleSize: 1 });
+    });
+
+    it('pénalise un silence sur 2 recours résolus (50)', () => {
+      const r = computeSilencesScore(
+        [
+          { from: 'SAA', to: 'CAAT', state: 'REGLE', resolutionKind: 'ACCEPTATION_TACITE_ART10' },
+          { from: 'SAA', to: 'CAAT', state: 'REGLE', resolutionKind: 'ACCEPTATION_EXPRESSE' },
+        ],
+        'CAAT',
+      );
+      expect(r).toEqual({ value: 50, dataSource: 'REEL', sampleSize: 2 });
+    });
+
+    it('ne compte que les recours REÇUS (to), pas ceux émis (from)', () => {
+      const r = computeSilencesScore([{ from: 'CAAT', to: 'SAA', state: 'REGLE', resolutionKind: 'ACCEPTATION_TACITE_ART10' }], 'CAAT');
+      expect(r).toEqual({ value: null, dataSource: 'NON_DISPONIBLE', sampleSize: 0 });
+    });
+  });
+
+  describe('computeOppositionsScore', () => {
+    it('NON_DISPONIBLE si aucun recours émis n’a été opposé', () => {
+      expect(computeOppositionsScore([{ from: 'CAAT', to: 'SAA', state: 'EN_ATTENTE' }], 'CAAT')).toEqual({
+        value: null,
+        dataSource: 'NON_DISPONIBLE',
+        sampleSize: 0,
+      });
+    });
+
+    it('score 100 si toutes les oppositions reçues ont été suivies (levée ou commission)', () => {
+      const r = computeOppositionsScore(
+        [
+          { from: 'CAAT', to: 'SAA', state: 'REGLE', opposition: {}, resolutionKind: 'OPPOSITION_LEVEE' },
+          { from: 'CAAT', to: 'SAA', state: 'COMMISSION', opposition: {}, resolutionKind: undefined },
+        ],
+        'CAAT',
+      );
+      expect(r).toEqual({ value: 100, dataSource: 'REEL', sampleSize: 2 });
+    });
+
+    it('pénalise une opposition non suivie d’effet sur 2 (50)', () => {
+      const r = computeOppositionsScore(
+        [
+          { from: 'CAAT', to: 'SAA', state: 'REJETE', opposition: {}, resolutionKind: 'OPPOSITION_FONDEE_ART12' },
+          { from: 'CAAT', to: 'SAA', state: 'REGLE', opposition: {}, resolutionKind: 'OPPOSITION_LEVEE' },
+        ],
+        'CAAT',
+      );
+      expect(r).toEqual({ value: 50, dataSource: 'REEL', sampleSize: 2 });
+    });
+
+    it('exclut les oppositions encore brutes (état OPPOSITION, pas encore d’issue)', () => {
+      const r = computeOppositionsScore([{ from: 'CAAT', to: 'SAA', state: 'OPPOSITION', opposition: {} }], 'CAAT');
+      expect(r).toEqual({ value: null, dataSource: 'NON_DISPONIBLE', sampleSize: 0 });
+    });
+  });
+
+  describe('computePenalitesScore', () => {
+    it('score 100 sans aucune sanction (donnée réelle, pas une absence de donnée)', () => {
+      expect(computePenalitesScore(new Map(), 'CAAT')).toEqual({ value: 100, dataSource: 'REEL', sampleSize: 0 });
+    });
+
+    it('retire 20 points par sanction (2 sanctions ⇒ 60)', () => {
+      expect(computePenalitesScore(new Map([['CAAT', 2]]), 'CAAT')).toEqual({ value: 60, dataSource: 'REEL', sampleSize: 2 });
+    });
+
+    it('plancher à 0 au-delà de 5 sanctions', () => {
+      expect(computePenalitesScore(new Map([['CAAT', 10]]), 'CAAT')).toEqual({ value: 0, dataSource: 'REEL', sampleSize: 10 });
     });
   });
 

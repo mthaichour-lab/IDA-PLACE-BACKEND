@@ -1,9 +1,11 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RecoursService } from '../recours/recours.service';
 import {
   CommissionCaseViewDto,
@@ -124,16 +126,26 @@ export class CommissionService {
     );
   }
 
-  async listCases(query: ListCommissionCasesQueryDto): Promise<PaginatedResult<CommissionCaseViewDto>> {
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les dossiers où sa compagnie est `companyA` ou `companyB` ; les rôles "place" (dont les membres de la commission) voient tout. Ajouté par cohérence avec Recours/Settlement — absent jusqu'ici (voir revue Product Owner, sprint 3 : signalé comme question ouverte, tranché par défaut vers le scoping plutôt que la transparence totale, à confirmer avec l'UAR si une transparence de place était en fait voulue). */
+  private visibleToUser(r: { companyA: string; companyB: string }, user?: AuthenticatedUser): boolean {
+    if (!user) return true;
+    const tenant = resolveTenantFilter(user);
+    if (!tenant) return true;
+    return r.companyA === tenant || r.companyB === tenant;
+  }
+
+  async listCases(query: ListCommissionCasesQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<CommissionCaseViewDto>> {
     let rows = await this.loadAllCaseViews();
+    rows = rows.filter((r) => this.visibleToUser(r, user));
     if (query.status) rows = rows.filter((r) => r.status === query.status);
     return paginateArray(rows, query.page, query.pageSize);
   }
 
-  async getCase(id: string): Promise<CommissionCaseViewDto> {
+  async getCase(id: string, user?: AuthenticatedUser): Promise<CommissionCaseViewDto> {
     const rows = await this.loadAllCaseViews();
     const row = rows.find((r) => r.id === id);
     if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
+    if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
     return row;
   }
 
@@ -305,7 +317,8 @@ export class CommissionService {
     );
   }
 
-  async listSanctions(query: ListSanctionsQueryDto): Promise<PaginatedResult<SanctionViewDto>> {
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les sanctions de SA compagnie, quel que soit le filtre `company` demandé (ignoré s'il désigne une autre compagnie). */
+  async listSanctions(query: ListSanctionsQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<SanctionViewDto>> {
     const rows = await withDegradedFallback(
       'CommissionService.listSanctions',
       async () => {
@@ -314,7 +327,9 @@ export class CommissionService {
       },
       () => [...this.memorySanctions].sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)).map(toSanctionViewFromMemory),
     );
-    const filtered = query.company ? rows.filter((r) => r.companyCode === query.company) : rows;
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const effectiveCompany = tenant ?? query.company;
+    const filtered = effectiveCompany ? rows.filter((r) => r.companyCode === effectiveCompany) : rows;
     return paginateArray(filtered, query.page, query.pageSize);
   }
 }

@@ -59,22 +59,20 @@
   ET bloque toute méthode HTTP mutante pour `AUDITEUR_CSA`, indépendamment
   de la matrice.
 - `common/rbac/tenant-scope.ts` : scoping tenant (un `CORRESPONDANT_IDA`/
-  `TRESORIER` ne voit que sa compagnie) — **toujours pas appliqué dans les
-  services existants**, y compris `ClaimsService`/`MatchingService` (réels
-  depuis le sprint 2) et `RecoursService`/`SettlementService`/
-  `CommissionService` (réels depuis la vague 2) : tous exposent
-  aujourd'hui l'intégralité des dossiers/recours/compensations à tout rôle
-  authentifié, quelle que soit sa compagnie de rattachement. Voir
-  HANDOFF.md §"Limites connues" — le câblage reste volontairement différé
-  (mêmes raisons : aucun paramètre tenant explicite dans les DTO de requête
-  actuels, et les agents Frontend/Testeur consomment déjà ces routes sans
-  filtre serveur ; à valider avec le Tech Lead avant activation).
+  `TRESORIER` ne voit que sa compagnie) — appliqué dans `ClaimsService`
+  (`list`/`get`), `RecoursService` (`list`/`get`/`counters`/toute
+  transition), `SettlementService` (`monthly`/`quarter`) et
+  `CommissionService` (`listCases`/`getCase`/`listSanctions`). Ajouté en
+  revue Product Owner, sprint 3 — ces services exposaient jusqu'alors
+  l'intégralité des données à tout rôle authentifié, quelle que soit sa
+  compagnie. `MatchingService` reste **non scopé** (hors périmètre de
+  cette revue) — à vérifier avant mise en production réelle.
 
 ## 4. État d'avancement module par module
 
 | Module | État | Détail |
 |---|---|---|
-| `AuthModule` | **RÉEL** | `GET /me`, `DevAuthProvider` fonctionnel, `KeycloakStrategy` = interface + TODO explicite (lève une erreur si activé sans implémentation). |
+| `AuthModule` | **RÉEL** | `GET /me`, `DevAuthProvider` fonctionnel. `KeycloakStrategy` réel (sprint 3) : JWT/JWKS RS256 (cache 10 min), mapping rôle Keycloak → RBAC interne, zero-trust (erreur explicite si mal configuré). ⚠️ Ignore les dérogations grant/revoke par utilisateur (dépendance circulaire `AuthModule`↔`AdminModule` non résolue, voir HANDOFF.md). |
 | `AdherentsModule` | **RÉEL** | Entités MikroORM (`Company`, `Agency`, `Wilaya`), migration, DTO, CRUD, pagination 6/p, repli mémoire si DB absente. |
 | `ExpertsModule` | **RÉEL** | Entité `Expert`, DTO, CRUD, pagination. |
 | `ClaimsModule` | **RÉEL** (sprint 2) | Entité `Claim` + migration, parsing réel Excel (`exceljs`)/CSV (parseur maison), verdict délégué à `EligibilityModule`, persistance (+ repli mémoire), déclenche l'appariement et émet `claim.ingested`. Voir HANDOFF.md. |
@@ -83,13 +81,14 @@
 | `RecoursModule` | **RÉEL** (vague 2 + correctifs RBAC) | Entité `Recours` + migration, machine d'état + timers conventionnels Art.10/12/19 en fonctions pures testées (`recours.rules.spec.ts`), persistance (+ repli mémoire), `countdownBar` calculée serveur. Autorisation par action (bon côté `from`/`to`, clôture commission réservée aux rôles "place") et scoping tenant sur `list`/`get`/`counters` ajoutés en revue Product Owner, sprint 3 (absents de la vague 2). Voir HANDOFF.md. |
 | `SettlementModule` | **RÉEL** (vague 2 + correctifs RBAC) | Synthèse mensuelle par compagnie et compensation multilatérale trimestrielle calculées à partir des vrais `Recours` (RecoursModule), clôtures persistées (`SettlementClosure` + migration), netting bilatéral/multilatéral en fonctions pures testées (`settlement.rules.spec.ts`). Scoping tenant sur `monthly`/`quarter` ajouté en revue Product Owner, sprint 3 (absent de la vague 2). Voir HANDOFF.md. |
 | `CommissionModule` | **RÉEL** (vague 2) | File de conciliation (`CommissionCase`) + pénalités/sanctions (`Sanction`) + PV, entités + migration, machine d'état séquentielle testée (`commission.rules.spec.ts`), dénormalisation depuis `RecoursModule` (lecture seule) à l'ouverture d'un dossier. Voir HANDOFF.md. |
-| `MonitoringModule` | **MOCK minimal** | Scoring composite avec les VRAIES pondérations B.2 écran 8, valeurs calculées en dur. |
-| `FraudModule` | **MOCK minimal** | Cas + journal d'actions, pas de détection réelle. |
-| `MeteringModule` | **MOCK (grille réelle)** | Grille tarifaire TARIF-2026.01 = valeurs réelles du dossier (B.8), calcul de facture réel à partir de mesures mockées. Pas de collecte OpenTelemetry. |
-| `StatsModule` | **MOCK** | Réutilise le vrai référentiel des 69 wilayas, mesures aléatoires déterministes. |
+| `MonitoringModule` | **RÉEL** (sprint 3) | Scoring composite, toutes composantes branchées sur des données réelles : délais/qualité données/forclusions/demandes tardives (`ClaimsModule`/`EligibilityModule`), **silences/oppositions** (`RecoursModule.listAll()`, champ `resolution.kind`), **pénalités** (`CommissionModule.listSanctions()`). Fonctions pures testées (`monitoring.scoring.spec.ts`). Hypothèses de calcul documentées en tête de `monitoring.scoring.ts`, à valider avec le métier/l'UAR. |
+| `FraudModule` | **RÉEL** (sprint 3) | 5 détections réelles à partir de `ClaimsModule`/`MatchingModule` (doublons, e-constat réutilisé, récurrence véhicule, montants calibrés, incohérences A/B) + journal des actions suspectes (appariements manuels observés via `RealtimeModule`), persistés (+ repli mémoire). Sévérités `FAIBLE`/`MOYENNE`/`ELEVEE`. |
+| `MeteringModule` | **MOCK (grille réelle)** | Grille tarifaire TARIF-2026.01 = valeurs réelles du dossier (B.8), calcul de facture réel à partir de mesures mockées. `updateGrid` fusionne par clé (pas de remplacement en bloc — bug corrigé en revue Testeur, sprint 3). Pas de collecte OpenTelemetry. |
+| `StatsModule` | **RÉEL (partiel)** (sprint 3) | Déclarations/montants réels par wilaya et activité mensuelle réelle par canal, à partir de `ClaimsModule` (référentiel des 69 wilayas, déjà réel). "Pour 100k hab." et quelques mesures (Annexes 2, oppositions, indemnisés) omises faute de données plutôt qu'inventées. |
 | `LedgerModule` | **RÉEL (persisté)** | Chaînage SHA-256 `hash(n)=f(event,hash(n-1))` réellement implémenté et vérifiable (`GET /ledger/verify`), désormais append-only en base (`ledger_entry`, `Migration20260301000001_Ledger.ts`), repli mémoire équivalent si PostgreSQL absent. |
-| `AdminModule` | **PARTIEL** | `GET/PUT /admin/roles/matrix` **RÉEL** (branché sur `RbacService`, effet immédiat sur les autorisations). `GET/POST /admin/users` = mock. |
-| `DocumentsModule` | **PARTIEL** | Interface `StorageProvider` réelle + `LocalFsStorageProvider` fonctionnel (mode dégradé assumé) ; `S3StorageProvider` = TODO explicite ; pas d'intégration Paperless. |
+| `AdminModule` | **RÉEL** (sprint 3) | `GET/PUT /admin/roles/matrix` réel, fusionne par rôle/privilège (un payload partiel ne verrouille plus le RBAC — bug corrigé en revue Testeur, sprint 3). `AdminModule.users` réel : CRUD complet, pagination 6/p, édition actif/suspendu + dérogations grant/revoke branchée côté front (sprint 3 bis). |
+| `DocumentsModule` | **PARTIEL** | Interface `StorageProvider` réelle + `LocalFsStorageProvider` fonctionnel (mode dégradé assumé) ; `S3StorageProvider` réel (sprint 3, SDK S3/MinIO, URL pré-signées ~15 min) ; pas d'intégration Paperless. |
+| Cache Redis | **RÉEL (minimal)** (sprint 3) | `common/cache/` — `REDIS_ENABLED`, repli no-op explicite. Branché en référence sur `GET /cockpit/summary` (TTL 10s). |
 | `RealtimeModule` | **RÉEL (partiel)** (sprint 2) | Gateway Socket.IO (`/realtime`) authentifiée (même `AUTH_PROVIDER` que l'API REST), salons `tenant:place`/`tenant:<companyId>`. Émet réellement `claim.ingested` (ClaimsModule) et `match.updated` (MatchingModule). Toujours en mémoire (pas de pub/sub Redis) — un seul process backend. |
 | `CockpitModule` *(additionnel)* | **RÉEL** (sprint 2) | `GET /cockpit/summary` — agrège les vraies données de ClaimsModule/MatchingModule (forme inchangée). Hypothèses documentées dans le fichier (voir HANDOFF.md). |
 

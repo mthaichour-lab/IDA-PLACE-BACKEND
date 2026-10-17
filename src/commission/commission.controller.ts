@@ -28,15 +28,15 @@ export class CommissionController {
   constructor(private readonly service: CommissionService) {}
 
   @Get('cases')
-  @ApiOperation({ summary: 'File de conciliation, paginée (6/p), filtrable par statut' })
-  listCases(@Query() q: ListCommissionCasesQueryDto) {
-    return this.service.listCases(q);
+  @ApiOperation({ summary: 'File de conciliation, paginée (6/p), filtrable par statut (B.7 : scopée par compagnie)' })
+  listCases(@Query() q: ListCommissionCasesQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.listCases(q, user);
   }
 
   @Get('cases/:id')
-  @ApiOperation({ summary: "Fiche détail d'un dossier de commission" })
-  getCase(@Param('id') id: string) {
-    return this.service.getCase(id);
+  @ApiOperation({ summary: "Fiche détail d'un dossier de commission (B.7 : scopée par compagnie)" })
+  getCase(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.getCase(id, user);
   }
 
   @Post('cases')
@@ -82,8 +82,8 @@ export class CommissionController {
   }
 
   @Get('sanctions')
-  @ApiOperation({ summary: 'Registre des pénalités/sanctions, paginé (6/p), filtrable par compagnie' })
-  listSanctions(@Query() q: ListSanctionsQueryDto) {
-    return this.service.listSanctions(q);
+  @ApiOperation({ summary: 'Registre des pénalités/sanctions, paginé (6/p), filtrable par compagnie (B.7 : scopé par compagnie)' })
+  listSanctions(@Query() q: ListSanctionsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.listSanctions(q, user);
   }
 }

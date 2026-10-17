@@ -3,19 +3,20 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
 import { ClaimsModule } from '../claims/claims.module';
+import { CommissionModule } from '../commission/commission.module';
 import { MatchingModule } from '../matching/matching.module';
+import { RecoursModule } from '../recours/recours.module';
 import { MonitoringService } from './monitoring.service';
 
 /**
  * MonitoringModule — écran 8 "Monitoring assureurs", B.2.
  *
- * Scoring composite calculé réellement pour les composantes disponibles ce
- * sprint (délais, qualité données, forclusions, demandes tardives — voir
- * `monitoring.scoring.ts`) ; silences/oppositions/pénalités restent des
- * placeholders explicites (`null`), car ils dépendent de RecoursModule/
- * CommissionModule (hors périmètre de ce sprint — voir rapport final).
- * // TODO sprint suivant : brancher silences/oppositions sur RecoursModule,
- * // pénalités sur CommissionModule, une fois ces modules réels.
+ * Scoring composite entièrement branché sur des données réelles (délais,
+ * qualité données, forclusions, demandes tardives : `ClaimsModule`/
+ * `EligibilityModule` ; silences/oppositions : `RecoursModule` ; pénalités :
+ * `CommissionModule`) — toutes composantes `dataSource: 'REEL'` dès qu'une
+ * compagnie a au moins un dossier/recours ; hypothèses de calcul
+ * documentées dans `monitoring.scoring.ts`, à valider avec le métier/l'UAR.
  */
 @ApiTags('monitoring')
 @ApiBearerAuth()
@@ -25,7 +26,7 @@ class MonitoringController {
   constructor(private readonly service: MonitoringService) {}
 
   @Get('scores')
-  @ApiOperation({ summary: 'Scoring composite de conformité par compagnie — réel pour les composantes disponibles (délais, qualité données, forclusions, demandes tardives) ; silences/oppositions/pénalités = null (hors périmètre, voir notes)' })
+  @ApiOperation({ summary: 'Scoring composite de conformité par compagnie — toutes composantes réelles (délais, silences, oppositions, qualité données, forclusions, demandes tardives, pénalités), hypothèses documentées (voir notes)' })
   scores() {
     return this.service.scores();
   }
@@ -38,7 +39,7 @@ class MonitoringController {
 }
 
 @Module({
-  imports: [ClaimsModule, MatchingModule],
+  imports: [ClaimsModule, MatchingModule, RecoursModule, CommissionModule],
   controllers: [MonitoringController],
   providers: [MonitoringService],
 })

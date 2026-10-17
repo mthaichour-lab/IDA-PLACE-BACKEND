@@ -27,21 +27,33 @@
  *     technique (qui inclut probablement les délais de règlement/recours),
  *     mais la seule latence réellement mesurable aujourd'hui. Documenté.
  *
- * ⚠️ Composantes TOUJOURS PAS branchées (`RecoursModule`/`CommissionModule`
- * sont réels depuis ce même sprint, mais dans un autre worktree — ce fichier
- * n'a pas été mis à jour pour les consommer, pas parce que les données
- * restent indisponibles ; voir revue Product Owner, sprint 3, et HANDOFF.md
- * pour le TODO exact du prochain agent Backend) :
- *   - silences (silence d'une compagnie à une relance de recours)
- *   - oppositions (opposition formelle à un recours)
- *   - penalites (pénalités prononcées, CommissionModule)
- * Pour ces 3 composantes : `null` (jamais une valeur inventée), avec un
- * drapeau explicite `dataSource: 'NON_DISPONIBLE'` par composante (voir
- * `monitoring.service.ts`). Le score composite est recalculé sur les seules
- * composantes disponibles, pondérations renormalisées (documenté dans
- * `computeCompositeScore`).
- * // TODO sprint suivant : brancher silences/oppositions sur RecoursModule
- * // et pénalités sur CommissionModule une fois ces modules réels.
+ * ⚠️ Branchées depuis la réconciliation sprint 3 (voir HANDOFF.md) —
+ * `silences`/`oppositions` à partir de `RecoursModule` (champ `resolution.kind`
+ * de la machine d'état), `penalites` à partir de `CommissionModule`
+ * (`SanctionViewDto`) :
+ *   - silences : taux de recours REÇUS (compagnie = `to`) résolus par
+ *     silence (`ACCEPTATION_TACITE_ART10`) parmi ceux déjà résolus —
+ *     **hypothèse** : seuls les recours ayant une `resolution` sont comptés
+ *     (ceux encore `EN_ATTENTE` sans issue ne sont pas des "silences" tant
+ *     que le délai Art.10 n'a pas expiré).
+ *   - oppositions : taux d'oppositions REÇUES PAR LA COMPAGNIE ADVERSE mais
+ *     dont la contestation de la compagnie demanderesse (`from`) n'a jamais
+ *     été suivie d'effet (`OPPOSITION_FONDEE_ART12` — expirée faute de
+ *     transmission en commission), parmi les recours de cette compagnie
+ *     ayant fait l'objet d'une opposition et déjà sortis de l'état brut
+ *     `OPPOSITION` — **hypothèse** : mesure l'engagement de la compagnie
+ *     demanderesse face à une opposition, pas la légitimité de ses recours
+ *     eux-mêmes (non calculable sans arbitrage humain) — à valider avec le
+ *     métier.
+ *   - penalites : score dégressif selon le nombre de sanctions
+ *     (`CommissionModule`) prononcées contre la compagnie, tous types
+ *     confondus — **hypothèse** : 20 points retirés par sanction (plancher
+ *     0), barème non chiffré par le dossier technique, à valider avec
+ *     l'UAR.
+ * Si aucune donnée pertinente n'existe pour une compagnie : `null` (jamais
+ * une valeur inventée), `dataSource: 'NON_DISPONIBLE'`. Le score composite
+ * est recalculé sur les seules composantes disponibles, pondérations
+ * renormalisées (documenté dans `computeCompositeScore`).
  */
 
 export const MONITORING_WEIGHTS = {
@@ -55,11 +67,6 @@ export const MONITORING_WEIGHTS = {
 } as const;
 
 export type MonitoringComponentKey = keyof typeof MONITORING_WEIGHTS;
-
-/** Composantes réellement calculables dans ce sprint (voir doc de fichier). */
-export const REAL_COMPONENTS: MonitoringComponentKey[] = ['delais', 'qualiteDonnees', 'forclusions', 'demandesTardives'];
-/** Composantes non disponibles (dépendent de Recours/CommissionModule, hors périmètre). */
-export const PLACEHOLDER_COMPONENTS: MonitoringComponentKey[] = ['silences', 'oppositions', 'penalites'];
 
 /** Chaque jour de latence au-delà de 0 retire ce nombre de points (plancher 0) — hypothèse documentée, paramétrable. */
 export const DELAY_PENALTY_PER_DAY = 2;
@@ -156,6 +163,42 @@ export function computeDemandesTardivesScore(claims: ClaimMonitoringInput[], rec
 
   const score = ((eligible.length - tardives) / eligible.length) * 100;
   return { value: Math.round(score * 10) / 10, dataSource: 'REEL', sampleSize: eligible.length };
+}
+
+export interface RecoursMonitoringInput {
+  from: string;
+  to: string;
+  state: string;
+  opposition?: unknown;
+  resolutionKind?: string;
+}
+
+/** silences — voir hypothèse en tête de fichier. */
+export function computeSilencesScore(recours: RecoursMonitoringInput[], company: string): MonitoringComponentValue {
+  const resolved = recours.filter((r) => r.to === company && r.resolutionKind);
+  if (resolved.length === 0) return { value: null, dataSource: 'NON_DISPONIBLE', sampleSize: 0 };
+  const silences = resolved.filter((r) => r.resolutionKind === 'ACCEPTATION_TACITE_ART10').length;
+  const score = ((resolved.length - silences) / resolved.length) * 100;
+  return { value: Math.round(score * 10) / 10, dataSource: 'REEL', sampleSize: resolved.length };
+}
+
+/** oppositions — voir hypothèse en tête de fichier. */
+export function computeOppositionsScore(recours: RecoursMonitoringInput[], company: string): MonitoringComponentValue {
+  const challenged = recours.filter((r) => r.from === company && r.opposition && r.state !== 'OPPOSITION');
+  if (challenged.length === 0) return { value: null, dataSource: 'NON_DISPONIBLE', sampleSize: 0 };
+  const unresolved = challenged.filter((r) => r.resolutionKind === 'OPPOSITION_FONDEE_ART12').length;
+  const score = ((challenged.length - unresolved) / challenged.length) * 100;
+  return { value: Math.round(score * 10) / 10, dataSource: 'REEL', sampleSize: challenged.length };
+}
+
+/** Points retirés par sanction (tous types confondus) — hypothèse non chiffrée par le dossier, voir tête de fichier. */
+export const PENALTY_POINTS_PER_SANCTION = 20;
+
+/** penalites — voir hypothèse en tête de fichier. "Aucune sanction" est une donnée réelle (score 100), pas une absence de donnée. */
+export function computePenalitesScore(sanctionCountByCompany: Map<string, number>, company: string): MonitoringComponentValue {
+  const count = sanctionCountByCompany.get(company) ?? 0;
+  const score = Math.max(0, 100 - count * PENALTY_POINTS_PER_SANCTION);
+  return { value: score, dataSource: 'REEL', sampleSize: count };
 }
 
 /**
