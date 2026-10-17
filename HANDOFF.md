@@ -78,6 +78,14 @@ cache Redis minimal.
 3. **Frontend `/params`, onglet Utilisateurs** : édition actif/suspendu +
    dérogations grant/revoke branchée sur `PUT /admin/users/:id` (réel,
    vérifié en navigateur).
+4. **Scoping tenant de `MatchingService`** : `queue()`/`counters()`/
+   `decide()` filtrent désormais par compagnie (même principe que
+   Recours/Settlement/Commission — `visibleToUser()`, `resolveTenantFilter`).
+   Vérifié manuellement : import d'un accident croisé CAAT/SAA (même
+   `numEconstat`, plaques croisées) → les deux compagnies voient la paire
+   appariée dans `/matching/queue` et peuvent agir via `/matching/:id/decide`
+   (`201`) ; une compagnie tierce (`TALA`) reçoit une file vide, des
+   compteurs à zéro, et `403 FORBIDDEN` sur `/decide`.
 
 ## Todo-list restante, par priorité
 
@@ -87,13 +95,7 @@ Dépendance circulaire `AuthModule`↔`AdminModule` à résoudre proprement
 (extraire un `PlaceUserDirectory` partagé) avant toute bascule
 `AUTH_PROVIDER=keycloak` réelle. Hors périmètre dev actuel.
 
-### 2. `MatchingService` reste sans scoping tenant
-
-Repéré en passant (ARCHITECTURE.md §3) pendant l'ajout du scoping sur les
-autres services — hors périmètre de cette revue, à vérifier avant mise en
-production réelle.
-
-### 3. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
+### 2. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
 
 - Délais conventionnels `RecoursModule` (Art.10/12/19) — valeurs par
   variable d'environnement, non chiffrées par le dossier.

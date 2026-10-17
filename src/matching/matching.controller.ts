@@ -17,15 +17,15 @@ export class MatchingController {
   constructor(private readonly service: MatchingService) {}
 
   @Get('queue')
-  @ApiOperation({ summary: 'File de confrontation A/B, paginée (6/p), filtrable (Tous/Auto/À confirmer/Non appariés)' })
-  queue(@Query() q: MatchQueueQueryDto) {
-    return this.service.queue(q);
+  @ApiOperation({ summary: 'File de confrontation A/B, paginée (6/p), filtrable (Tous/Auto/À confirmer/Non appariés) (B.7 : scopée par compagnie)' })
+  queue(@Query() q: MatchQueueQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.queue(q, user);
   }
 
   @Get('queue/counters')
-  @ApiOperation({ summary: 'Compteurs par onglet (Tous/Auto/À confirmer/Non appariés)' })
-  counters() {
-    return this.service.counters();
+  @ApiOperation({ summary: 'Compteurs par onglet (Tous/Auto/À confirmer/Non appariés) (B.7 : scopés par compagnie)' })
+  counters(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.counters(user);
   }
 
   @Get('thresholds')
@@ -38,6 +38,6 @@ export class MatchingController {
   @Privileges('matchDecide')
   @ApiOperation({ summary: 'Décision de confrontation : confirm | reject | complement | link (Art. 14, validation humaine)' })
   decide(@Param('id') id: string, @Body() dto: MatchDecisionDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.decide(id, dto, user.name);
+    return this.service.decide(id, dto, user.name, user);
   }
 }

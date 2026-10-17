@@ -61,12 +61,15 @@
 - `common/rbac/tenant-scope.ts` : scoping tenant (un `CORRESPONDANT_IDA`/
   `TRESORIER` ne voit que sa compagnie) — appliqué dans `ClaimsService`
   (`list`/`get`), `RecoursService` (`list`/`get`/`counters`/toute
-  transition), `SettlementService` (`monthly`/`quarter`) et
-  `CommissionService` (`listCases`/`getCase`/`listSanctions`). Ajouté en
-  revue Product Owner, sprint 3 — ces services exposaient jusqu'alors
-  l'intégralité des données à tout rôle authentifié, quelle que soit sa
-  compagnie. `MatchingService` reste **non scopé** (hors périmètre de
-  cette revue) — à vérifier avant mise en production réelle.
+  transition), `SettlementService` (`monthly`/`quarter`),
+  `CommissionService` (`listCases`/`getCase`/`listSanctions`) et
+  `MatchingService` (`queue`/`counters`/`decide`). Ajouté en revue Product
+  Owner, sprint 3 — ces services exposaient jusqu'alors l'intégralité des
+  données à tout rôle authentifié, quelle que soit sa compagnie. Vérifié
+  manuellement pour `MatchingService` (sprint 3 bis) : import d'un
+  accident croisé CAAT/SAA → les deux compagnies voient/décident la paire
+  appariée, une compagnie tierce reçoit une file/compteurs vides et `403`
+  sur `/decide`.
 
 ## 4. État d'avancement module par module
 

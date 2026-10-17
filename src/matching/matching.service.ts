@@ -1,10 +1,12 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RealtimeGateway } from '../realtime/realtime.module';
 import {
   MatchDecisionDto,
@@ -125,8 +127,17 @@ export class MatchingService {
     );
   }
 
-  async queue(query: MatchQueueQueryDto): Promise<PaginatedResult<MatchQueueItemDto>> {
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les lignes où sa compagnie est `companyA` ou `companyB` ; les rôles "place" voient tout. Ajouté en continuité de la revue Product Owner (même angle mort que Claims/Recours/Settlement/Commission, repéré après coup sur ce module "figé" du sprint 2 — filtrer les lignes retournées ne change pas la forme du DTO/de la route). */
+  private visibleToUser(r: { companyA: string; companyB?: string }, user?: AuthenticatedUser): boolean {
+    if (!user) return true;
+    const tenant = resolveTenantFilter(user);
+    if (!tenant) return true;
+    return r.companyA === tenant || r.companyB === tenant;
+  }
+
+  async queue(query: MatchQueueQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<MatchQueueItemDto>> {
     let rows = await this.findAllDtos();
+    rows = rows.filter((r) => this.visibleToUser(r, user));
     if (query.filter === 'AUTO') rows = rows.filter((r) => r.level === 'AUTO');
     if (query.filter === 'A_CONFIRMER') rows = rows.filter((r) => r.status === 'A_CONFIRMER');
     if (query.filter === 'NON_APPARIES') rows = rows.filter((r) => !r.refB);
@@ -157,8 +168,8 @@ export class MatchingService {
     );
   }
 
-  async counters(): Promise<Record<string, number>> {
-    const rows = await this.findAllDtos();
+  async counters(user?: AuthenticatedUser): Promise<Record<string, number>> {
+    const rows = (await this.findAllDtos()).filter((r) => this.visibleToUser(r, user));
     return {
       TOUS: rows.length,
       AUTO: rows.filter((r) => r.level === 'AUTO').length,
@@ -167,12 +178,13 @@ export class MatchingService {
     };
   }
 
-  async decide(id: string, dto: MatchDecisionDto, decidedBy: string): Promise<MatchDecisionResultDto> {
+  async decide(id: string, dto: MatchDecisionDto, decidedBy: string, user?: AuthenticatedUser): Promise<MatchDecisionResultDto> {
     const result = await withDegradedFallback(
       'MatchingService.decide',
       async () => {
         const item = await this.repo.findOne({ id });
         if (!item) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
+        if (!this.visibleToUser(item, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
         item.status = nextStatusForAction(dto.action);
         item.confirmedBy = decidedBy;
         item.confirmedAt = new Date();
@@ -184,6 +196,7 @@ export class MatchingService {
       () => {
         const item = this.memory.find((r) => r.id === id);
         if (!item) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable (mode dégradé).' });
+        if (!this.visibleToUser(item, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
         item.status = nextStatusForAction(dto.action);
         item.confirmedBy = decidedBy;
         item.confirmedAt = new Date().toISOString();
