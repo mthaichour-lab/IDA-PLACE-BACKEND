@@ -1,4 +1,4 @@
-import { buildMeasuredHistory } from './metering.service';
+import { buildMeasuredHistory, MeteringService } from './metering.service';
 
 describe('buildMeasuredHistory (fonction pure — écran 10, historique mensuel MOCK)', () => {
   it('renvoie `monthsCount` points, chronologiques, se terminant sur le mois demandé', () => {
@@ -28,5 +28,30 @@ describe('buildMeasuredHistory (fonction pure — écran 10, historique mensuel 
     const points = buildMeasuredHistory(500, '2026-01', 10);
     expect(points[0].period).toBe('2025-04');
     expect(points[points.length - 1].period).toBe('2026-01');
+  });
+});
+
+describe('MeteringService.placeSummary (écran 14, dashboard place entière)', () => {
+  const service = new MeteringService();
+
+  it('additionne la facture mock de CHAQUE adhérent réel (jamais un nombre inventé)', () => {
+    const forOne = service.placeSummary(1);
+    const forFive = service.placeSummary(5);
+    expect(forFive.subscriptionTotal).toBe(forOne.subscriptionTotal * 5);
+    expect(forFive.consumptionTotal).toBe(forOne.consumptionTotal * 5);
+    expect(forFive.revenueTotal).toBe(forFive.subscriptionTotal + forFive.consumptionTotal);
+    expect(forFive.adherentCount).toBe(5);
+  });
+
+  it('inducerCount = nombre réel de métriques de la grille (pas un chiffre arbitraire)', () => {
+    const summary = service.placeSummary(5);
+    expect(summary.inducerCount).toBe(service.getGrid().metrics.length);
+    expect(summary.lines).toHaveLength(summary.inducerCount);
+  });
+
+  it('les parts de revenu (%) somment à ~100% sur la consommation hors forfait', () => {
+    const summary = service.placeSummary(3);
+    const total = summary.lines.reduce((s, l) => s + l.revenueSharePct, 0);
+    expect(total).toBeCloseTo(100, 0);
   });
 });

@@ -1,6 +1,8 @@
 import { Body, Controller, Get, Module, Param, Put, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Privileges } from '../common/decorators/privileges.decorator';
+import { AdherentsModule } from '../adherents/adherents.module';
+import { AdherentsService } from '../adherents/adherents.service';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { MeteringService, PriceGrid } from './metering.service';
@@ -24,19 +26,16 @@ import { MeteringService, PriceGrid } from './metering.service';
 @Controller()
 @UseGuards(AuthGuard, PrivilegesGuard)
 class MeteringController {
-  constructor(private readonly service: MeteringService) {}
+  constructor(
+    private readonly service: MeteringService,
+    private readonly adherents: AdherentsService,
+  ) {}
 
   @Get('metering/:company/:period')
   @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01)' })
   get(@Param('company') company: string, @Param('period') period: string) {
     const grid = this.service.getGrid();
-    const lines = grid.metrics.map((m) => {
-      const mesure = this.service.measuredFor(m.metric);
-      const facturable = Math.max(0, mesure - m.includedQuota);
-      const divider = m.unit.startsWith('1 000') ? 1000 : m.unit.startsWith('100 ') ? 100 : 1;
-      const amount = Math.round((facturable / divider) * m.unitPrice);
-      return { ...m, measured: mesure, facturable, amount };
-    });
+    const lines = this.service.computeInvoiceLines();
     const totalHT = grid.subscription.monthly + lines.reduce((s, l) => s + l.amount, 0);
     return {
       company, period, gridVersion: grid.version,
@@ -44,6 +43,16 @@ class MeteringController {
       totalHT, totalTVA: Math.round(totalHT * 0.19), totalTTC: Math.round(totalHT * 1.19),
       status: 'EMISE',
     };
+  }
+
+  @Get('metering/place-summary/:period')
+  @ApiOperation({
+    summary:
+      'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — somme de la facture mock de chaque adhérent RÉEL (AdherentsService), jamais un nombre de compagnies inventé',
+  })
+  async placeSummary(@Param('period') period: string) {
+    const { total } = await this.adherents.listCompanies(1, 1);
+    return { period, ...this.service.placeSummary(total) };
   }
 
   @Get('metering/:company/:period/history/:metric')
@@ -70,5 +79,5 @@ class MeteringController {
   }
 }
 
-@Module({ controllers: [MeteringController], providers: [MeteringService], exports: [MeteringService] })
+@Module({ imports: [AdherentsModule], controllers: [MeteringController], providers: [MeteringService], exports: [MeteringService] })
 export class MeteringModule {}

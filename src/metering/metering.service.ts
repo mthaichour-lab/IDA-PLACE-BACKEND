@@ -109,6 +109,53 @@ export class MeteringService {
     return buildMeasuredHistory(this.measuredFor(metric), period, monthsCount);
   }
 
+  /** Lignes de facture pour UNE compagnie (même calcul que `MeteringController.get()`, extrait ici pour être réutilisé par `placeSummary`). */
+  computeInvoiceLines(): (PriceGridMetric & { measured: number; facturable: number; amount: number })[] {
+    return this.getGrid().metrics.map((m) => {
+      const mesure = this.measuredFor(m.metric);
+      const facturable = Math.max(0, mesure - m.includedQuota);
+      const divider = m.unit.startsWith('1 000') ? 1000 : m.unit.startsWith('100 ') ? 100 : 1;
+      const amount = Math.round((facturable / divider) * m.unitPrice);
+      return { ...m, measured: mesure, facturable, amount };
+    });
+  }
+
+  /**
+   * Dashboard des coûts place entière (écran 14 "Coûts & tarification",
+   * sous-onglet Paramétrage) — additif, 2026-10-18. Somme, pour CHAQUE
+   * adhérent réel de la place (`adherentCount`, fourni par
+   * `AdherentsService.listCompanies` — jamais un nombre inventé), la MÊME
+   * facture mensuelle mock déjà utilisée par `/metering/:company/:period`
+   * (`MOCK_MEASURED_CONSUMPTION` ne varie pas par compagnie dans ce sprint,
+   * voir tête de fichier — additionner across compagnies reste une
+   * opération honnête sur des données déjà mockées, pas une seconde couche
+   * d'invention).
+   */
+  placeSummary(adherentCount: number) {
+    const perCompanyLines = this.computeInvoiceLines();
+    const grid = this.getGrid();
+    const subscriptionTotal = grid.subscription.monthly * adherentCount;
+    const lines = perCompanyLines.map((l) => ({
+      metric: l.metric,
+      label: l.label,
+      unit: l.unit,
+      measured: l.measured * adherentCount,
+      facturable: l.facturable * adherentCount,
+      amountHT: l.amount * adherentCount,
+    }));
+    const consumptionTotal = lines.reduce((s, l) => s + l.amountHT, 0);
+    const revenueTotal = subscriptionTotal + consumptionTotal;
+    return {
+      gridVersion: grid.version,
+      adherentCount,
+      subscriptionTotal,
+      consumptionTotal,
+      revenueTotal,
+      inducerCount: grid.metrics.length,
+      lines: lines.map((l) => ({ ...l, revenueSharePct: consumptionTotal > 0 ? Math.round((l.amountHT / consumptionTotal) * 1000) / 10 : 0 })),
+    };
+  }
+
   /**
    * Fusionne par clé plutôt que de remplacer en bloc : un payload partiel
    * (ex. un seul inducteur de `metrics`, ou `subscription` sans `metrics`)
