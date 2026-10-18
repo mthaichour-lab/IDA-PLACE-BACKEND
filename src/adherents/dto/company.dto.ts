@@ -38,6 +38,14 @@ export class CreateCompanyDto {
   @IsOptional()
   @IsObject()
   delayOverrides?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ description: 'Correspondant désigné par l’adhérent (écran 12) — optionnel, additif' })
+  @IsOptional()
+  @IsString()
+  correspondentName?: string;
+
+  @ApiPropertyOptional() @IsOptional() @IsString() correspondentPhone?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() correspondentEmail?: string;
 }
 
 export class UpdateCompanyDto {
@@ -48,6 +56,9 @@ export class UpdateCompanyDto {
   @ApiPropertyOptional({ enum: FeedMode }) @IsOptional() @IsEnum(FeedMode) feedMode?: FeedMode;
   @ApiPropertyOptional({ enum: CompanyStatus }) @IsOptional() @IsEnum(CompanyStatus) status?: CompanyStatus;
   @ApiPropertyOptional({ type: 'object', additionalProperties: true }) @IsOptional() @IsObject() delayOverrides?: Record<string, unknown>;
+  @ApiPropertyOptional() @IsOptional() @IsString() correspondentName?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() correspondentPhone?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() correspondentEmail?: string;
 }
 
 /** Vue publique d'une compagnie — la clé API n'est JAMAIS renvoyée en clair. */
@@ -63,4 +74,11 @@ export class CompanyViewDto {
   @ApiProperty({ description: 'Clé API masquée, ex: "sk_live_•••••3f2a". Jamais en clair.' })
   apiKeyMasked!: string;
   @ApiPropertyOptional({ type: 'object', additionalProperties: true }) delayOverrides?: Record<string, unknown>;
+  /** Date d'adhésion (écran 12) — additif, réutilise `Company.createdAt`. */
+  @ApiProperty() createdAt!: string;
+  @ApiPropertyOptional() correspondentName?: string;
+  @ApiPropertyOptional() correspondentPhone?: string;
+  @ApiPropertyOptional() correspondentEmail?: string;
+  /** Répartition réelle des agences par type (DG/DR/AG) — additif, écran 12 ("1 DG · 3 DR · 8 agences"). */
+  @ApiProperty({ type: Object, example: { DG: 1, DR: 3, AG: 8 } }) agencyCounts!: Record<'DG' | 'DR' | 'AG', number>;
 }

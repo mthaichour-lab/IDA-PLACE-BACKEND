@@ -71,4 +71,22 @@ export class AdherentsController {
   listWilayas() {
     return this.service.listWilayas();
   }
+
+  @Get('convention')
+  @ApiOperation({ summary: 'Paramètres réels de la convention (délais Art.10/12/19, plafond Art.4) — mêmes valeurs que RecoursModule/EligibilityModule, jamais dupliquées' })
+  getConvention() {
+    return this.service.getConventionParams();
+  }
+
+  @Get('calendar')
+  @ApiOperation({ summary: 'Week-end légal algérien + jours fériés à date fixe 2026-2027 (jours fériés religieux à date mobile volontairement absents, voir referential-reference-data.ts)' })
+  getCalendar() {
+    return this.service.getCalendar();
+  }
+
+  @Get('motifs')
+  @ApiOperation({ summary: "Catalogue réel des motifs d'inéligibilité (articles 3/4/5-6/13/19/28), extrait de eligibility.rules.ts" })
+  getMotifs() {
+    return this.service.getMotifs();
+  }
 }

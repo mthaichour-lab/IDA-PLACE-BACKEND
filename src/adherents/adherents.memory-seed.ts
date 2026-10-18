@@ -17,6 +17,9 @@ export interface MemoryCompany {
   apiKeyMasked: string;
   status: CompanyStatus;
   delayOverrides?: Record<string, unknown>;
+  correspondentName?: string;
+  correspondentPhone?: string;
+  correspondentEmail?: string;
 }
 
 export interface MemoryAgency {

@@ -58,6 +58,22 @@ export class Company {
   @Property({ type: 'json', nullable: true })
   delayOverrides?: Record<string, unknown>;
 
+  /**
+   * Correspondant désigné par l'adhérent (écran 12, référentiel de place)
+   * — additif 2026-10-18. Optionnel : aucune identité réelle n'existe dans
+   * ce worktree pour les compagnies de démonstration, jamais rempli avec
+   * un nom inventé (règle d'or C.1) — `undefined` tant que l'adhérent ne
+   * l'a pas renseigné.
+   */
+  @Property({ nullable: true })
+  correspondentName?: string;
+
+  @Property({ nullable: true })
+  correspondentPhone?: string;
+
+  @Property({ nullable: true })
+  correspondentEmail?: string;
+
   @OneToMany(() => Agency, (a) => a.company)
   agencies = new Collection<Agency>(this);
 

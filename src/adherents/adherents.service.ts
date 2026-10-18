@@ -1,15 +1,19 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
+import { DEFAULT_RECOURS_TIMER_CONFIG } from '../recours/recours.rules';
 import { CreateAgencyDto, AgencyViewDto, UpdateAgencyDto } from './dto/agency.dto';
 import { CompanyViewDto, CreateCompanyDto, UpdateCompanyDto } from './dto/company.dto';
 import { Agency } from './entities/agency.entity';
 import { Company } from './entities/company.entity';
 import { Wilaya } from './entities/wilaya.entity';
 import { MEMORY_AGENCIES, MEMORY_COMPANIES } from './adherents.memory-seed';
+import { ALGERIA_FIXED_HOLIDAYS, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
 import { buildWilayaSeeds } from './wilayas.data';
 
 function maskKey(hash?: string): string {
@@ -17,7 +21,9 @@ function maskKey(hash?: string): string {
   return `sk_live_•••••${hash.slice(-4)}`;
 }
 
-function toCompanyView(c: Company): CompanyViewDto {
+const EMPTY_AGENCY_COUNTS: Record<'DG' | 'DR' | 'AG', number> = { DG: 0, DR: 0, AG: 0 };
+
+function toCompanyView(c: Company, agencyCounts: Record<'DG' | 'DR' | 'AG', number> = EMPTY_AGENCY_COUNTS): CompanyViewDto {
   return {
     id: c.id,
     code: c.code,
@@ -29,6 +35,11 @@ function toCompanyView(c: Company): CompanyViewDto {
     status: c.status,
     apiKeyMasked: maskKey(c.apiKeyHash),
     delayOverrides: c.delayOverrides,
+    createdAt: c.createdAt.toISOString(),
+    correspondentName: c.correspondentName,
+    correspondentPhone: c.correspondentPhone,
+    correspondentEmail: c.correspondentEmail,
+    agencyCounts,
   };
 }
 
@@ -55,18 +66,68 @@ export class AdherentsService {
     @InjectRepository(Company) private readonly companies: EntityRepository<Company>,
     @InjectRepository(Agency) private readonly agencies: EntityRepository<Agency>,
     @InjectRepository(Wilaya) private readonly wilayas: EntityRepository<Wilaya>,
+    private readonly configService: ConfigService,
   ) {}
 
+  // ---- Paramètres de la convention / Calendrier ouvré / Barème & motifs
+  // (écran 12) — additif, voir referential-reference-data.ts. -----------
+
+  /**
+   * Réutilise EXACTEMENT les mêmes variables d'env/valeurs par défaut que
+   * `RecoursService`/`EligibilityModule` (jamais une seconde constante
+   * dupliquée pour cet écran, qui risquerait de diverger silencieusement).
+   */
+  getConventionParams(): ConventionParams {
+    return {
+      version: DEFAULT_ELIGIBILITY_CONFIG.version,
+      silenceDays: Number(this.configService.get<string>('RECOURS_SILENCE_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.silenceDays),
+      oppositionDays: Number(this.configService.get<string>('RECOURS_OPPOSITION_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.oppositionDays),
+      forclusionMonths: Number(
+        this.configService.get<string>('ELIGIBILITY_RECOURS_MAX_MONTHS') ?? DEFAULT_RECOURS_TIMER_CONFIG.forclusionMonths,
+      ),
+      maxAmountDA: Number(this.configService.get<string>('ELIGIBILITY_MAX_AMOUNT_DA') ?? DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA),
+    };
+  }
+
+  getCalendar() {
+    return { weekendDays: ALGERIA_WEEKEND_DAYS, fixedHolidays: ALGERIA_FIXED_HOLIDAYS };
+  }
+
+  getMotifs() {
+    return ELIGIBILITY_MOTIF_CATALOG;
+  }
+
   // ---- Companies -----------------------------------------------------
+
+  /** Répartition réelle des agences par type pour une compagnie — jointure réelle sur `Agency`, jamais une valeur inventée. */
+  private async agencyCountsFor(companyId: string): Promise<Record<'DG' | 'DR' | 'AG', number>> {
+    const rows = await this.agencies.find({ company: companyId });
+    const counts: Record<'DG' | 'DR' | 'AG', number> = { DG: 0, DR: 0, AG: 0 };
+    for (const a of rows) counts[a.type]++;
+    return counts;
+  }
+
+  private agencyCountsForMemory(companyId: string): Record<'DG' | 'DR' | 'AG', number> {
+    const counts: Record<'DG' | 'DR' | 'AG', number> = { DG: 0, DR: 0, AG: 0 };
+    for (const a of MEMORY_AGENCIES) if (a.companyId === companyId) counts[a.type]++;
+    return counts;
+  }
 
   async listCompanies(page: number, pageSize: number): Promise<PaginatedResult<CompanyViewDto>> {
     return withDegradedFallback(
       'AdherentsService.listCompanies',
       async () => {
         const [rows, total] = await this.companies.findAndCount({}, { limit: pageSize, offset: (page - 1) * pageSize, orderBy: { code: 'ASC' } });
-        return { page, total, items: rows.map(toCompanyView) } as PaginatedResult<CompanyViewDto>;
+        const items = await Promise.all(rows.map(async (c) => toCompanyView(c, await this.agencyCountsFor(c.id))));
+        return { page, total, items } as PaginatedResult<CompanyViewDto>;
       },
-      () => paginateArray(MEMORY_COMPANIES as unknown as CompanyViewDto[], page, pageSize),
+      () => {
+        const page_ = paginateArray(MEMORY_COMPANIES, page, pageSize);
+        return {
+          ...page_,
+          items: page_.items.map((c) => ({ ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) }) as CompanyViewDto),
+        };
+      },
     );
   }
 
@@ -76,12 +137,12 @@ export class AdherentsService {
       async () => {
         const c = await this.companies.findOne({ id });
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
-        return toCompanyView(c);
+        return toCompanyView(c, await this.agencyCountsFor(c.id));
       },
       () => {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
-        return c as unknown as CompanyViewDto;
+        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
   }
@@ -104,6 +165,9 @@ export class AdherentsService {
           feedMode: dto.feedMode,
           status: dto.status,
           delayOverrides: dto.delayOverrides,
+          correspondentName: dto.correspondentName,
+          correspondentPhone: dto.correspondentPhone,
+          correspondentEmail: dto.correspondentEmail,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
         await this.companies.getEntityManager().persistAndFlush(c);
@@ -121,9 +185,12 @@ export class AdherentsService {
           apiKeyMasked: maskKey(undefined),
           status: dto.status,
           delayOverrides: dto.delayOverrides,
+          correspondentName: dto.correspondentName,
+          correspondentPhone: dto.correspondentPhone,
+          correspondentEmail: dto.correspondentEmail,
         };
         MEMORY_COMPANIES.push(view as (typeof MEMORY_COMPANIES)[number]);
-        return view as unknown as CompanyViewDto;
+        return { ...view, createdAt: new Date().toISOString(), agencyCounts: EMPTY_AGENCY_COUNTS } as CompanyViewDto;
       },
     );
   }
@@ -136,13 +203,13 @@ export class AdherentsService {
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
         this.companies.assign(c, dto as Partial<Company>);
         await this.companies.getEntityManager().flush();
-        return toCompanyView(c);
+        return toCompanyView(c, await this.agencyCountsFor(c.id));
       },
       () => {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
         Object.assign(c, dto);
-        return c as unknown as CompanyViewDto;
+        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
   }
