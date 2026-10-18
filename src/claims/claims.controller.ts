@@ -27,12 +27,23 @@ export class ClaimsController {
     return this.service.columns();
   }
 
+  // Revue sécurité 2026-10-18 : taille/type jamais bornés auparavant
+  // (DoS par fichier géant, type arbitraire accepté). Limite et extensions
+  // CSV/Excel RAISONNABLES mais provisoires — à valider avec le métier (pas
+  // de valeur officielle dans le dossier technique), voir QUESTIONS_UAR.md.
   @Post('import')
   @Privileges('import')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Import Excel/CSV (47 colonnes) → rapport d’éligibilité ligne à ligne (B.4)' })
   @ApiOkResponse({ type: ClaimImportReportDto })
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 20 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        cb(null, /\.(csv|xlsx|xls)$/i.test(file.originalname));
+      },
+    }),
+  )
   async importFile(@UploadedFile() file?: { originalname?: string; buffer?: Buffer; size?: number }): Promise<ClaimImportReportDto> {
     if (!file?.buffer) {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Fichier manquant (champ "file", multipart/form-data).' });

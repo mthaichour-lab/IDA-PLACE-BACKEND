@@ -38,7 +38,11 @@ export class NormalizedExceptionFilter implements ExceptionFilter {
         if (typeof b.code === 'string') code = b.code;
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // Revue sécurité 2026-10-18 : le message RÉEL (qui peut contenir des
+      // noms de table/colonne, un chemin de fichier, ou d'autres détails
+      // internes pour une erreur ORM/driver) reste SERVEUR uniquement — le
+      // client ne reçoit que le message générique déjà initialisé
+      // ci-dessus, jamais `exception.message` brut.
       this.logger.error(exception.message, exception.stack);
     }
 

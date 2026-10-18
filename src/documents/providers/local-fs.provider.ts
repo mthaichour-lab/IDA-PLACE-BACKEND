@@ -1,7 +1,7 @@
 import { createHmac } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
-import { Injectable, Logger } from '@nestjs/common';
+import { dirname, resolve, sep } from 'path';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { logDegraded } from '../../common/interfaces/degraded-mode';
 import { StorageProvider, StoredDocument } from './storage-provider.interface';
 
@@ -24,7 +24,16 @@ export class LocalFsStorageProvider implements StorageProvider {
   }
 
   async put(key: string, content: Buffer, contentType: string): Promise<StoredDocument> {
-    const path = join(this.baseDir, key);
+    const base = resolve(this.baseDir);
+    const path = resolve(base, key);
+    // Revue sécurité 2026-10-18 : défense en profondeur — `join()` seul ne
+    // clampe PAS au répertoire de base (il normalise juste les `..`), donc
+    // une `key` contenant assez de `../` peut sortir de `baseDir`. L'appelant
+    // (`DocumentsService.upload`) assainit déjà `file.originalname`, mais ce
+    // contrôle protège tout futur appelant qui oublierait de le faire.
+    if (path !== base && !path.startsWith(base + sep)) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Clé de document invalide.' });
+    }
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content);
     this.logger.log(`Document stocké (mode dégradé) : ${path}`);

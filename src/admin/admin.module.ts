@@ -70,7 +70,11 @@ class AdminController {
     return this.users.update(id, dto);
   }
 
+  // Revue sécurité 2026-10-18 : `@Privileges('admin')` ajouté — seule route
+  // GET de ce contrôleur à en manquer un, elle exposait la matrice RBAC
+  // interne complète à n'importe quel utilisateur authentifié.
   @Get('roles/matrix')
+  @Privileges('admin')
   @ApiOperation({ summary: 'Matrice rôles × 17 privilèges (RÉEL — branché sur le guard effectif)' })
   getMatrix() {
     return { roles: ROLES, matrix: this.rbac.getMatrix() };

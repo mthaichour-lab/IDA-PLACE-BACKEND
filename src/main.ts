@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { NormalizedExceptionFilter } from './common/filters/normalized-exception.filter';
 
@@ -9,6 +10,13 @@ const API_PREFIX = process.env.API_PREFIX ?? 'api/v1';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Revue sécurité 2026-10-18 : en-têtes de sécurité par défaut (X-Content-
+  // Type-Options, X-Frame-Options, Referrer-Policy, HSTS...) — aucun n'était
+  // défini auparavant. CSP désactivée explicitement : Swagger UI (`/api/docs`,
+  // chargé par ce même process) utilise des scripts/styles inline que la CSP
+  // stricte par défaut de helmet bloquerait ; les autres en-têtes restent actifs.
+  app.use(helmet({ contentSecurityPolicy: false }));
 
   app.setGlobalPrefix(API_PREFIX);
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: false }));

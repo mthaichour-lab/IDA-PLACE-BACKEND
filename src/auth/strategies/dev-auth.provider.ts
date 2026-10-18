@@ -41,6 +41,20 @@ export class DevAuthProvider implements AuthProvider {
     this.logger.warn(
       'AUTH_PROVIDER=dev actif — authentification de démonstration, à ne JAMAIS utiliser en production.',
     );
+    // Revue sécurité 2026-10-18 : ce secret signe aussi les jetons des URL
+    // pré-signées de LocalFsStorageProvider. La valeur par défaut
+    // 'dev-local-only-secret-change-me' est PUBLIQUE (committée dans
+    // .env.example) — un avertissement fort plutôt qu'un échec au
+    // démarrage, car cet environnement de dev/démo l'utilise tel quel
+    // intentionnellement (voir .env) ; la vraie protection est que
+    // `AUTH_PROVIDER` doit désormais être EXPLICITEMENT "dev" pour que ce
+    // provider soit même sélectionné (voir auth.module.ts).
+    if (!process.env.DEV_JWT_SECRET || process.env.DEV_JWT_SECRET === 'dev-local-only-secret-change-me') {
+      this.logger.warn(
+        'DEV_JWT_SECRET est absent ou vaut la valeur par défaut PUBLIQUE de .env.example — ' +
+          'n\'importe qui connaissant ce secret peut forger un jeton dev valide. Change-le si cet environnement est accessible au-delà de ce poste.',
+      );
+    }
   }
 
   private demoUser(role: Role): DevUserPayload {

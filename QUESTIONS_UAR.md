@@ -337,6 +337,27 @@ ajouter à `actions()`.
 
 ---
 
+## 14. Limites d'upload (taille/type) — valeurs provisoires, pas officielles
+
+**Trouvé lors de la revue sécurité générale du 2026-10-18** (hors
+scoping tenant, voir HANDOFF.md) : ni `POST /documents/upload` ni `POST
+/claims/import` n'avaient de limite de taille ou de type de fichier —
+corrigé avec des valeurs RAISONNABLES mais choisies sans base
+documentaire (15 Mo + PDF/JPEG/PNG/WEBP pour les pièces jointes, 20 Mo +
+CSV/XLS/XLSX pour l'import de dossiers).
+
+**Question** : Quelles sont les limites réelles attendues par l'UAR —
+taille maximale par pièce jointe (constat/carte grise/devis), formats
+acceptés au-delà de PDF/image (scan multi-page en TIFF ?), taille
+maximale d'un fichier d'import de dossiers (combien de lignes/Mo en
+pratique pour un lot mensuel réel) ?
+
+**Une fois répondu** : changement de valeur uniquement dans les deux
+`FileInterceptor` (`documents.module.ts`/`claims.controller.ts`), zéro
+refactoring.
+
+---
+
 ## Comment utiliser ce document
 
 Chaque section est indépendante : répondre à une seule suffit à

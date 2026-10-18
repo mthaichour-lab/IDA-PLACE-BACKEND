@@ -45,7 +45,24 @@ import { KeycloakStrategy } from './strategies/keycloak.strategy';
           keycloak.assertConfigured();
           return keycloak;
         }
-        return dev;
+        if (process.env.AUTH_PROVIDER === 'dev') {
+          return dev;
+        }
+        // Revue sécurité 2026-10-18 : AVANT, toute valeur autre que
+        // 'keycloak' (y compris absente/mal orthographiée) basculait
+        // SILENCIEUSEMENT sur `DevAuthProvider` — qui authentifie N'IMPORTE
+        // QUEL rôle (y compris ADMIN_UAR) depuis un simple en-tête
+        // `x-dev-user` non signé, sans aucune vérification. Dans un
+        // environnement réellement exposé, une variable d'env
+        // AUTH_PROVIDER oubliée ou mal orthographiée aurait donc été un
+        // contournement total de l'authentification, pas un repli dégradé.
+        // Exactement le genre de "triche sur la sécurité" que la règle du
+        // mode dégradé (voir degraded-mode.ts) interdit explicitement —
+        // désormais la valeur doit être EXPLICITEMENT 'dev' ou 'keycloak'.
+        throw new Error(
+          `AUTH_PROVIDER doit valoir "dev" ou "keycloak" (valeur actuelle: ${JSON.stringify(process.env.AUTH_PROVIDER ?? null)}). ` +
+            'Aucun repli implicite sur DevAuthProvider — voir .env.example.',
+        );
       },
     },
   ],

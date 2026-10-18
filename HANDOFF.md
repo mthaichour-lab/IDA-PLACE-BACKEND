@@ -420,6 +420,98 @@ isolé port 3003, `OPERATEUR_PLACE`) sur chaque module modifié —
 rôles place, donc aucun impact visible sur l'expérience démo actuelle
 (qui tourne toujours en `OPERATEUR_PLACE`).
 
+## Revue sécurité générale — hors scoping tenant (2026-10-18)
+
+Deuxième passe de sécurité, complémentaire à la revue RBAC/scoping ci-dessus
+: mass assignment, injection, fuites de secrets/erreurs, validation
+d'upload, en-têtes de sécurité, fusion non validée de config critique.
+Même discipline : chaque trouvaille relue contre le code réel avant
+correctif.
+
+1. **Traversée de chemin dans `DocumentsModule.upload()` (le plus sévère)**
+   — `file.originalname` (multipart, entièrement contrôlé par
+   l'appelant) entrait tel quel dans la clé de stockage, elle-même passée
+   à `join(baseDir, key)` dans `LocalFsStorageProvider.put()`. `path.join`
+   NE clampe PAS au répertoire de base (il normalise juste les `..`) : un
+   nom de fichier `"../../../../etc/cron.d/x"` écrivait hors de
+   `.data/documents`, n'importe où le process a les droits. Corrigé à
+   DEUX niveaux (défense en profondeur) : `sanitizeFilename()` (source,
+   `documents.module.ts` — `basename()` puis allowlist alphanumérique)
+   ET un contrôle de confinement par chemin résolu dans
+   `LocalFsStorageProvider.put()` (puits, protège tout futur appelant qui
+   oublierait d'assainir en amont).
+2. **`AUTH_PROVIDER` basculait silencieusement sur `DevAuthProvider` pour
+   toute valeur ≠ `'keycloak'`** (absente, mal orthographiée...) —
+   `DevAuthProvider` authentifie n'importe quel rôle (y compris
+   `ADMIN_UAR`) depuis un simple en-tête `x-dev-user` non signé, sans
+   aucune vérification de secret. Dans un environnement réellement
+   exposé, une variable d'env oubliée aurait été un contournement total
+   de l'authentification, pas un repli dégradé — exactement la "triche
+   sur la sécurité" que `degraded-mode.ts` interdit explicitement pour
+   tout le reste du projet, appliquée ici à la sélection du provider
+   elle-même. Corrigé : `AUTH_PROVIDER` doit désormais être
+   EXPLICITEMENT `"dev"` ou `"keycloak"`, toute autre valeur fait échouer
+   le démarrage. `.env` de ce poste a déjà `AUTH_PROVIDER=dev` explicite
+   — aucun impact sur l'environnement de dev actuel (vérifié : toute la
+   suite e2e démarre et passe normalement).
+3. **`DEV_JWT_SECRET` par défaut PUBLIQUE** (`dev-local-only-secret-
+   change-me`, committée dans `.env.example` ET `.env` de ce poste),
+   utilisée à la fois pour vérifier les JWT dev et pour signer les URL
+   pré-signées de `LocalFsStorageProvider`. Avertissement fort ajouté au
+   démarrage (pas un échec dur — cet environnement de dev/démo utilise
+   cette valeur intentionnellement) ; la vraie protection est le
+   correctif #2 ci-dessus (`AUTH_PROVIDER` explicite).
+4. **`NormalizedExceptionFilter` renvoyait `exception.message` brut au
+   client** pour toute erreur non-HTTP (panne ORM/driver, exception JS
+   inattendue) — pouvait exposer noms de table/colonne, chemins, détails
+   internes. Corrigé : message générique au client, message réel toujours
+   journalisé serveur (comportement de logging inchangé).
+5. **Upload sans limite de taille/type** (`DocumentsModule.upload` ET
+   `ClaimsModule` import) — DoS par fichier géant, type arbitraire
+   stocké/importé. Limites et allowlist RAISONNABLES mais PROVISOIRES
+   (15 Mo + PDF/JPEG/PNG/WEBP pour les documents, 20 Mo + CSV/XLS/XLSX
+   pour l'import) — aucune valeur officielle dans le dossier technique,
+   point ouvert ajouté à `QUESTIONS_UAR.md`.
+6. **`GET /admin/roles/matrix` sans `@Privileges('admin')`** — exposait
+   la matrice RBAC interne complète (17 privilèges × 6 rôles) à
+   n'importe quel utilisateur authentifié. Corrigé.
+7. **`PUT /admin/roles/matrix` : payload jamais validé** — type TS
+   inline côté contrôleur (pas un DTO de classe), donc le
+   `ValidationPipe` global ne s'appliquait pas du tout.
+   `RbacService.setMatrix()` fusionnait alors n'importe quelle clé
+   rôle/privilège sans vérification. Déjà gardé par `@Privileges('admin')`
+   (pas une escalade de privilège en soi), mais un point d'entrée non
+   validé sur une config de sécurité critique. Corrigé en validant dans
+   `setMatrix()` lui-même (protège tout futur appelant interne aussi,
+   pas seulement cette route).
+8. **Aucun en-tête de sécurité** (`helmet` absent) — ajouté (`npm install
+   helmet`, nouvelle dépendance) avec `contentSecurityPolicy: false`
+   explicite (Swagger UI, servi par ce même process sur `/api/docs`,
+   utilise des scripts/styles inline qu'une CSP stricte par défaut
+   bloquerait — vérifié que `/api/docs` charge toujours correctement
+   après coup). Tous les autres en-têtes de `helmet` restent actifs
+   (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, HSTS...).
+
+**Points confirmés SAINS** (vérifiés, pas juste supposés) : pas de SQL
+brut/`eval`/exécution shell nulle part ; `apiKeyMasked` est réellement
+dérivé d'un hash stocké, jamais la clé en clair ; `Expert.rib` est
+correctement exclu de tous les DTO de vue malgré son champ `hidden:true`
+sur l'entité ; CORS n'est pas un wildcard (origine précise +
+`credentials`) ; `PlaceUserDirectory.definedFieldsOnly()` protège déjà
+contre un piège de mass assignment adjacent (class-transformer qui
+transforme un champ optionnel absent en `undefined` explicite, ce qui
+aurait effacé des données via `Object.assign`).
+
+**Vérifié** : 281/281 tests unitaires (dont 9 nouveaux cas dans
+`normalized-exception.filter.spec.ts`/`rbac.service.spec.ts`/
+`auth-provider-selection.spec.ts`), e2e 69/70 (9 nouveaux cas dans
+`test/security-general.e2e-spec.ts`, le seul échec restant est le même
+flake `claims-import` pré-existant et sans rapport, voir la revue RBAC
+ci-dessus pour sa confirmation via `git stash`), `tsc --noEmit` propre,
+build réussi. Smoke-testé en navigateur/curl réel : en-têtes `helmet`
+bien présents sur une vraie réponse, `/api/docs` (Swagger) charge
+toujours correctement avec la CSP désactivée.
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)

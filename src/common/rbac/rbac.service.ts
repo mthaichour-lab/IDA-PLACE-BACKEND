@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   DEFAULT_ROLE_MATRIX,
   Privilege,
   PRIVILEGES,
   Role,
+  ROLES,
   RoleMatrix,
 } from './roles-privileges';
 
@@ -29,7 +30,35 @@ export class RbacService {
    * provoquait un verrouillage RBAC complet dès qu'un payload partiel était
    * envoyé (même défaut que `MeteringService.updateGrid`, voir ce fichier).
    */
+  /**
+   * Revue sécurité 2026-10-18 : AVANT, `next` était un simple type TS inline
+   * côté contrôleur (`PUT /admin/roles/matrix`), donc jamais validé par le
+   * `ValidationPipe` global (whitelist/transform ne s'appliquent qu'aux DTO
+   * de classe) — n'importe quelle clé "rôle"/"privilège" inconnue, ou une
+   * valeur non booléenne, polluait silencieusement la matrice en mémoire.
+   * Déjà gardé par `@Privileges('admin')` (pas une escalade de privilège en
+   * soi), mais c'est la limite de validation d'un objet de config critique
+   * — validé ici, au point d'entrée unique de la mutation, plutôt que dans
+   * le contrôleur (protège tout futur appelant interne aussi).
+   */
   setMatrix(next: Partial<RoleMatrix>): void {
+    for (const [role, privileges] of Object.entries(next)) {
+      if (!(ROLES as readonly string[]).includes(role)) {
+        throw new BadRequestException({ code: 'BAD_REQUEST', message: `Rôle inconnu dans la matrice: "${role}".` });
+      }
+      if (privileges === null || typeof privileges !== 'object') {
+        throw new BadRequestException({ code: 'BAD_REQUEST', message: `Privilèges invalides pour le rôle "${role}".` });
+      }
+      for (const [privilege, value] of Object.entries(privileges)) {
+        if (!(PRIVILEGES as readonly string[]).includes(privilege)) {
+          throw new BadRequestException({ code: 'BAD_REQUEST', message: `Privilège inconnu: "${privilege}".` });
+        }
+        if (typeof value !== 'boolean') {
+          throw new BadRequestException({ code: 'BAD_REQUEST', message: `Valeur non booléenne pour "${role}.${privilege}".` });
+        }
+      }
+    }
+
     const merged = { ...this.matrix };
     for (const role of Object.keys(next) as Role[]) {
       merged[role] = { ...merged[role], ...next[role] };
