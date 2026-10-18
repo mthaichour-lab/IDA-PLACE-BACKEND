@@ -559,6 +559,57 @@ propre, build réussi. Smoke-testé en navigateur/curl réel (lecture,
 scoring calculé, écriture en mode dégradé) — tout fonctionne
 normalement après la mise à jour.
 
+## Pièces jointes Recours/Commission + durcissement privilèges — QUESTIONS_UAR.md §9/§11/§12 (2026-10-18, équipe 4 rôles)
+
+Trois décisions du Product Owner réel (pas simulées), traitées ensemble
+par le Backend agent dans un même worktree (`feat/uar-points-9-11-12`,
+commit `704d3b3`) :
+
+- **§9** : nouvelle entité `Document` (`src/documents/entities/
+  document.entity.ts`, premier enregistrement persisté de
+  `DocumentsModule`) — `recoursId?`/`commissionCaseId?` en simples
+  colonnes string (jamais de relation MikroORM, règle constante de ce
+  code base). `POST /documents/upload` accepte ces deux champs additifs
+  (dépôt manuel, jamais les deux à la fois) ; `GET /documents?recoursId=X
+  |commissionCaseId=Y` liste les pièces — même contrôle de périmètre
+  compagnie que `RecoursService.get`/`CommissionService.getCase` (le
+  dossier cité est résolu via le VRAI service avant tout accès, même
+  motif que le correctif `CommissionService.createCase` de la revue
+  sécurité). Migration `Migration20261018010000_DocumentAttachments.ts`.
+- **§11** : nouveau privilège `closeQuarter` (OPERATEUR_PLACE/ADMIN_UAR/
+  MEMBRE_COMMISSION uniquement), remplace `synth` sur `POST /settlement/
+  quarter/:q/close` — `synth` reste inchangé pour la lecture.
+- **§12** : nouveau privilège `onboardCompany` (OPERATEUR_PLACE/
+  ADMIN_UAR uniquement), remplace `refedit` sur `POST /referential/
+  companies` — `refedit` reste inchangé pour `updateCompany`/
+  `createAgency`/`updateAgency`/experts.
+
+**Vérifié par le Backend agent puis re-vérifié par le Tech Lead** :
+292/292 tests unitaires (9 nouveaux), 79/79 e2e (9 nouveaux), `tsc
+--noEmit` propre, build réussi.
+
+**Vérification Testeur en navigateur/API réel (texte seul, jamais de
+capture d'écran)** — **PASS sur les 3 points**, aucune trouvaille cette
+fois (contrairement au round précédent) :
+- §9 : upload réel (contournement : `curl -F file=@...` bloqué par le
+  sandbox de cette session — `PowerShell HttpClient` utilisé à la
+  place, fonctionne normalement), liste confirmée, lien de téléchargement
+  réel (`url` non vide), 403 cross-tenant confirmé (compagnie tierce,
+  upload ET lecture), 404 dossier inconnu confirmé, variante
+  CommissionCase (recours → opposer → contester → transmettre_commission
+  → dossier de commission) également vérifiée de bout en bout.
+- §11 : `TRESORIER`/`CORRESPONDANT_IDA` → 403 (`held` ne contient pas
+  `closeQuarter` malgré `synth` présent) ; `OPERATEUR_PLACE` → 201/409
+  idempotent.
+- §12 : `CORRESPONDANT_IDA` → 403 (`refedit` ne suffit plus) ;
+  `OPERATEUR_PLACE` → 201 ; régression `updateCompany` confirmée saine
+  pour un correspondant sur sa propre compagnie.
+- Limitation notée explicitement par le Testeur : le "bouton d'upload
+  masqué sans le privilège `insert`" n'a pas pu être revérifié EN
+  NAVIGATEUR (le panneau de prévisualisation de cette session est figé
+  sur `OPERATEUR_PLACE`) — couvert uniquement par les tests unitaires
+  `AttachmentsPanel.test.tsx` (frontend), pas par cette passe navigateur.
+
 ## `GET /settlement/quarter/closures` — écran 4 "Échanges" (2026-10-18, équipe 4 rôles)
 
 Premier point de `QUESTIONS_UAR.md` tranché directement par le Product

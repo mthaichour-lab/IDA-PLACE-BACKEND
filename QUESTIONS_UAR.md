@@ -187,26 +187,21 @@ champ additif.
 
 ---
 
-## 9. Recours — pièces jointes Annexes 2/3/4
+## 9. Recours — pièces jointes Annexes 2/3/4 — ✅ RÉSOLU (2026-10-18)
 
-**Capture** : écrans 4/7 — pièces jointes consultables par dossier de
-recours/commission.
+**Décision Product Owner (l'utilisateur réel)** : `DocumentsModule`
+étendu aux recours/dossiers de commission — dépôt MANUEL par
+l'utilisateur (pas de génération automatique de PDF).
 
-**Pourquoi pas construit** : `DocumentsModule` existe (upload/presign
-réels) mais n'est intégré nulle part dans `RecoursModule`/
-`CommissionModule` — le périmètre fonctionnel du dossier technique (B.2)
-ne liste les pièces jointes que pour les écrans 2/3/12 (Import des
-dossiers/Confrontation/Référentiel).
-
-**Question** : Faut-il étendre la portée de `DocumentsModule` aux
-recours/dossiers de commission (Annexe 2 = demande, Annexe 3 =
-opposition, Annexe 4 = contestation, PV de commission) ? Si oui, qui
-dépose ces pièces (upload manuel par l'utilisateur, ou génération
-automatique de PDF à partir des données du recours) ?
-
-**Une fois répondu** : relation `Recours`/`CommissionCase` →
-`Document[]`, endpoints d'upload scoping par dossier — travail de
-modélisation, pas un ajout trivial.
+**Construit** : nouvelle entité `Document` (`recoursId?`/
+`commissionCaseId?`, jamais les deux), `POST /documents/upload` accepte
+ces deux champs additifs, `GET /documents?recoursId=X|commissionCaseId=Y`
+liste les pièces — même contrôle de périmètre compagnie que
+`RecoursService.get`/`CommissionService.getCase`. Côté front : section
+"Pièces jointes" (`AttachmentsPanel`, composant transverse) sur
+`/exchanges` et `/commission`. Vérifié en navigateur réel de bout en
+bout par le Testeur (upload, liste, 403 cross-tenant, 404 dossier
+inconnu) — voir HANDOFF.md des deux dépôts.
 
 ---
 
@@ -223,69 +218,33 @@ nécessaire plus tard.
 
 ---
 
-## 11. Compensation trimestrielle — qui peut clôturer la place entière ?
+## 11. Compensation trimestrielle — qui peut clôturer la place entière ? — ✅ RÉSOLU (2026-10-18)
 
-**Trouvé lors de la revue sécurité RBAC du 2026-10-18** (voir HANDOFF.md
-backend, section de ce jour) : `POST /settlement/quarter/:q/close`
-(`closeQuarterly`) exige le privilège `synth`, détenu à la fois par les
-rôles "place" ET par `CORRESPONDANT_IDA`/`TRESORIER` (rôles scopés à UNE
-compagnie). Contrairement à `closeMonthly` (clôture PAR compagnie, où un
-`TRESORIER` ne clôturant que sa propre compagnie est légitime — corrigé
-ce jour, voir HANDOFF.md), `closeQuarterly` n'a PAS de paramètre
-compagnie : c'est une action **unique et place-entière** (compensation
-multilatérale de TOUTES les compagnies à la fois). Techniquement
-aujourd'hui, le trésorier d'UNE SEULE compagnie adhérente peut donc
-déclencher la clôture trimestrielle pour TOUTE la place — générer le
-bordereau Art.17 avant que les autres compagnies n'aient fini leurs
-propres vérifications, par exemple.
+**Décision Product Owner (l'utilisateur réel)** : réservé aux rôles
+"place" (OPERATEUR_PLACE/ADMIN_UAR/MEMBRE_COMMISSION).
 
-**Pourquoi non corrigé seul** : ce n'est pas un trou de scoping tenant
-(il n'y a pas de "compagnie B dont les données fuient vers la compagnie
-A" ici) mais une question de matrice de privilèges — quel rôle doit
-légitimement pouvoir déclencher une action place-entière irréversible.
-Changer unilatéralement qui détient `synth` pour cette route précise
-serait une décision métier, pas un correctif mécanique.
-
-**Question** : La clôture trimestrielle (Art.17) doit-elle être réservée
-aux rôles "place" (OPERATEUR_PLACE/ADMIN_UAR), ou un TRESORIER/
-CORRESPONDANT_IDA peut-il légitimement la déclencher (ex: lors d'une
-réunion UAR où un représentant de compagnie est mandaté) ?
-
-**Une fois répondu** : si réservé aux rôles place, scinder un nouveau
-privilège dédié (ex. `closeQuarter`) tenu uniquement par
-OPERATEUR_PLACE/ADMIN_UAR/MEMBRE_COMMISSION, au lieu de réutiliser
-`synth` (qui reste nécessaire pour la LECTURE des synthèses par les
-compagnies). Changement de décorateur uniquement, pas de refactoring.
+**Construit** : nouveau privilège dédié `closeQuarter`, `POST
+/settlement/quarter/:q/close` l'exige désormais au lieu de `synth`
+(qui reste inchangé pour la LECTURE des synthèses par
+CORRESPONDANT_IDA/TRESORIER). Vérifié en navigateur/API réel par le
+Testeur : `TRESORIER`/`CORRESPONDANT_IDA` → 403, `OPERATEUR_PLACE` →
+201/409 (idempotence).
 
 ---
 
-## 12. Référentiel de place — qui peut créer une NOUVELLE compagnie adhérente ?
+## 12. Référentiel de place — qui peut créer une NOUVELLE compagnie adhérente ? — ✅ RÉSOLU (2026-10-18)
 
-**Trouvé lors de la revue sécurité RBAC du 2026-10-18** : `POST
-/referential/companies` (`createCompany`) exige `refedit`, détenu par
-`CORRESPONDANT_IDA` (rôle représentant une compagnie déjà adhérente).
-Contrairement à `updateCompany`/`createAgency` (désormais vérifiés : un
-correspondant ne peut agir que sur SA PROPRE compagnie, voir
-HANDOFF.md), **créer une compagnie n'a pas de "propriétaire existant" à
-vérifier** — c'est un acte d'onboarding d'un NOUVEL adhérent à la place.
-Aujourd'hui, n'importe quel correspondant déjà adhérent peut créer une
-compagnie adhérente supplémentaire.
+**Décision Product Owner (l'utilisateur réel)** : réservé aux rôles
+"place" (OPERATEUR_PLACE/ADMIN_UAR).
 
-**Pourquoi non corrigé seul** : décider si l'onboarding d'un nouvel
-adhérent doit être un acte réservé aux rôles "place" (ADMIN_UAR, typique
-d'un onboarding réglementaire) est une question de processus métier, pas
-un trou de scoping tenant mécanique.
-
-**Question** : L'admission d'une nouvelle compagnie à la convention IDA
-passe-t-elle par une procédure UAR documentée ailleurs (vote, signature
-de convention) qui devrait se refléter dans qui peut appeler cette
-route ?
-
-**Une fois répondu** : si réservé aux rôles place, retirer `refedit` de
-`CORRESPONDANT_IDA` pour cette route spécifique (un privilège dédié, ex.
-`onboardCompany`) — `refedit` resterait nécessaire pour
-`updateCompany`/`createAgency`/experts (déjà correctement restreints à
-sa propre compagnie).
+**Construit** : nouveau privilège dédié `onboardCompany`, `POST
+/referential/companies` l'exige désormais au lieu de `refedit` (qui
+reste inchangé pour `updateCompany`/`createAgency`/`updateAgency`/
+experts, toujours restreints à SA PROPRE compagnie pour un
+CORRESPONDANT_IDA). Vérifié en navigateur/API réel par le Testeur :
+`CORRESPONDANT_IDA` → 403 sur la création, `OPERATEUR_PLACE` → 201 ;
+`updateCompany` toujours fonctionnel pour un correspondant sur sa
+propre compagnie (régression confirmée saine).
 
 ---
 
