@@ -123,31 +123,23 @@ table de correspondance comme référentiel figé.
 
 ---
 
-## 6. Échanges Annexes 2/3/4 — distinction "Accepté/silence" vs "Réglé/compensé"
+## 6. Échanges Annexes 2/3/4 — distinction "Accepté/silence" vs "Réglé/compensé" — ✅ RÉSOLU (2026-10-18)
 
-**Capture** : écran 4 "Échanges" — le guide montre des onglets
-"Acceptés/silence" et "Réglés/compensés" comme deux catégories
-distinctes.
+**Décision Product Owner (l'utilisateur réel, pas simulée)** : la
+distinction est PUREMENT TEMPORELLE — `Recours.state === REGLE` avant/
+après la clôture trimestrielle (`SettlementClosure`) du trimestre dérivé
+de `settledAt`. Aucun nouveau champ sur `Recours`, aucun nouvel état de
+`RECOURS_STATES`.
 
-**Pourquoi pas construit** : `RECOURS_STATES` n'a qu'un seul état final
-positif, `REGLE` — atteint soit par acceptation explicite, soit par
-silence tacite Art.10, soit par clôture favorable de commission. Les
-onglets `REGLE`/`REJETE` existent déjà côté front (ajoutés le
-2026-10-18) mais ne distinguent pas "comment" un dossier est arrivé à
-`REGLE`.
+**Construit** : `GET /settlement/quarter/closures` (`settlement.service.ts`
+`quarterlyClosures()`, commit `68e08fc`) + sous-onglets côté front
+`/exchanges` (calcul entièrement client, `quarterOf(settledAt)` croisé
+avec la liste des clôtures — voir HANDOFF.md des deux dépôts pour le
+détail, y compris une trouvaille réelle du Testeur en vérification
+navigateur corrigée depuis : `closuresQuery` manquait de polling).
 
-**Question** : La distinction "Accepté/silence" (résolu avant mise en
-compensation) vs "Réglé/compensé" (effectivement payé lors de la
-compensation trimestrielle) correspond-elle à un AUTRE état du cycle de
-vie (ex. "réglé mais pas encore compensé" vs "compensé") ? Si oui, quel
-événement marque le passage de l'un à l'autre — la clôture trimestrielle
-(`SettlementClosure`) suffit-elle, ou faut-il un champ supplémentaire par
-recours ?
-
-**Une fois répondu** : si la distinction = `Recours.state === REGLE`
-avant/après la date de `SettlementClosure` du trimestre concerné, c'est
-calculable sans nouveau champ (sous-filtre additif côté front). Sinon,
-ajouter le champ manquant sur `Recours`.
+Gardé ici comme trace de la décision et du point de départ, au cas où ce
+document serait relu plus tard.
 
 ---
 

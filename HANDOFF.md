@@ -559,6 +559,20 @@ propre, build réussi. Smoke-testé en navigateur/curl réel (lecture,
 scoring calculé, écriture en mode dégradé) — tout fonctionne
 normalement après la mise à jour.
 
+## `GET /settlement/quarter/closures` — écran 4 "Échanges" (2026-10-18, équipe 4 rôles)
+
+Premier point de `QUESTIONS_UAR.md` tranché directement par le Product
+Owner réel (pas simulé) de ce projet : voir `QUESTIONS_UAR.md` §6 (marqué
+résolu) pour la décision et `HANDOFF.md` frontend pour le détail complet
+du round (agent Backend pour cet endpoint, agent Frontend pour les
+sous-onglets `/exchanges`, agent Testeur pour la vérification réelle en
+navigateur). Endpoint additif, place-wide (pas de scoping tenant — une
+clôture trimestrielle est une action de place, `SettlementClosure.
+companyCode` jamais renseigné pour le scope QUARTERLY), aucun changement
+de `QuarterlySettlementDto`/`RecoursViewDto` (contrats figés). Vérifié :
+283/283 tests unitaires (2 nouveaux cas), `tsc --noEmit` propre, build
+réussi.
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
