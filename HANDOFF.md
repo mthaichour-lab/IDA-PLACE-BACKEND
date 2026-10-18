@@ -512,6 +512,53 @@ build réussi. Smoke-testé en navigateur/curl réel : en-têtes `helmet`
 bien présents sur une vraie réponse, `/api/docs` (Swagger) charge
 toujours correctement avec la CSP désactivée.
 
+## Mise à jour de dépendances — vulnérabilité critique corrigée (2026-10-18)
+
+En creusant le `npm install helmet` de la revue sécurité générale
+ci-dessus (qui avait signalé "69 vulnérabilités dont 1 critique" sans
+être investigué sur le moment), `npm audit` a révélé que la vulnérabilité
+**critique** était dans **`@mikro-orm/core`** lui-même — l'ORM utilisé
+par absolument tous les modules de ce backend — PAS dans un outil de
+build/test comme le reste du bruit habituel de `npm audit` :
+
+- **`@mikro-orm/core` < 6.6.10** : injection SQL via un objet spécialement
+  construit (GHSA-gwhv-j974-6fxm, critique) + pollution de prototype
+  dans `Utils.merge` (GHSA-qpfv-44f3-qqx6, élevée).
+- **`@mikro-orm/knex` ≤ 6.6.13** : injection SQL via des identifiants/clés
+  JSON-path contrôlés à l'exécution (GHSA-cfw5-68c4-ffqp, élevée, CVSS
+  7.6) — affecte `@mikro-orm/migrations`/`@mikro-orm/postgresql`.
+- **`@nestjs/common` 11.0.0-next.1–11.0.15** : exécution de code arbitraire
+  via l'en-tête Content-Type (modérée, mais "exécution de code" est le
+  genre de chose qui mérite d'être prise au sérieux indépendamment du
+  label de sévérité npm).
+- **`@nestjs/core`/`@nestjs/platform-express`** : injection + vulnérabilité
+  `path-to-regexp` transitive (élevée).
+
+Ce projet était épinglé sur `@mikro-orm/*@6.4.3` et `@nestjs/{common,
+core,platform-express}@11.0.11` — tous dans la plage vulnérable. Mis à
+jour vers `@mikro-orm/{core,migrations,postgresql,cli}@6.6.17` et
+`@nestjs/{common,core,platform-express}@11.2.7` +
+`@nestjs/swagger@11.4.7` + `@nestjs/config@4.0.4` — **toutes des mises à
+jour mineures/patch, même version majeure** (confirmé `isSemVerMajor:
+false` dans `npm audit --json` avant d'y toucher, et compatibilité
+vérifiée contre les `peerDependencies` de `@mikro-orm/nestjs@6.1.1`
+avant de lancer l'install). Vulnérabilités prod restantes (19, dont 0
+critique) nécessitent toutes une montée de version MAJEURE
+(`@mikro-orm/*@7.x`, `@nestjs/swagger@12.x`, `exceljs@3.x` pour un
+`uuid` transitif) — **volontairement non tentées ici** : une migration
+majeure de l'ORM central de ce backend (entités, migrations,
+repositories, requêtes dans quasiment chaque service) est un chantier à
+part entière, pas un correctif de routine à faire en passant.
+
+**Vérifié** : 281/281 tests unitaires, e2e 70/70 PASSÉS cette fois
+(le flake `claims-import`/ECONNRESET habituel ne s'est simplement pas
+manifesté sur cette exécution précise — reconfirmé flaky en ré-exécutant
+ce seul fichier isolément juste après, donc PAS corrigé par cette mise à
+jour, juste une question de timing comme toujours), `tsc --noEmit`
+propre, build réussi. Smoke-testé en navigateur/curl réel (lecture,
+scoring calculé, écriture en mode dégradé) — tout fonctionne
+normalement après la mise à jour.
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
