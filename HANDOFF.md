@@ -95,6 +95,54 @@ l'hypothèse ou omettre proprement, ne jamais l'inventer).
    dossier par compagnie, assuré victime nommé, code de barème par
    dossier (aucun de ces champs n'existe sur `Claim`/`Recours`).
 
+### Fait pour rapprocher `/monthly` et `/commission` de la capture de référence (2026-10-18) — équipe simulée
+
+Premier sprint avec une équipe de 5 agents en parallèle (Tech Lead +
+Backend + Frontend + Testeur + Product Owner, worktrees séparés). Le
+Product Owner a tranché plusieurs hypothèses AVANT codage — voir son
+verdict complet ci-dessous, repris dans les commits.
+
+1. **Bug corrigé dans `monthly()` EXISTANT** (pas seulement une
+   hypothèse à trancher, verdict PO explicite) : le regroupement
+   mensuel se faisait par date d'ENVOI (`requestSentAt`) au lieu de
+   date de RÈGLEMENT (`settledAt`, repli `requestSentAt`) — contredit
+   par la capture (colonnes "Réglé le"/"Inséré le" distinctes, recours
+   réglés en septembre mais saisis jusqu'à début octobre). `monthly()`
+   n'excluait non plus jamais les recours en `OPPOSITION` de ses
+   propres totaux par compagnie (RG-06) — corrigé. Changement de
+   VALEUR, pas de FORME : `MonthlySettlementDto`/
+   `CompanyMonthlySynthesisDto` inchangés.
+2. **Nouveaux `GET /settlement/monthly/:period/summary`** (recours
+   réglés intégrés, montant, oppositions exclues RG-06, échéance de
+   saisie — 5e jour CALENDAIRE de M+1, pas de calendrier de jours
+   fériés algériens inventé, le PO déconseille explicitement) **et
+   `GET /settlement/monthly/:period/annexe7`** (regroupement par paire
+   créancier→débiteur EXACTE, sans netting, contrairement à
+   `/settlement/quarter`).
+3. **Nouveau `GET /commission/summary`** : dossiers pendants, hors
+   délai Art.24 (15 jours), recours jugés fondés (`CommissionCase.
+   decision.outcome === 'RECOURS_FONDE'`), oppositions réputées
+   fondées Art.12 — **mesure `RecoursModule` indépendante**
+   (`resolution.kind === 'OPPOSITION_FONDEE_ART12'`), le PO confirme
+   que ce n'est PAS un sous-ensemble des décisions de commission (une
+   opposition peut être réputée fondée par simple silence, sans jamais
+   passer par un dossier de commission).
+4. **Toujours omis** (verdict PO : vraies nouvelles fonctionnalités,
+   pas de la donnée déjà là) : pipeline "Avancement du lot" à 5 étapes
+   nommées avec échéances (`SettlementClosure` ne modélise qu'une
+   clôture simple, pas un workflow multi-étapes) ; onglets "Adhésions &
+   retraits" et "Plafond conventionnel" (aucune entité de demande
+   d'adhésion/retrait ni de révision de plafond — seul le statut
+   `Company.status` existe, pas un workflow de demande).
+5. Relabellisation purement visuelle des 3 statuts Commission
+   (`A_INSTRUIRE`/`EN_DELIBERE`/`PRONONCE` → "Instruction"/"Audience"/
+   "Concilié") confirmée par le PO comme fidèle au nombre et à l'ordre
+   des badges de la capture — **côté front uniquement**, zéro
+   changement de modèle back.
+
+Vérifié : 231/231 tests unitaires (9 nouveaux cas), 41/41 e2e, tsc/
+build sans régression.
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même
