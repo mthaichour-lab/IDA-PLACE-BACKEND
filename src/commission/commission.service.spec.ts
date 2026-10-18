@@ -136,4 +136,49 @@ describe('CommissionService (mode dégradé — file de conciliation, pénalité
 
     await expect(commission.getCase('inconnu')).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
   });
+
+  describe('summary() — KPI de synthèse (écran 7, guide illustré)', () => {
+    it('compte les dossiers pendants et ceux hors délai Art.24 (15 jours)', async () => {
+      const recent = await openCaseFromFreshRecours();
+
+      jest.useFakeTimers().setSystemTime(new Date(Date.now() - 20 * 86_400_000));
+      const overdue = await openCaseFromFreshRecours();
+      jest.useRealTimers();
+
+      const summary = await commission.summary();
+      expect(summary.pendingCount).toBe(2); // les deux restent A_INSTRUIRE
+      expect(summary.overdue15dCount).toBe(1); // seul le dossier ouvert il y a 20 jours dépasse les 15 jours Art.24
+
+      await commission.deliberate(recent.id);
+      await commission.decide(recent.id, { outcome: 'RECOURS_REJETE' });
+      const afterDecision = await commission.summary();
+      expect(afterDecision.pendingCount).toBe(1); // "recent" est désormais PRONONCE, ne compte plus comme pendant
+    });
+
+    it('compte les dossiers PRONONCE avec décision RECOURS_FONDE', async () => {
+      const a = await openCaseFromFreshRecours();
+      const b = await openCaseFromFreshRecours();
+      await commission.deliberate(a.id);
+      await commission.decide(a.id, { outcome: 'RECOURS_FONDE' });
+      await commission.deliberate(b.id);
+      await commission.decide(b.id, { outcome: 'RECOURS_REJETE' });
+
+      const summary = await commission.summary();
+      expect(summary.recoursFondesCount).toBe(1);
+    });
+
+    it('compte les oppositions réputées fondées (Art.12) comme une mesure RecoursModule, indépendante des dossiers de commission', async () => {
+      // Un recours dont l'opposition n'est JAMAIS traitée dans le délai Art.12 (15 jours) devient
+      // automatiquement OPPOSITION_FONDEE_ART12 — sans jamais passer par un dossier de commission.
+      const r = await recours.create({ claimId: 'clm-art12', from: 'CAAT', to: 'SAA', amount: 50_000 });
+      await recours.transition(r.id, { action: 'opposer' }, fakeUser('saa.correspondant'));
+
+      jest.useFakeTimers().setSystemTime(new Date(Date.now() + 16 * 86_400_000));
+      const summary = await commission.summary();
+      jest.useRealTimers();
+
+      expect(summary.oppositionsFondeesCount).toBe(1);
+      expect(summary.pendingCount).toBe(0); // confirme qu'aucun dossier de commission n'a été créé pour ce recours
+    });
+  });
 });

@@ -121,3 +121,15 @@ export class ListSanctionsQueryDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
 }
+
+/**
+ * KPI de synthèse (écran 7, guide illustré) — endpoint additif
+ * (`GET /commission/summary`), `CommissionCaseViewDto` ne change pas de
+ * forme (contrat figé, voir ARCHITECTURE.md §1).
+ */
+export class CommissionSummaryDto {
+  @ApiProperty({ description: 'Dossiers non encore tranchés (status A_INSTRUIRE ou EN_DELIBERE)' }) pendingCount!: number;
+  @ApiProperty({ description: 'Parmi les dossiers pendants, ceux ouverts depuis plus de 15 jours (Art. 24)' }) overdue15dCount!: number;
+  @ApiProperty({ description: 'Dossiers PRONONCE avec décision RECOURS_FONDE' }) recoursFondesCount!: number;
+  @ApiProperty({ description: "Oppositions réputées fondées à défaut de contestation (Art. 12, RecoursModule — indépendant des dossiers de commission)" }) oppositionsFondeesCount!: number;
+}

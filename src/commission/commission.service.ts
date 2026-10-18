@@ -9,6 +9,7 @@ import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RecoursService } from '../recours/recours.service';
 import {
   CommissionCaseViewDto,
+  CommissionSummaryDto,
   CreateCommissionCaseDto,
   DecideCommissionDto,
   ListCommissionCasesQueryDto,
@@ -23,6 +24,8 @@ import { Sanction } from './entities/sanction.entity';
 import { canAdvanceCaseStatus, CommissionCaseStatus, isCompanyPartyToCase } from './commission.rules';
 
 const DEFAULT_SCHEDULE_DELAY_MS = 14 * 86_400_000;
+/** Délai de conciliation Art. 24 — même valeur que le KPI "hors délai de 15j" du guide illustré de référence. */
+const ART24_CONCILIATION_DAYS = 15;
 
 /** Repli mémoire — dossier de conciliation. */
 type MemoryCase = {
@@ -331,5 +334,39 @@ export class CommissionService {
     const effectiveCompany = tenant ?? query.company;
     const filtered = effectiveCompany ? rows.filter((r) => r.companyCode === effectiveCompany) : rows;
     return paginateArray(filtered, query.page, query.pageSize);
+  }
+
+  /**
+   * KPI de synthèse (écran 7, guide illustré) — endpoint additif, même
+   * scoping tenant que `listCases()`. `oppositionsFondeesCount` est une
+   * mesure RecoursModule (résolution `OPPOSITION_FONDEE_ART12`, Art. 12 —
+   * déjà réelle, voir `recours.rules.ts` et `MonitoringModule` qui l'agrège
+   * déjà pour le scoring de conformité) : INDÉPENDANTE des dossiers de
+   * commission, une opposition peut être réputée fondée sans jamais
+   * remonter en commission. Hypothèse à confirmer avec le Product Owner si
+   * le guide voulait plutôt dire "oppositions dont la contestation a été
+   * tranchée en commission" — aucun champ ne distingue ce sous-cas
+   * aujourd'hui, voir HANDOFF.md.
+   */
+  async summary(user?: AuthenticatedUser): Promise<CommissionSummaryDto> {
+    const rows = (await this.loadAllCaseViews()).filter((r) => this.visibleToUser(r, user));
+    const now = Date.now();
+
+    const pending = rows.filter((r) => r.status !== 'PRONONCE');
+    const overdue15d = pending.filter((r) => now - new Date(r.createdAt).getTime() > ART24_CONCILIATION_DAYS * 86_400_000);
+    const recoursFondes = rows.filter((r) => r.status === 'PRONONCE' && r.decision?.outcome === 'RECOURS_FONDE');
+
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const allRecours = await this.recours.listAll();
+    const oppositionsFondees = allRecours.filter(
+      (r) => r.resolution?.kind === 'OPPOSITION_FONDEE_ART12' && (!tenant || r.from === tenant || r.to === tenant),
+    );
+
+    return {
+      pendingCount: pending.length,
+      overdue15dCount: overdue15d.length,
+      recoursFondesCount: recoursFondes.length,
+      oppositionsFondeesCount: oppositionsFondees.length,
+    };
   }
 }

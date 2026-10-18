@@ -86,4 +86,10 @@ export class CommissionController {
   listSanctions(@Query() q: ListSanctionsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listSanctions(q, user);
   }
+
+  @Get('summary')
+  @ApiOperation({ summary: 'KPI de synthèse : dossiers pendants, hors délai 15j (Art.24), recours jugés fondés, oppositions fondées Art.12 (B.7 : scopé par compagnie)' })
+  summary(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.summary(user);
+  }
 }
