@@ -23,12 +23,15 @@ describe('RBAC (B.7) — /api/v1/me et garde de privilèges', () => {
     'admin', 'matchDecide', 'seal', 'synth', 'remind', 'pvSign', 'pay',
     'penaltyOrder', 'decide', 'sanction', 'params', 'grid', 'exchange',
     'insert', 'refedit', 'import', 'bill',
+    // QUESTIONS_UAR.md §11/§12 (décision Product Owner 2026-10-18) —
+    // nouveaux privilèges dédiés OPERATEUR_PLACE/ADMIN_UAR (+ MEMBRE_COMMISSION pour closeQuarter).
+    'closeQuarter', 'onboardCompany',
   ];
 
   it.each([
     ['OPERATEUR_PLACE', ALL_PRIVILEGES, undefined],
     ['ADMIN_UAR', ALL_PRIVILEGES, undefined],
-    ['MEMBRE_COMMISSION', ['decide', 'sanction', 'penaltyOrder', 'pvSign', 'synth'], undefined],
+    ['MEMBRE_COMMISSION', ['decide', 'sanction', 'penaltyOrder', 'pvSign', 'synth', 'closeQuarter'], undefined],
     ['CORRESPONDANT_IDA', ['matchDecide', 'exchange', 'insert', 'import', 'refedit', 'remind', 'synth'], 'CAAT'],
     ['TRESORIER', ['pay', 'bill', 'synth'], 'CAAT'],
     ['AUDITEUR_CSA', [], undefined],

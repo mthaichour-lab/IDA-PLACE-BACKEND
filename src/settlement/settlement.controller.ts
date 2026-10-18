@@ -77,9 +77,15 @@ export class SettlementController {
     return this.service.summary(q, user);
   }
 
+  // QUESTIONS_UAR.md §11, décision Product Owner 2026-10-18 : action
+  // place-entière et irréversible (pas de paramètre compagnie, contrairement
+  // à `closeMonthly` ci-dessus) — réservée aux rôles "place"
+  // (OPERATEUR_PLACE/ADMIN_UAR/MEMBRE_COMMISSION), privilège `closeQuarter`
+  // dédié. `synth` reste inchangé pour toutes les routes de LECTURE
+  // ci-dessus (nécessaire à CORRESPONDANT_IDA/TRESORIER).
   @Post('quarter/:q/close')
-  @Privileges('synth')
-  @ApiOperation({ summary: 'Clôture de la compensation trimestrielle et génération du bordereau (idempotent : 409 si déjà clôturée)' })
+  @Privileges('closeQuarter')
+  @ApiOperation({ summary: 'Clôture de la compensation trimestrielle et génération du bordereau (idempotent : 409 si déjà clôturée) — réservé aux rôles "place" (QUESTIONS_UAR.md §11)' })
   closeQuarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.closeQuarterly(q, user.name);
   }

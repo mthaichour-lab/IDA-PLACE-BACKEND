@@ -33,9 +33,15 @@ export class AdherentsController {
     return this.service.getCompany(id);
   }
 
+  // QUESTIONS_UAR.md §12, décision Product Owner 2026-10-18 : l'onboarding
+  // d'une NOUVELLE compagnie adhérente n'a pas de "propriétaire existant" à
+  // vérifier (contrairement à updateCompany/createAgency/experts,
+  // restreints à SA PROPRE compagnie via `refedit`) — réservé aux rôles
+  // "place" (OPERATEUR_PLACE/ADMIN_UAR), privilège `onboardCompany` dédié.
+  // `refedit` reste inchangé pour toutes les autres routes ci-dessous.
   @Post('companies')
-  @Privileges('refedit')
-  @ApiOperation({ summary: 'Création d’une compagnie adhérente' })
+  @Privileges('onboardCompany')
+  @ApiOperation({ summary: 'Création d’une compagnie adhérente — réservé aux rôles "place" (QUESTIONS_UAR.md §12)' })
   createCompany(@Body() dto: CreateCompanyDto) {
     return this.service.createCompany(dto);
   }

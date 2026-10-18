@@ -218,4 +218,122 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .expect(403);
     });
   });
+
+  /**
+   * QUESTIONS_UAR.md §9, décision Product Owner 2026-10-18 — extension de
+   * DocumentsModule aux pièces jointes de Recours/CommissionCase :
+   * `GET /documents?recoursId=X` doit réutiliser EXACTEMENT le même
+   * contrôle de périmètre compagnie que `RecoursService.get` (voir
+   * `DocumentsService.listForDossier`, documents.module.ts).
+   */
+  describe('DocumentsModule — GET /documents?recoursId=X (QUESTIONS_UAR.md §9)', () => {
+    it("refuse avec un 403 qu'un CORRESPONDANT_IDA liste les documents d'un recours auquel sa compagnie n'est PAS partie", async () => {
+      const recours = await request(app.getHttpServer())
+        .post('/api/v1/recours')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ claimId: 'clm-docs-foreign', from: 'SAA', to: 'CAAR', amount: 25_000 })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/documents/upload')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
+        .field('recoursId', recours.body.id)
+        .attach('file', Buffer.from('piece'), 'annexe2.pdf')
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/documents?recoursId=${recours.body.id}`)
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .expect(403);
+    });
+
+    it('autorise une compagnie partie au recours à lister les documents de SON dossier', async () => {
+      const recours = await request(app.getHttpServer())
+        .post('/api/v1/recours')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ claimId: 'clm-docs-legit', from: 'CAAT', to: 'CAAR', amount: 25_000 })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/documents/upload')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .field('recoursId', recours.body.id)
+        .attach('file', Buffer.from('piece'), 'annexe2.pdf')
+        .expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/documents?recoursId=${recours.body.id}`)
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .expect(200);
+
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThanOrEqual(1);
+      expect(res.body[0]).toMatchObject({ filename: 'annexe2.pdf', uploadedBy: expect.any(String), url: expect.any(String) });
+    });
+
+    it("renvoie un 404 si le recours cité n'existe pas", async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/documents?recoursId=introuvable-xyz')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .expect(404);
+    });
+
+    it('renvoie un 400 si ni recoursId ni commissionCaseId ne sont fournis', async () => {
+      await request(app.getHttpServer()).get('/api/v1/documents').set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
+    });
+  });
+
+  /**
+   * QUESTIONS_UAR.md §11, décision Product Owner 2026-10-18 — la clôture
+   * trimestrielle (place-entière, irréversible) est désormais réservée au
+   * privilège dédié `closeQuarter` (OPERATEUR_PLACE/ADMIN_UAR/
+   * MEMBRE_COMMISSION), plus `synth` (que CORRESPONDANT_IDA/TRESORIER
+   * gardent pour la LECTURE des synthèses).
+   */
+  describe('SettlementModule — POST /settlement/quarter/:q/close (QUESTIONS_UAR.md §11)', () => {
+    it("refuse avec un 403 qu'un TRESORIER clôture la compensation trimestrielle (place-entière)", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q1/close')
+        .set('x-dev-user', companyUser('TRESORIER', 'CAAT'))
+        .expect(403);
+    });
+
+    it("refuse avec un 403 qu'un CORRESPONDANT_IDA clôture la compensation trimestrielle (place-entière)", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q1/close')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .expect(403);
+    });
+
+    it('autorise un OPERATEUR_PLACE à clôturer la compensation trimestrielle', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q2/close')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .expect(201);
+    });
+  });
+
+  /**
+   * QUESTIONS_UAR.md §12, décision Product Owner 2026-10-18 — l'onboarding
+   * d'une NOUVELLE compagnie adhérente est désormais réservé au privilège
+   * dédié `onboardCompany` (OPERATEUR_PLACE/ADMIN_UAR) ; `refedit` reste
+   * inchangé pour updateCompany/createAgency/experts.
+   */
+  describe('AdherentsModule — POST /referential/companies (QUESTIONS_UAR.md §12)', () => {
+    it("refuse avec un 403 qu'un CORRESPONDANT_IDA (refedit) onboarde une NOUVELLE compagnie adhérente", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/referential/companies')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .send({ code: 'NEW1', name: 'Nouvelle Compagnie', color: '#445566', kind: 'INSURER', feedMode: 'API' })
+        .expect(403);
+    });
+
+    it('autorise un OPERATEUR_PLACE à onboarder une NOUVELLE compagnie adhérente', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/referential/companies')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ code: 'NEW2', name: 'Nouvelle Compagnie 2', color: '#445566', kind: 'INSURER', feedMode: 'API' })
+        .expect(201);
+    });
+  });
 });
