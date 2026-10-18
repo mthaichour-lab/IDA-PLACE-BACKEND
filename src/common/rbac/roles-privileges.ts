@@ -52,6 +52,9 @@ export const PRIVILEGES = [
   // adhérente) — un onboarding n'a pas de "propriétaire existant" à
   // vérifier, réservé aux rôles "place" (OPERATEUR_PLACE/ADMIN_UAR).
   'onboardCompany',
+  // Adhésions et retraits (Chapitre VI, Art. 30-35) : demandes adressées à
+  // l'UAR, instruites par les rôles "place" OPERATEUR_PLACE/ADMIN_UAR.
+  'membership',
 ] as const;
 export type Privilege = (typeof PRIVILEGES)[number];
 

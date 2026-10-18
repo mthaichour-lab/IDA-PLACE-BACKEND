@@ -12,7 +12,7 @@ import { DEFAULT_RECOURS_TIMER_CONFIG } from '../recours/recours.rules';
 import { CreateAgencyDto, AgencyViewDto, UpdateAgencyDto } from './dto/agency.dto';
 import { CompanyViewDto, CreateCompanyDto, UpdateCompanyDto } from './dto/company.dto';
 import { Agency } from './entities/agency.entity';
-import { Company } from './entities/company.entity';
+import { Company, CompanyStatus } from './entities/company.entity';
 import { Wilaya } from './entities/wilaya.entity';
 import { MEMORY_AGENCIES, MEMORY_COMPANIES } from './adherents.memory-seed';
 import { ALGERIA_FIXED_HOLIDAYS, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
@@ -224,6 +224,30 @@ export class AdherentsService {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
         Object.assign(c, dto);
+        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
+      },
+    );
+  }
+
+  /**
+   * Constat d'un retrait devenu effectif (Art. 30-35), appelé par
+   * `MembershipService` (CommissionModule) après ses propres contrôles
+   * d'autorisation — aucune vérification de périmètre ici.
+   */
+  async markCompanyWithdrawn(id: string): Promise<CompanyViewDto> {
+    return withDegradedFallback(
+      'AdherentsService.markCompanyWithdrawn',
+      async () => {
+        const c = await this.companies.findOne({ id });
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
+        c.status = CompanyStatus.EN_RETRAIT;
+        await this.companies.getEntityManager().flush();
+        return toCompanyView(c, await this.agencyCountsFor(c.id));
+      },
+      () => {
+        const c = MEMORY_COMPANIES.find((m) => m.id === id);
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
+        c.status = CompanyStatus.EN_RETRAIT;
         return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );

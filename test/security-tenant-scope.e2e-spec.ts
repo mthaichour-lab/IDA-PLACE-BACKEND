@@ -336,4 +336,90 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .expect(201);
     });
   });
+
+  /** Adhésions et retraits (Chapitre VI, Art. 30-35) — écriture réservée au privilège `membership`. */
+  describe('CommissionModule — /commission/membership-requests', () => {
+    it("refuse avec un 403 qu'un CORRESPONDANT_IDA enregistre une demande d'adhésion", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/commission/membership-requests')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .send({ type: 'ADHESION', receivedAt: '2026-01-15', candidateName: 'Candidate E2E' })
+        .expect(403);
+    });
+
+    it("un CORRESPONDANT_IDA ne voit pas le retrait d'une AUTRE compagnie (403 en fiche, absent de la liste)", async () => {
+      const companies = await request(app.getHttpServer())
+        .get('/api/v1/referential/companies?pageSize=100')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .expect(200);
+      const saa = (companies.body.items as { id: string; code: string }[]).find((c) => c.code === 'SAA');
+      expect(saa).toBeDefined();
+
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/commission/membership-requests')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ type: 'RETRAIT', receivedAt: '2026-01-15', companyId: saa!.id })
+        .expect(201);
+      expect(created.body).toMatchObject({ state: 'RECUE', companyCode: 'SAA', effectiveDate: '2026-12-31' });
+
+      try {
+        await request(app.getHttpServer())
+          .get(`/api/v1/commission/membership-requests/${created.body.id}`)
+          .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+          .expect(403);
+        const list = await request(app.getHttpServer())
+          .get('/api/v1/commission/membership-requests?pageSize=100')
+          .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+          .expect(200);
+        expect((list.body.items as { id: string }[]).some((r) => r.id === created.body.id)).toBe(false);
+        await request(app.getHttpServer())
+          .get(`/api/v1/commission/membership-requests/${created.body.id}`)
+          .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
+          .expect(200);
+      } finally {
+        await request(app.getHttpServer())
+          .post(`/api/v1/commission/membership-requests/${created.body.id}/cancel`)
+          .set('x-dev-user', 'OPERATEUR_PLACE')
+          .send({ decisionNote: 'Nettoyage e2e' })
+          .expect(201);
+      }
+    });
+  });
+
+  /** Avancement du lot trimestriel (Diagramme 2) — pipeline place-entière, privilège `closeQuarter`. */
+  describe('SettlementModule — /settlement/quarter/:q/pipeline', () => {
+    it("refuse avec un 403 qu'un CORRESPONDANT_IDA fasse avancer le pipeline", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q3/pipeline/SAISIE/complete')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .send({})
+        .expect(403);
+    });
+
+    it('un CORRESPONDANT_IDA lit le pipeline ; un OPERATEUR_PLACE le fait avancer dans l’ordre (409 sinon)', async () => {
+      const before = await request(app.getHttpServer())
+        .get('/api/v1/settlement/quarter/2099-Q3/pipeline')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .expect(200);
+      expect(before.body.steps).toHaveLength(5);
+      expect(before.body.steps[0]).toMatchObject({ step: 'SAISIE', status: 'EN_COURS' });
+
+      await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q3/pipeline/SYNTHESE_ANNEXE_7/complete')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({})
+        .expect(409);
+      const after = await request(app.getHttpServer())
+        .post('/api/v1/settlement/quarter/2099-Q3/pipeline/SAISIE/complete')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ note: 'e2e' })
+        .expect(201);
+      expect(after.body.steps[0]).toMatchObject({ status: 'DONE', note: 'e2e' });
+    });
+
+    it('GET /settlement/quarter/closures reste routée avant /quarter/:q', async () => {
+      const res = await request(app.getHttpServer()).get('/api/v1/settlement/quarter/closures').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+    });
+  });
 });

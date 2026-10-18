@@ -26,6 +26,8 @@ describe('RBAC (B.7) — /api/v1/me et garde de privilèges', () => {
     // QUESTIONS_UAR.md §11/§12 (décision Product Owner 2026-10-18) —
     // nouveaux privilèges dédiés OPERATEUR_PLACE/ADMIN_UAR (+ MEMBRE_COMMISSION pour closeQuarter).
     'closeQuarter', 'onboardCompany',
+    // Adhésions et retraits (Chapitre VI, Art. 30-35) — rôles place OPERATEUR_PLACE/ADMIN_UAR.
+    'membership',
   ];
 
   it.each([

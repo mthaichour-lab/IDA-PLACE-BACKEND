@@ -5,7 +5,9 @@ import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { CompletePipelineStepDto } from './dto/settlement-pipeline.dto';
 import { CloseMonthlyDto } from './dto/settlement.dto';
+import { SettlementPipelineService } from './settlement-pipeline.service';
 import { SettlementService } from './settlement.service';
 
 /**
@@ -18,7 +20,10 @@ import { SettlementService } from './settlement.service';
 @Controller('settlement')
 @UseGuards(AuthGuard, PrivilegesGuard)
 export class SettlementController {
-  constructor(private readonly service: SettlementService) {}
+  constructor(
+    private readonly service: SettlementService,
+    private readonly pipelineService: SettlementPipelineService,
+  ) {}
 
   @Get('monthly/:period')
   @ApiOperation({ summary: 'Synthèse mensuelle par compagnie (ex: period=2026-01) — état d’avancement réel, à partir des recours (B.7 : scopée par compagnie)' })
@@ -75,6 +80,20 @@ export class SettlementController {
   @ApiOperation({ summary: 'KPI de synthèse du trimestre : brut, net bilatéral, net multilatéral, réduction des flux, recours réglés/en opposition (B.7 : scopée par compagnie)' })
   summary(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.summary(q, user);
+  }
+
+  @Get('quarter/:q/pipeline')
+  @ApiOperation({ summary: 'Avancement du lot trimestriel (Diagramme 2, Art. 16-18) : 5 étapes, échéances, retards — mêmes droits de lecture que GET /settlement/quarter/:q' })
+  pipeline(@Param('q') q: string) {
+    return this.pipelineService.pipeline(q);
+  }
+
+  // Pipeline place-entière, comme la clôture trimestrielle : mêmes rôles (§11).
+  @Post('quarter/:q/pipeline/:step/complete')
+  @Privileges('closeQuarter')
+  @ApiOperation({ summary: "Réalisation d'une étape 1 à 4 du lot trimestriel, dans l'ordre (409 si déjà faite ou si l'étape précédente ne l'est pas) — l'étape 5 découle de la clôture trimestrielle" })
+  completePipelineStep(@Param('q') q: string, @Param('step') step: string, @Body() dto: CompletePipelineStepDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.pipelineService.completeStep(q, step, user.name, dto.note);
   }
 
   // QUESTIONS_UAR.md §11, décision Product Owner 2026-10-18 : action
