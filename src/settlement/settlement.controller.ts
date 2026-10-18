@@ -45,6 +45,20 @@ export class SettlementController {
     return this.service.closeMonthly(period, dto.company, user.name, user);
   }
 
+  // ⚠️ ORDRE DES ROUTES IMPORTANT : `quarter/closures` DOIT être déclarée
+  // AVANT `quarter/:q` — sinon Nest/Express matche la route générique en
+  // premier (`q` capturé = littéralement "closures"), et cette route
+  // spécifique n'est JAMAIS atteinte (même piège déjà trouvé et documenté
+  // sur `metering.module.ts`, `place-summary/:period` vs `:company/:period`).
+  @Get('quarter/closures')
+  @ApiOperation({
+    summary:
+      'Liste de TOUTES les clôtures trimestrielles enregistrées (place entière, toutes périodes) — écran 4 "Échanges Annexes 2/3/4", pour distinguer côté frontend "Accepté/silence" (trimestre du recours réglé pas encore clôturé) de "Réglé/compensé" (trimestre déjà clôturé)',
+  })
+  quarterlyClosures() {
+    return this.service.quarterlyClosures();
+  }
+
   @Get('quarter/:q')
   @ApiOperation({ summary: 'Compensation trimestrielle — positions bilatérales nettées et compensation multilatérale (ex: q=2026-Q1) (B.7 : scopée par compagnie)' })
   quarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {

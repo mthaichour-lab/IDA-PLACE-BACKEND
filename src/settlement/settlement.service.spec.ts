@@ -253,6 +253,41 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     expect(result).toMatchObject({ grossTotal: 0, bilateralNetTotal: 0, multilateralNetTotal: 0, reductionPct: 0, settledCount: 0 });
   });
 
+  it('quarterlyClosures() renvoie [] quand aucun trimestre n’a encore été clôturé', async () => {
+    const result = await settlement.quarterlyClosures();
+    expect(result).toEqual([]);
+  });
+
+  it('quarterlyClosures() ne renvoie QUE les trimestres effectivement clôturés via closeQuarterly(), avec leur period/closedAt exacts', async () => {
+    // Deux recours réglés sur deux trimestres distincts (2026-Q1 et 2026-Q2) — un seul des deux est clôturé.
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-02-10T09:00:00.000Z')); // Q1
+      const q1 = await recours.create({ claimId: 'clm-closures-q1', from: 'CAAT', to: 'SAA', amount: 15_000 });
+      await recours.transition(q1.id, { action: 'accepter' }, fakeUser('x'));
+
+      jest.setSystemTime(new Date('2026-05-10T09:00:00.000Z')); // Q2 — reste NON clôturé
+      const q2 = await recours.create({ claimId: 'clm-closures-q2', from: 'CAAT', to: 'SAA', amount: 25_000 });
+      await recours.transition(q2.id, { action: 'accepter' }, fakeUser('x'));
+
+      // Avant toute clôture : liste vide même si des recours sont RÉGLÉS.
+      expect(await settlement.quarterlyClosures()).toEqual([]);
+
+      const closed = await settlement.closeQuarterly('2026-Q1', 'operateur.place');
+
+      const result = await settlement.quarterlyClosures();
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ period: '2026-Q1', closedBy: 'operateur.place' });
+      expect(result[0].closedAt).toBe(closed.closedAt);
+      expect(result[0].bordereauRef).toContain('2026-Q1');
+
+      // 2026-Q2 n'a jamais été clôturé : absent de la liste bien qu'il ait un recours réglé.
+      expect(result.find((c) => c.period === '2026-Q2')).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('closeQuarterly() est idempotent (409 si déjà clôturé) et expose le bordereau sur quarter() ensuite', async () => {
     const now = new Date();
     const q = `${now.getUTCFullYear()}-Q${Math.floor(now.getUTCMonth() / 3) + 1}`;

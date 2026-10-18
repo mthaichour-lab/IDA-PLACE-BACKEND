@@ -10,6 +10,7 @@ import {
   CompanyMonthlySynthesisDto,
   MonthlySettlementDto,
   MonthlySummaryDto,
+  QuarterlyClosureDto,
   QuarterlyMatrixDto,
   QuarterlySettlementDto,
   QuarterlySummaryDto,
@@ -383,6 +384,58 @@ export class SettlementService {
       settledCount: settledForTenant.length,
       opposedCount: opposed.length,
     };
+  }
+
+  /**
+   * TOUTES les clôtures trimestrielles enregistrées (scope QUARTERLY),
+   * toutes périodes confondues — contrairement à `findClosures()`
+   * ci-dessus, qui filtre sur UNE période précise déjà connue de l'appelant
+   * (`quarter()`/`closeQuarterly()`). Ici l'appelant (le frontend) ne
+   * connaît pas encore quelles périodes sont closes : c'est justement ce
+   * qu'il vient demander.
+   *
+   * Écran 4 "Échanges Annexes 2/3/4" du guide illustré, sous-onglets
+   * "Accepté/silence" vs "Réglé/compensé" : les deux issues (acceptation
+   * explicite, silence tacite Art.10, décision de commission favorable)
+   * amènent un recours au MÊME état final `REGLE` de `RECOURS_STATES` — le
+   * guide distingue pourtant deux sous-onglets. Verdict Product Owner
+   * 2026-10-18 : la distinction est purement TEMPORELLE, relative à la
+   * clôture trimestrielle, PAS un nouvel état de cycle de vie. Un recours
+   * réglé (`state === 'REGLE'`, `settledAt` connu) appartient au trimestre
+   * dérivé de `settledAt` (même logique que `isIsoDateInQuarter`/
+   * `parsePeriodQuarter`, voir `settledAndMatrixFor()` ci-dessus) :
+   *  - ce trimestre est DANS la liste retournée ici -> "Réglé/compensé" ;
+   *  - sinon -> "Accepté/silence" (en attente de la prochaine compensation).
+   * Ce rapprochement recours <-> trimestre clôturé est fait ENTIÈREMENT
+   * côté frontend à partir de cette liste — aucun champ n'est ajouté à
+   * `Recours` (décision volontaire du PO : pas de donnée dérivable à
+   * persister en double).
+   *
+   * Route PLACE ENTIÈRE, sans scoping tenant (voir le contrôleur) : une
+   * clôture trimestrielle est une action de place — `closeQuarterly()` ne
+   * prend aucun `companyCode` et `SettlementClosure.companyCode` n'est
+   * jamais renseigné pour le scope QUARTERLY (voir son entité) — les dates
+   * de clôture elles-mêmes ne sont donc pas une donnée par compagnie à
+   * restreindre, comme `GET /pricing/grid`.
+   */
+  async quarterlyClosures(): Promise<QuarterlyClosureDto[]> {
+    const rows = await withDegradedFallback(
+      'SettlementService.quarterlyClosures',
+      async () => {
+        const found = await this.closureRepo.find({ scope: SettlementScope.QUARTERLY });
+        return found.map((r) => ({
+          period: r.period,
+          closedAt: r.closedAt.toISOString(),
+          closedBy: r.closedBy,
+          bordereauRef: r.bordereauRef,
+        }));
+      },
+      () =>
+        this.memoryClosures
+          .filter((c) => c.scope === SettlementScope.QUARTERLY)
+          .map((c) => ({ period: c.period, closedAt: c.closedAt, closedBy: c.closedBy, bordereauRef: c.bordereauRef })),
+    );
+    return rows.sort((a, b) => a.period.localeCompare(b.period));
   }
 
   async closeQuarterly(q: string, closedBy: string): Promise<QuarterlySettlementDto> {

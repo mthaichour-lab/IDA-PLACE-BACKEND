@@ -110,3 +110,22 @@ export class Annexe7Dto {
   })
   pairs!: Annexe7PairDto[];
 }
+
+/**
+ * Nouvel endpoint additif (`GET /settlement/quarter/closures`) — écran 4
+ * "Échanges Annexes 2/3/4" du guide illustré, sous-onglets "Accepté/silence"
+ * vs "Réglé/compensé". Verdict Product Owner 2026-10-18 : cette distinction
+ * est purement TEMPORELLE (le trimestre de `settledAt` du recours est-il
+ * déjà clôturé ?), pas un nouvel état de `RECOURS_STATES` — voir l'en-tête
+ * de `SettlementService.quarterlyClosures()`. Liste minimale (toutes les
+ * clôtures trimestrielles, place entière, aucun filtre de période) :
+ * `RecoursViewDto`/`QuarterlySettlementDto` ne changent pas de forme
+ * (contrat figé, ARCHITECTURE.md §1) — le frontend croise lui-même chaque
+ * recours réglé avec cette liste, entièrement côté client.
+ */
+export class QuarterlyClosureDto {
+  @ApiProperty({ description: 'Trimestre clôturé, format AAAA-Qn (ex: "2026-Q1")' }) period!: string;
+  @ApiProperty() closedAt!: string;
+  @ApiPropertyOptional() closedBy?: string;
+  @ApiPropertyOptional() bordereauRef?: string;
+}
