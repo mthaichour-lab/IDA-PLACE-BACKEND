@@ -91,4 +91,38 @@ export class MatchQueueItem {
 
   @Property({ onUpdate: () => new Date(), nullable: true })
   updatedAt?: Date;
+
+  // --- Colonnes additives (2026-10-18, écran 2 "Vue de confrontation") —
+  // voir `MatchQueueItemDto` (dto/matching.dto.ts) : dénormalisées depuis
+  // `ClaimMatchInput` au même recalcul que `criteria`, affichage uniquement.
+  @Property({ nullable: true, type: 'date' })
+  accidentDateA?: string;
+
+  @Property({ nullable: true, type: 'date' })
+  accidentDateB?: string;
+
+  @Property({ nullable: true, length: 2 })
+  wilayaA?: string;
+
+  @Property({ nullable: true, length: 2 })
+  wilayaB?: string;
+
+  @Property({ nullable: true })
+  assureAIdentite?: string;
+
+  @Property({ nullable: true })
+  assureBIdentite?: string;
+
+  @Property({ nullable: true })
+  canalDeclarationA?: string;
+
+  @Property({ nullable: true })
+  canalDeclarationB?: string;
+
+  /** N° police/attestation "soi-même" de chaque déclaration (même convention que `plateA`/`plateB`). */
+  @Property({ nullable: true })
+  policeA?: string;
+
+  @Property({ nullable: true })
+  policeB?: string;
 }

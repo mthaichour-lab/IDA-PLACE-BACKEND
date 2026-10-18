@@ -42,6 +42,24 @@ export class MatchQueueItemDto {
   @ApiPropertyOptional() confirmedAt?: string;
   @ApiPropertyOptional() rejectReason?: string;
   @ApiProperty() at!: string;
+
+  // --- Champs optionnels additifs (2026-10-18, écran 2 "Vue de
+  // confrontation") — une valeur par déclaration (A = `declAId`, B =
+  // `declBId`, quand apparié), dénormalisés depuis `ClaimMatchInput` au
+  // même recalcul que `criteria` (voir `matching.service.ts` `applyComputed`).
+  // Affichage uniquement : ne changent ni le score ni le niveau
+  // AUTO/MANUEL/NON (contrat stable, forme existante ci-dessus inchangée).
+  @ApiPropertyOptional() accidentDateA?: string;
+  @ApiPropertyOptional() accidentDateB?: string;
+  @ApiPropertyOptional() wilayaA?: string;
+  @ApiPropertyOptional() wilayaB?: string;
+  /** N° police/attestation PROPRE à chaque déclaration (même convention que `plateA`/`plateB` ci-dessus : valeur "soi-même", pas la partie adverse déclarée). */
+  @ApiPropertyOptional() policeA?: string;
+  @ApiPropertyOptional() policeB?: string;
+  @ApiPropertyOptional() assureAIdentite?: string;
+  @ApiPropertyOptional() assureBIdentite?: string;
+  @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclarationA?: string;
+  @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclarationB?: string;
 }
 
 export class MatchDecisionDto {

@@ -59,4 +59,10 @@ export class ClaimViewDto {
   // déclaration réel (B.4 colonne 47 — ERP/ECONSTAT/IMPORT/API), nécessaire
   // pour agréger réellement l'adoption e-constat sans inventer de valeur.
   @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclaration?: string;
+  // --- Champ optionnel additionnel (2026-10-18, écran 2 "Vue de
+  // confrontation") : identité de l'assuré (colonne 44 du modèle 47
+  // colonnes — B.4), lue depuis `Claim.raw` (jamais promue en colonne
+  // typée, aucune migration nécessaire) — affichage uniquement
+  // (MatchingModule, cartes "Véhicule A/B"), n'entre dans aucun calcul.
+  @ApiPropertyOptional() assureIdentite?: string;
 }

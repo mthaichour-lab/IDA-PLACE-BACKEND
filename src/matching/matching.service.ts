@@ -58,6 +58,16 @@ function toDto(e: MatchQueueItem): MatchQueueItemDto {
     confirmedAt: e.confirmedAt?.toISOString(),
     rejectReason: e.rejectReason,
     at: e.at.toISOString(),
+    accidentDateA: e.accidentDateA,
+    accidentDateB: e.accidentDateB,
+    wilayaA: e.wilayaA,
+    wilayaB: e.wilayaB,
+    assureAIdentite: e.assureAIdentite,
+    assureBIdentite: e.assureBIdentite,
+    canalDeclarationA: e.canalDeclarationA,
+    canalDeclarationB: e.canalDeclarationB,
+    policeA: e.policeA,
+    policeB: e.policeB,
   };
 }
 
@@ -273,6 +283,11 @@ export class MatchingService {
     item.refA = claim.numEconstat ?? claim.id;
     item.companyA = claim.company;
     item.plateA = claim.plateA ?? '—';
+    item.accidentDateA = claim.accidentDate;
+    item.wilayaA = claim.wilaya;
+    item.assureAIdentite = claim.assureIdentite;
+    item.canalDeclarationA = claim.canalDeclaration;
+    item.policeA = claim.policeA;
     if (best) {
       item.declBId = best.candidate.id;
       item.refB = best.candidate.numEconstat ?? best.candidate.id;
@@ -282,6 +297,11 @@ export class MatchingService {
       item.econstatShared = best.result.econstatShared;
       item.criteria = best.result.criteria;
       item.level = levelForScore(best.result.score, this.thresholds) as MatchLevel;
+      item.accidentDateB = best.candidate.accidentDate;
+      item.wilayaB = best.candidate.wilaya;
+      item.assureBIdentite = best.candidate.assureIdentite;
+      item.canalDeclarationB = best.candidate.canalDeclaration;
+      item.policeB = best.candidate.policeA;
     } else {
       item.declBId = undefined;
       item.refB = undefined;
@@ -291,6 +311,11 @@ export class MatchingService {
       item.econstatShared = false;
       item.criteria = { econstatPartage: false, plaquesCroisees: false, policeCroisee: false, dateHeure: false, compagniesCroisees: false, gps: false };
       item.level = MatchLevel.NON;
+      item.accidentDateB = undefined;
+      item.wilayaB = undefined;
+      item.assureBIdentite = undefined;
+      item.canalDeclarationB = undefined;
+      item.policeB = undefined;
     }
     if (!item.status || !isTerminal(item.status)) {
       item.status = item.level === MatchLevel.AUTO ? MatchStatus.AUTO_CONFIRME : MatchStatus.A_CONFIRMER;
@@ -307,6 +332,11 @@ export class MatchingService {
     item.companyA = claim.company;
     item.plateA = claim.plateA ?? '—';
     item.at = item.at ?? new Date().toISOString();
+    item.accidentDateA = claim.accidentDate;
+    item.wilayaA = claim.wilaya;
+    item.assureAIdentite = claim.assureIdentite;
+    item.canalDeclarationA = claim.canalDeclaration;
+    item.policeA = claim.policeA;
     if (best) {
       item.declBId = best.candidate.id;
       item.refB = best.candidate.numEconstat ?? best.candidate.id;
@@ -316,6 +346,11 @@ export class MatchingService {
       item.econstatShared = best.result.econstatShared;
       item.criteria = best.result.criteria;
       item.level = levelForScore(best.result.score, this.thresholds);
+      item.accidentDateB = best.candidate.accidentDate;
+      item.wilayaB = best.candidate.wilaya;
+      item.assureBIdentite = best.candidate.assureIdentite;
+      item.canalDeclarationB = best.candidate.canalDeclaration;
+      item.policeB = best.candidate.policeA;
     } else {
       item.declBId = undefined;
       item.refB = undefined;
@@ -325,6 +360,11 @@ export class MatchingService {
       item.econstatShared = false;
       item.criteria = { econstatPartage: false, plaquesCroisees: false, policeCroisee: false, dateHeure: false, compagniesCroisees: false, gps: false };
       item.level = 'NON';
+      item.accidentDateB = undefined;
+      item.wilayaB = undefined;
+      item.assureBIdentite = undefined;
+      item.canalDeclarationB = undefined;
+      item.policeB = undefined;
     }
     if (!item.status || !isTerminal(item.status)) {
       item.status = item.level === 'AUTO' ? 'AUTO_CONFIRME' : 'A_CONFIRMER';

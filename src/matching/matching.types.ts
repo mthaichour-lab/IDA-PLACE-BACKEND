@@ -26,4 +26,14 @@ export interface ClaimMatchInput {
   commune?: string;
   gpsLat?: number;
   gpsLng?: number;
+  /**
+   * Identité de l'assuré PROPRE à cette déclaration (colonne 44, "Identité
+   * assuré A" du modèle 47 colonnes — B.4) — jamais l'identité de la partie
+   * adverse telle que déclarée par l'autre compagnie. Additif (2026-10-18,
+   * écran 2 "Vue de confrontation") : affichage uniquement, n'entre dans
+   * aucun calcul de `matching.scoring.ts`.
+   */
+  assureIdentite?: string;
+  /** Canal de déclaration PROPRE à cette déclaration (ERP/ECONSTAT/IMPORT/API — B.4 colonne 47). Additif (2026-10-18), affichage uniquement. */
+  canalDeclaration?: string;
 }

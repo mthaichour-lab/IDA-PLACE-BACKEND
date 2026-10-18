@@ -143,6 +143,55 @@ verdict complet ci-dessous, repris dans les commits.
 Vérifié : 231/231 tests unitaires (9 nouveaux cas), 41/41 e2e, tsc/
 build sans régression.
 
+### `MatchQueueItemDto` — champs additifs pour `/matching` (écran 2, 2026-10-18, agent Frontend)
+
+L'agent Frontend travaillant sur `/matching` (worktree séparé) avait
+besoin de quelques champs par déclaration (A/B) pour construire une "Vue
+de confrontation" champ par champ + des cartes "Véhicule A/B" fidèles à
+la capture de référence — `MatchQueueItemDto` n'exposait jusqu'ici que
+`refA/companyA/plateA` + équivalent B. **Changement additif pur, la forme
+existante de `MatchQueueItemDto` et des routes `/matching/*` ne change
+pas** (contrat stable, voir ARCHITECTURE.md §1).
+
+1. **10 champs optionnels ajoutés** à `MatchQueueItemDto` :
+   `accidentDateA/B`, `wilayaA/B`, `assureAIdentite/B`,
+   `canalDeclarationA/B`, `policeA/B`. Même convention que `plateA`/
+   `plateB` existants : la valeur "SOI-MÊME" de chaque déclaration (ex.
+   `assureAIdentite` = identité de l'assuré de la déclaration A, PAS une
+   identité "partie A vue par B"), dénormalisés depuis `ClaimMatchInput`
+   au même recalcul que `criteria` (`matching.service.ts`
+   `applyComputed`/`applyComputedDto`) — affichage uniquement, aucun
+   impact sur le score/niveau AUTO/MANUEL/NON.
+2. **`ClaimMatchInput` (matching.types.ts)** : ajout de
+   `assureIdentite?`/`canalDeclaration?`. `canalDeclaration` existait déjà
+   sur `ClaimViewDto` (juste jamais transmis à `MatchingModule` via
+   `toMatchInput`). `assureIdentite` (colonne 44 "Identité assuré A" du
+   modèle 47 colonnes, `claim-47-columns.ts`) n'était promu NULLE PART
+   (ni `Claim` entity, ni `ClaimViewDto`) — ajouté en champ optionnel à
+   `ClaimViewDto`, lu depuis `Claim.raw.assureAIdentite` (déjà stocké en
+   JSON à l'import, donc **aucune migration nécessaire pour celui-là**).
+3. **Migration MikroORM** (`Migration20261018000000_
+   MatchingConfrontationFields`, écrite à la main comme les précédentes —
+   toujours pas de PostgreSQL disponible ici) : 8 nouvelles colonnes
+   nullable sur `match_queue_item` (`accident_date_a/b`, `wilaya_a/b`,
+   `assure_a_identite`/`assure_b_identite`, `canal_declaration_a/b`,
+   `police_a/b`) — `assureIdentite`/`canalDeclaration` ci-dessus touchent
+   `claim`/`ClaimViewDto` (déjà en JSON, pas de colonne), mais
+   `MatchQueueItem` est une table dénormalisée à plat (B.3), donc CES
+   colonnes-là ont besoin d'une vraie migration.
+4. Volontairement **PAS de scoring graduel/partiel ajouté** — demande
+   explicitement refusée par construction : la capture de référence
+   montre des scores par critère gradués (ex. "21/35", "67 %
+   similarité"), mais `matching.scoring.ts` n'a jamais calculé ça (chaque
+   critère pondéré est un booléen strict, poids plein ou zéro). Le Tech
+   Lead avait vérifié ce point avant de lancer la tâche front : la
+   fraction affichée côté front (`{poids}/{poids}` ou `0/{poids}`) reflète
+   honnêtement le booléen réel, aucun calcul de similarité n'a été ajouté
+   ici.
+5. Vérifié : `npx jest src/matching src/claims --silent` (37/37, aucune
+   régression) + `npx tsc --noEmit -p .` (OK). Voir HANDOFF.md frontend
+   pour le détail de l'écran `/matching` qui consomme ces champs.
+
 ## ⚠️ Particularité de ce sprint : deux implémentations concurrentes réconciliées
 
 Une **session Claude indépendante**, travaillant en parallèle sur ce même

@@ -43,6 +43,9 @@ function toClaimView(c: Claim): ClaimViewDto {
     eligibilityReasons: c.eligibilityReasons,
     dateDemandeRecours: c.dateDemandeRecours,
     canalDeclaration: c.canalDeclaration,
+    // Additif (2026-10-18) — lu depuis `raw` (colonne 44, jamais promue en
+    // colonne typée : voir `ClaimViewDto.assureIdentite`, aucune migration).
+    assureIdentite: c.raw.assureAIdentite as string | undefined,
   };
 }
 
@@ -62,6 +65,10 @@ function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
     commune: c.commune,
     gpsLat: c.gpsLat,
     gpsLng: c.gpsLng,
+    // Additif (2026-10-18, écran 2 "Vue de confrontation") — affichage
+    // uniquement, voir ClaimMatchInput.
+    assureIdentite: c.assureIdentite,
+    canalDeclaration: c.canalDeclaration,
   };
 }
 
@@ -218,6 +225,9 @@ export class ClaimsService {
           eligibilityReasons: reasons,
           dateDemandeRecours: values.dateDemandeRecours as string | undefined,
           canalDeclaration: values.canalDeclaration as string | undefined,
+          // Additif (2026-10-18) — même donnée que `toClaimView` (colonne 44),
+          // ici lue directement sur `values` (pas de `raw` dans ce repli mémoire).
+          assureIdentite: values.assureAIdentite as string | undefined,
         };
         MEMORY_CLAIMS.push(view);
         return view;
