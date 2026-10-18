@@ -28,8 +28,8 @@ import { FraudService } from './fraud.service';
  * scopée : `FraudAction.actor` est soit un identifiant utilisateur (décision
  * humaine), soit un code compagnie (transmission tardive) — pas un champ
  * compagnie fiable pour filtrer, et ce journal est par nature un audit
- * trail de place (même esprit que LedgerModule) — point à trancher avec le
- * métier si un scoping est réellement souhaité (voir QUESTIONS_UAR.md).
+ * trail de place (même esprit que LedgerModule) — CONFIRMÉ volontairement
+ * non scopé par le Product Owner le 2026-10-18 (QUESTIONS_UAR.md §13).
  */
 @ApiTags('fraud')
 @ApiBearerAuth()

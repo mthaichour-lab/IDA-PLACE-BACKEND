@@ -71,7 +71,7 @@ export type MonitoringComponentKey = keyof typeof MONITORING_WEIGHTS;
 /** Chaque jour de latence au-delà de 0 retire ce nombre de points (plancher 0) — hypothèse documentée, paramétrable. */
 export const DELAY_PENALTY_PER_DAY = 2;
 
-/** Ratio (temps écoulé / délai de recours autorisé) au-delà duquel une demande est jugée "tardive" mais pas forclose. */
+/** Ratio (temps écoulé / délai de recours autorisé) au-delà duquel une demande est jugée "tardive" mais pas forclose. Confirmé par le Product Owner le 2026-10-18 (voir QUESTIONS_UAR.md §10) — valeur conservée telle quelle. */
 export const TARDIF_RATIO_THRESHOLD = 0.5;
 
 export interface ClaimMonitoringInput {
@@ -229,13 +229,13 @@ export function computeCompositeScore(details: Record<MonitoringComponentKey, Mo
 /**
  * Note lettrée (écran 8, guide illustré) — endpoint additif, dérivée
  * UNIQUEMENT pour l'affichage (aucune règle de conformité recodée, le score
- * composite ci-dessus reste la seule donnée de référence). Seuils **hypothèse
- * non chiffrée par le dossier technique** (calée sur l'exemple du guide :
- * 73 → B, 71 → C), à valider avec l'UAR avant mise en production.
+ * composite ci-dessus reste la seule donnée de référence). Seuils calés sur
+ * l'exemple du guide (73 → B, 71 → C) — confirmés par le Product Owner le
+ * 2026-10-18 (voir QUESTIONS_UAR.md §10), conservés tels quels.
  */
 export const GRADE_THRESHOLDS = { A: 90, B: 72, C: 50 } as const;
 
-/** Seuil d'alerte "oppositions fréquentes" (guide illustré, §6.8) — hypothèse non chiffrée par le dossier technique, à valider avec l'UAR. */
+/** Seuil d'alerte "oppositions fréquentes" (guide illustré, §6.8) — confirmé par le Product Owner le 2026-10-18 (voir QUESTIONS_UAR.md §10), conservé tel quel. */
 export const OPPOSITION_ALERT_THRESHOLD_PCT = 20;
 
 export function gradeFromScore(score: number | null): 'A' | 'B' | 'C' | 'D' | null {

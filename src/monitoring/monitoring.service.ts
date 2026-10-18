@@ -165,8 +165,8 @@ export class MonitoringService {
         'silences : taux de recours reçus résolus par silence (Art.10) parmi ceux déjà résolus — hypothèse documentée, voir monitoring.scoring.ts.',
         'oppositions : taux d’oppositions reçues (sur les recours émis par la compagnie) non suivies d’effet (Art.12, faute de transmission en commission) — hypothèse documentée, mesure l’engagement, pas la légitimité du recours initial.',
         'penalites : -20 points par sanction (tous types confondus), barème non chiffré par le dossier technique — hypothèse à valider avec l’UAR.',
-        'délais : latence réelle (accident → ingestion du dossier), PAS la définition complète du dossier technique (règlement/recours non réels) — voir monitoring.scoring.ts.',
-        'demandesTardives : hypothèse documentée (plus de 50% du délai de recours autorisé écoulé, sans être forclos) — à valider avec le métier.',
+        'délais : latence réelle (accident → ingestion du dossier) — périmètre confirmé par le Product Owner le 2026-10-18 (non étendu aux délais de règlement/recours), voir QUESTIONS_UAR.md §10.',
+        'demandesTardives : plus de 50% du délai de recours autorisé écoulé, sans être forclos — seuil confirmé par le Product Owner le 2026-10-18, voir QUESTIONS_UAR.md §10.',
       ],
     };
   }

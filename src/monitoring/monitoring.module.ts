@@ -19,7 +19,10 @@ import { MonitoringService } from './monitoring.service';
  * `EligibilityModule` ; silences/oppositions : `RecoursModule` ; pénalités :
  * `CommissionModule`) — toutes composantes `dataSource: 'REEL'` dès qu'une
  * compagnie a au moins un dossier/recours ; hypothèses de calcul
- * documentées dans `monitoring.scoring.ts`, à valider avec le métier/l'UAR.
+ * documentées dans `monitoring.scoring.ts` — seuils (`GRADE_THRESHOLDS`,
+ * `TARDIF_RATIO_THRESHOLD`, `OPPOSITION_ALERT_THRESHOLD_PCT`) et périmètre
+ * de `délais` confirmés par le Product Owner le 2026-10-18 (QUESTIONS_UAR.md
+ * §10) ; hypothèses `silences`/`oppositions`/`pénalités` toujours ouvertes.
  *
  * Revue sécurité 2026-10-18 (B.7) : `scores()` reste VOLONTAIREMENT
  * place-wide (pas de scoping tenant) — le dossier technique décrit

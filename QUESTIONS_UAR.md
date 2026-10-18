@@ -210,30 +210,16 @@ modélisation, pas un ajout trivial.
 
 ---
 
-## 10. Monitoring assureurs — seuils de scoring à valider
+## 10. Monitoring assureurs — seuils de scoring à valider — ✅ CONFIRMÉ (2026-10-18)
 
-**Pourquoi pas construit (nuance)** : contrairement aux autres points,
-ceci N'EST PAS "non construit" — le scoring composite est réel et
-pleinement fonctionnel (`monitoring.scoring.ts`), mais plusieurs seuils
-et hypothèses de calcul sont **documentés comme non validés par le
-métier** dans l'en-tête du fichier :
-- `GRADE_THRESHOLDS` (A ≥ 90, B ≥ 72, C ≥ 50) — seuils choisis
-  arbitrairement, non chiffrés par le dossier technique.
-- `TARDIF_RATIO_THRESHOLD` (plus de la moitié du délai écoulé = "tardif")
-  — hypothèse documentée mais pas une règle officielle.
-- `OPPOSITION_ALERT_THRESHOLD_PCT` (20%) — seuil d'alerte arbitraire.
-- Composante `delais` : mesure la latence accident→ingestion, pas la
-  définition complète probable du dossier technique (délais de
-  règlement/recours inclus).
-
-**Question** : Quels sont les seuils réels validés par l'UAR pour chacun
-de ces paramètres ? La définition de "délais" doit-elle inclure les
-délais de règlement (nécessiterait une mesure supplémentaire basée sur
-`Recours`, pas seulement `Claim.createdAt`) ?
-
-**Une fois répondu** : ce sont déjà des constantes paramétrables en tête
-de `monitoring.scoring.ts` — changement de valeur uniquement, zéro
-refactoring.
+**Décision Product Owner (l'utilisateur réel)** : les valeurs actuelles
+sont conservées telles quelles — `GRADE_THRESHOLDS` (A≥90/B≥72/C≥50),
+`TARDIF_RATIO_THRESHOLD` (50% du délai écoulé), `OPPOSITION_ALERT_THRESHOLD_PCT`
+(20%), et la composante `delais` reste la latence accident→ingestion
+uniquement (pas étendue aux délais de règlement/recours). Aucun
+changement de code — confirmation pure, les constantes restent
+paramétrables en tête de `monitoring.scoring.ts` si une révision est
+nécessaire plus tard.
 
 ---
 
@@ -303,29 +289,13 @@ sa propre compagnie).
 
 ---
 
-## 13. Anti-fraude — le journal des actions suspectes doit-il être scopé ?
+## 13. Anti-fraude — le journal des actions suspectes doit-il être scopé ? — ✅ CONFIRMÉ (2026-10-18)
 
-**Trouvé lors de la revue sécurité RBAC du 2026-10-18** : `GET
-/fraud/cases` est désormais scopé par compagnie (`companiesInvolved`,
-voir HANDOFF.md), mais `GET /fraud/actions` (journal des actions
-suspectes de place : appariements manuels, déliage/reliage,
-transmissions tardives) reste volontairement NON scopé. Raison technique
-: `FraudAction.actor` est soit un identifiant utilisateur (décision
-humaine), soit un code compagnie (transmission tardive) — un champ au
-typage mixte, pas une paire `from`/`to` fiable pour filtrer par
-compagnie comme ailleurs dans le projet.
-
-**Question** : Ce journal doit-il rester place-wide (même esprit que
-`LedgerModule`, un audit trail partagé), ou faut-il le scoper par
-compagnie ? Si scopé, sur quel critère exactement — l'acteur humain
-appartient-il à une compagnie traçable, ou faut-il relier chaque action
-à son `claimId`/`matchId` pour en déduire les compagnies concernées ?
-
-**Une fois répondu** : si scoping souhaité, ajouter un champ
-`companiesInvolved`/`company` explicite à `FraudAction` (migration +
-peuplement au moment de la création de l'action, pas une déduction a
-posteriori fragile) — travail de modélisation, pas un filtre trivial à
-ajouter à `actions()`.
+**Décision Product Owner (l'utilisateur réel)** : `GET /fraud/actions`
+reste PLACE-WIDE, non scopé par compagnie — même esprit que
+`LedgerModule` (audit trail partagé). Aucun changement de code
+nécessaire ; le comportement actuel (délibérément non scopé depuis la
+revue sécurité du 2026-10-18) est le comportement voulu.
 
 ---
 
