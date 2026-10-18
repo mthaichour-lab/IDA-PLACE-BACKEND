@@ -31,6 +31,23 @@ class MeteringController {
     private readonly adherents: AdherentsService,
   ) {}
 
+  // ⚠️ ORDRE DES ROUTES IMPORTANT : `place-summary/:period` DOIT être
+  // déclarée AVANT `:company/:period` — sinon Nest/Express matche la route
+  // générique en premier (`company` capturé = littéralement "place-summary"),
+  // et cette route spécifique n'est JAMAIS atteinte. Bug réel trouvé en
+  // vérification navigateur (2026-10-18) : le dashboard affichait "NaN DZD"
+  // partout, la réponse reçue était silencieusement celle de `get()` avec
+  // `company: "place-summary"`.
+  @Get('metering/place-summary/:period')
+  @ApiOperation({
+    summary:
+      'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — somme de la facture mock de chaque adhérent RÉEL (AdherentsService), jamais un nombre de compagnies inventé',
+  })
+  async placeSummary(@Param('period') period: string) {
+    const { total } = await this.adherents.listCompanies(1, 1);
+    return { period, ...this.service.placeSummary(total) };
+  }
+
   @Get('metering/:company/:period')
   @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01)' })
   get(@Param('company') company: string, @Param('period') period: string) {
@@ -43,16 +60,6 @@ class MeteringController {
       totalHT, totalTVA: Math.round(totalHT * 0.19), totalTTC: Math.round(totalHT * 1.19),
       status: 'EMISE',
     };
-  }
-
-  @Get('metering/place-summary/:period')
-  @ApiOperation({
-    summary:
-      'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — somme de la facture mock de chaque adhérent RÉEL (AdherentsService), jamais un nombre de compagnies inventé',
-  })
-  async placeSummary(@Param('period') period: string) {
-    const { total } = await this.adherents.listCompanies(1, 1);
-    return { period, ...this.service.placeSummary(total) };
   }
 
   @Get('metering/:company/:period/history/:metric')
