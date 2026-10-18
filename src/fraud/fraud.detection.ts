@@ -22,9 +22,17 @@
  * // TODO sprint suivant : enrichir avec les pénalités (CommissionModule) et
  * // les forclusions/silences (RecoursModule) une fois ces modules réels —
  * // hors périmètre de ce sprint (voir consigne de la mission).
+ *
+ * 6ᵉ détection ajoutée (2026-10-18, écran 9 guide illustré, groupe
+ * "Vélocité" — le dossier technique B.9 nomme bien ce groupe de signaux,
+ * voir IDA_Place_Dossier_Technique.md §9) :
+ *   6. Vélocité adhérent — rafale de déclarations soumises par le MÊME
+ *      adhérent le MÊME jour (`createdAt`, jour d'ingestion/déclaration —
+ *      pas la date d'accident), au-delà d'un seuil. **Hypothèse non
+ *      chiffrée par le dossier** (seuil par défaut 3, paramétrable).
  */
 
-export type FraudCaseType = 'DOUBLON' | 'ECONSTAT_REUTILISE' | 'RECURRENCE_VEHICULE' | 'MONTANT_CALIBRE' | 'INCOHERENCE_AB';
+export type FraudCaseType = 'DOUBLON' | 'ECONSTAT_REUTILISE' | 'RECURRENCE_VEHICULE' | 'MONTANT_CALIBRE' | 'INCOHERENCE_AB' | 'VELOCITE_ADHERENT';
 export type FraudSeverity = 'FAIBLE' | 'MOYENNE' | 'ELEVEE';
 
 export interface FraudClaimInput {
@@ -193,6 +201,29 @@ export interface MatchedPairAmounts {
   wilayaB?: string;
   dateA?: string;
   dateB?: string;
+}
+
+/** 6. Vélocité adhérent — rafale de déclarations du même adhérent le même jour d'ingestion. */
+export function detectVelocity(claims: FraudClaimInput[], sameDayThreshold = 3): FraudCaseCandidate[] {
+  const groups = new Map<string, FraudClaimInput[]>();
+  for (const c of claims) {
+    const day = c.createdAt.slice(0, 10); // jour calendaire ISO (UTC) — cohérent avec les autres détections de ce fichier.
+    pushToGroup(groups, `${c.company}|${day}`, c);
+  }
+  const cases: FraudCaseCandidate[] = [];
+  for (const group of groups.values()) {
+    if (group.length < sameDayThreshold) continue;
+    const score = Math.min(100, 40 + (group.length - sameDayThreshold) * 10);
+    cases.push({
+      type: 'VELOCITE_ADHERENT',
+      claimIds: group.map((c) => c.id),
+      companiesInvolved: [group[0].company],
+      score,
+      severity: severityForScore(score),
+      details: { company: group[0].company, day: group[0].createdAt.slice(0, 10), count: group.length },
+    });
+  }
+  return cases;
 }
 
 /** 5. Incohérences A/B sur une paire réellement appariée. */

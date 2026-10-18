@@ -1,5 +1,5 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { Controller, Get, Module, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
@@ -33,6 +33,12 @@ class FraudController {
   @ApiOperation({ summary: 'Journal des actions suspectes de place (réel : appariement manuel/déliage/reliage observés sur MatchingModule, transmissions tardives), paginé (6/p)' })
   actions(@Query() q: PaginationQueryDto) {
     return this.service.actions(q.page, q.pageSize);
+  }
+
+  @Get('adherents/:company/signals')
+  @ApiOperation({ summary: 'Signaux groupés par catégorie pour un adhérent (écran 9, panneau de détail) — Doublons & e-constat / Réseau-récurrence / Montants & plafond / Incohérences A/B / Vélocité' })
+  signalsByAdherent(@Param('company') company: string) {
+    return this.service.signalsByAdherent(company);
   }
 }
 

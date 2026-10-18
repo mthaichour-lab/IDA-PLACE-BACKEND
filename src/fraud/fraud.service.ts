@@ -9,7 +9,7 @@ import { ClaimsService } from '../claims/claims.service';
 import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
 import { MatchingService } from '../matching/matching.service';
 import { RealtimeGateway } from '../realtime/realtime.module';
-import { FraudActionViewDto, FraudCaseViewDto } from './dto/fraud.dto';
+import { FraudActionViewDto, FraudCaseViewDto, FraudSignalGroupDto } from './dto/fraud.dto';
 import { FraudAction, FraudActionType } from './entities/fraud-action.entity';
 import { FraudCase } from './entities/fraud-case.entity';
 import {
@@ -18,12 +18,23 @@ import {
   detectDuplicates,
   detectEconstatReuse,
   detectVehicleRecurrence,
+  detectVelocity,
   FraudCaseCandidate,
   FraudClaimInput,
   MatchedPairAmounts,
 } from './fraud.detection';
 
 type MemoryFraudCase = FraudCaseViewDto & { dedupeKey: string };
+
+/** Regroupement d'affichage (écran 9, panneau de détail) — noms des groupes tels que cités par le dossier technique §9. */
+const FRAUD_CASE_TYPE_TO_GROUP = {
+  DOUBLON: 'DOUBLONS_ECONSTAT',
+  ECONSTAT_REUTILISE: 'DOUBLONS_ECONSTAT',
+  RECURRENCE_VEHICULE: 'RESEAU_RECURRENCE',
+  MONTANT_CALIBRE: 'MONTANTS_PLAFOND',
+  INCOHERENCE_AB: 'INCOHERENCES_AB',
+  VELOCITE_ADHERENT: 'VELOCITE',
+} as const;
 
 /** Décision humaine (MatchingService.decide, via match.updated) → type d'action du journal (B.9). Mapping assumé, à valider avec le métier. */
 function mapStatusToActionType(status: string): FraudActionType | undefined {
@@ -69,6 +80,7 @@ export class FraudService {
   private readonly ceiling: number;
   private readonly recurrenceWindowDays: number;
   private readonly transmissionLateDays: number;
+  private readonly velocitySameDayThreshold: number;
 
   constructor(
     @InjectRepository(FraudCase) private readonly caseRepo: EntityRepository<FraudCase>,
@@ -81,6 +93,7 @@ export class FraudService {
     this.ceiling = Number(configService.get<string>('ELIGIBILITY_MAX_AMOUNT_DA') ?? DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA);
     this.recurrenceWindowDays = Number(configService.get<string>('FRAUD_RECURRENCE_WINDOW_DAYS') ?? 90);
     this.transmissionLateDays = Number(configService.get<string>('FRAUD_TRANSMISSION_LATE_DAYS') ?? 15);
+    this.velocitySameDayThreshold = Number(configService.get<string>('FRAUD_VELOCITY_SAME_DAY_THRESHOLD') ?? 3);
 
     // B.9 — journal des actions suspectes : observe réellement les décisions
     // humaines de MatchingModule (jamais un import direct du module, voir
@@ -140,26 +153,62 @@ export class FraudService {
   }
 
   async cases(page: number, pageSize: number): Promise<PaginatedResult<FraudCaseViewDto>> {
-    await this.recompute();
-    const rows = await withDegradedFallback(
-      'FraudService.cases',
-      async () => {
-        const all = await this.caseRepo.findAll({ limit: 5000 });
-        return all.map((e) => ({
-          id: e.id,
-          type: e.type,
-          score: e.score,
-          severity: e.severity,
-          claimIds: e.claimIds,
-          companiesInvolved: e.companiesInvolved,
-          details: e.details,
-          detectedAt: (e.updatedAt ?? e.detectedAt).toISOString(),
-        }));
-      },
-      () => this.memoryCases.map(({ dedupeKey: _dedupeKey, ...rest }) => rest),
-    );
+    const rows = await this.allCasesWithPlate();
     rows.sort((a, b) => b.score - a.score);
     return paginateArray(rows, page, pageSize);
+  }
+
+  /** Toutes les affaires, triées par score, enrichies de `plateA` (jointure réelle sur le premier dossier lié — jamais fabriquée). */
+  private async allCasesWithPlate(): Promise<FraudCaseViewDto[]> {
+    await this.recompute();
+    const [rows, { items: allClaims }] = await Promise.all([
+      withDegradedFallback<FraudCaseViewDto[]>(
+        'FraudService.cases',
+        async () => {
+          const all = await this.caseRepo.findAll({ limit: 5000 });
+          return all.map((e) => ({
+            id: e.id,
+            type: e.type,
+            score: e.score,
+            severity: e.severity,
+            claimIds: e.claimIds,
+            companiesInvolved: e.companiesInvolved,
+            details: e.details,
+            detectedAt: (e.updatedAt ?? e.detectedAt).toISOString(),
+          }));
+        },
+        () => this.memoryCases.map(({ dedupeKey: _dedupeKey, ...rest }) => rest),
+      ),
+      this.claims.list({ page: 1, pageSize: 100_000 }),
+    ]);
+    const plateByClaimId = new Map(allClaims.map((c) => [c.id, c.plateA]));
+    return rows.map((r) => ({ ...r, plateA: r.claimIds.map((id) => plateByClaimId.get(id)).find((p) => p) }));
+  }
+
+  /**
+   * Signaux groupés par catégorie pour un adhérent (écran 9, panneau de
+   * détail) — voir `FraudSignalGroupDto`. Ne conserve que les groupes ayant
+   * au moins un cas (pas de section vide affichée pour rien).
+   */
+  async signalsByAdherent(company: string): Promise<FraudSignalGroupDto[]> {
+    const all = await this.allCasesWithPlate();
+    const involving = all.filter((c) => c.companiesInvolved.includes(company));
+
+    const byGroup = new Map<string, FraudCaseViewDto[]>();
+    for (const c of involving) {
+      const group = FRAUD_CASE_TYPE_TO_GROUP[c.type as keyof typeof FRAUD_CASE_TYPE_TO_GROUP];
+      if (!group) continue;
+      const arr = byGroup.get(group);
+      if (arr) arr.push(c);
+      else byGroup.set(group, [c]);
+    }
+
+    return [...byGroup.entries()]
+      .map(([group, cases]) => {
+        const sorted = [...cases].sort((a, b) => b.score - a.score);
+        return { group, count: sorted.length, maxScore: sorted[0].score, cases: sorted };
+      })
+      .sort((a, b) => b.maxScore - a.maxScore);
   }
 
   /** Recalcule les 5 détections à partir des données réelles et persiste (upsert idempotent par `dedupeKey`). */
@@ -183,6 +232,7 @@ export class FraudService {
       ...detectEconstatReuse(fraudClaims),
       ...detectVehicleRecurrence(fraudClaims, this.recurrenceWindowDays),
       ...detectCalibratedAmounts(fraudClaims, this.ceiling),
+      ...detectVelocity(fraudClaims, this.velocitySameDayThreshold),
     ];
 
     // Incohérences A/B — nécessite les montants des DEUX côtés d'une paire

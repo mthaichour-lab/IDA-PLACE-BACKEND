@@ -4,6 +4,7 @@ import {
   detectDuplicates,
   detectEconstatReuse,
   detectVehicleRecurrence,
+  detectVelocity,
   FraudClaimInput,
   severityForScore,
 } from './fraud.detection';
@@ -170,6 +171,40 @@ describe('fraud.detection (fonctions pures)', () => {
         { claimAId: 'a', claimBId: 'b', companyA: 'CAAT', companyB: 'SAA', amountA: 50_000, amountB: 200_000, wilayaA: '16', wilayaB: '31', dateA: '2026-01-10', dateB: '2026-01-11' },
       ]);
       expect(cases[0].score).toBe(100);
+    });
+  });
+
+  describe('detectVelocity (groupe "Vélocité", écran 9)', () => {
+    it('aucun cas sous le seuil (2 déclarations le même jour, seuil par défaut 3)', () => {
+      const cases = detectVelocity([c({ id: 'a1' }), c({ id: 'a2' })]);
+      expect(cases).toHaveLength(0);
+    });
+
+    it('détecte une rafale de 3 déclarations le même jour (createdAt), même compagnie', () => {
+      const cases = detectVelocity([
+        c({ id: 'a1', createdAt: '2026-01-10T08:00:00.000Z' }),
+        c({ id: 'a2', createdAt: '2026-01-10T09:00:00.000Z' }),
+        c({ id: 'a3', createdAt: '2026-01-10T10:00:00.000Z' }),
+      ]);
+      expect(cases).toHaveLength(1);
+      expect(cases[0].type).toBe('VELOCITE_ADHERENT');
+      expect(cases[0].companiesInvolved).toEqual(['CAAT']);
+      expect(cases[0].details.count).toBe(3);
+    });
+
+    it('ne regroupe pas des compagnies différentes même jour (pas le même adhérent)', () => {
+      const cases = detectVelocity([
+        c({ id: 'a1', company: 'CAAT' }),
+        c({ id: 'a2', company: 'SAA' }),
+        c({ id: 'a3', company: 'CASH' }),
+      ]);
+      expect(cases).toHaveLength(0);
+    });
+
+    it('seuil paramétrable', () => {
+      const claims = [c({ id: 'a1' }), c({ id: 'a2' })];
+      expect(detectVelocity(claims, 2)).toHaveLength(1);
+      expect(detectVelocity(claims, 3)).toHaveLength(0);
     });
   });
 });
