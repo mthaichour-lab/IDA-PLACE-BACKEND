@@ -60,8 +60,8 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     await expect(settlement.quarter('2026-Q9')).rejects.toMatchObject({ response: { code: 'BAD_REQUEST' } });
   });
 
-  it('monthly() regroupe les recours par compagnie demanderesse sur le mois d’envoi', async () => {
-    // Deux recours CAAT en janvier 2026 (un réglé, un en attente), un recours SAA en février (hors période).
+  it('monthly() regroupe les recours par compagnie demanderesse', async () => {
+    // Deux recours CAAT (un réglé, un en attente) sur le même mois (envoi == règlement ici).
     const inJan1 = await recours.create({ claimId: 'clm-1', from: 'CAAT', to: 'SAA', amount: 50_000 });
     await recours.create({ claimId: 'clm-2', from: 'CAAT', to: 'SAA', amount: 30_000 });
     await recours.transition(inJan1.id, { action: 'accepter' }, fakeUser('x'));
@@ -72,6 +72,37 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     expect(caat?.resolvedCount).toBe(1);
     expect(caat?.totalAmount).toBe(80_000);
     expect(caat?.status).toBe('EN_COURS');
+  });
+
+  it('monthly() regroupe par mois de RÈGLEMENT, pas d’envoi — bug de convention confirmé par le PO (capture de référence)', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date('2026-08-15T10:00:00.000Z'));
+      const r = await recours.create({ claimId: 'clm-settled-month', from: 'CAAT', to: 'SAA', amount: 12_000 });
+
+      jest.setSystemTime(new Date('2026-09-10T08:00:00.000Z'));
+      await recours.transition(r.id, { action: 'accepter' }, fakeUser('x')); // settledAt == septembre, requestSentAt == août
+
+      const august = await settlement.monthly('2026-08');
+      expect(august.companies.find((c) => c.code === 'CAAT')).toBeUndefined(); // plus compté sur le mois d'ENVOI
+
+      const september = await settlement.monthly('2026-09');
+      const caat = september.companies.find((c) => c.code === 'CAAT');
+      expect(caat?.claimsCount).toBe(1); // compté sur le mois de RÈGLEMENT
+      expect(caat?.resolvedCount).toBe(1);
+      expect(caat?.totalAmount).toBe(12_000);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('monthly() exclut du calcul par compagnie les recours en OPPOSITION (RG-06) — confirmé par le PO', async () => {
+    const r = await recours.create({ claimId: 'clm-opposition-month', from: 'CAAT', to: 'SAA', amount: 99_000 });
+    await recours.transition(r.id, { action: 'opposer' }, fakeUser('x'));
+
+    const period = new Date(r.requestSentAt).toISOString().slice(0, 7);
+    const result = await settlement.monthly(period);
+    expect(result.companies.find((c) => c.code === 'CAAT')).toBeUndefined();
   });
 
   it('closeMonthly() clôture une seule fois (409 ensuite) et persiste le bordereau', async () => {
@@ -88,6 +119,53 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
 
     const result = await settlement.monthly(period);
     expect(result.companies.find((c) => c.code === 'CAAT')?.status).toBe('CLOTURE');
+  });
+
+  it('monthlySummary() calcule la bonne insertionDeadline (5e jour calendaire du mois suivant)', async () => {
+    const result = await settlement.monthlySummary('2026-09');
+    expect(result.period).toBe('2026-09');
+    expect(result.insertionDeadline).toBe('2026-10-05');
+  });
+
+  it('monthlySummary() gère le passage à l’année suivante (décembre -> janvier)', async () => {
+    const result = await settlement.monthlySummary('2026-12');
+    expect(result.insertionDeadline).toBe('2027-01-05');
+  });
+
+  it('monthlySummary() exclut les recours en OPPOSITION du settledCount/totalAmount (ils ne sont jamais RÉGLÉS) et les compte dans excludedOppositionCount', async () => {
+    const settled = await recours.create({ claimId: 'clm-sum-settled', from: 'CAAT', to: 'SAA', amount: 20_000 });
+    const opposed = await recours.create({ claimId: 'clm-sum-opposed', from: 'CAAT', to: 'SAA', amount: 75_000 });
+    await recours.transition(settled.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(opposed.id, { action: 'opposer' }, fakeUser('x'));
+
+    const period = new Date(settled.requestSentAt).toISOString().slice(0, 7);
+    const result = await settlement.monthlySummary(period);
+
+    expect(result.settledCount).toBe(1);
+    expect(result.totalAmount).toBe(20_000);
+    expect(result.excludedOppositionCount).toBe(1);
+  });
+
+  it('annexe7() regroupe les recours réglés du mois par paire créancier→débiteur EXACTE, sans netting', async () => {
+    const a = await recours.create({ claimId: 'clm-a7-1', from: 'CAAT', to: 'SAA', amount: 50_000 });
+    const b = await recours.create({ claimId: 'clm-a7-2', from: 'CAAT', to: 'SAA', amount: 30_000 });
+    const c = await recours.create({ claimId: 'clm-a7-3', from: 'SAA', to: 'CAAT', amount: 10_000 });
+    await recours.create({ claimId: 'clm-a7-4', from: 'CAAT', to: 'SAA', amount: 999_999 }); // jamais réglé : exclu
+    await recours.transition(a.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(b.id, { action: 'accepter' }, fakeUser('x'));
+    await recours.transition(c.id, { action: 'accepter' }, fakeUser('x'));
+
+    const period = new Date(a.requestSentAt).toISOString().slice(0, 7);
+    const result = await settlement.annexe7(period);
+
+    expect(result.period).toBe(period);
+    expect(result.pairs).toEqual(
+      expect.arrayContaining([
+        { from: 'CAAT', to: 'SAA', count: 2, totalAmount: 80_000 },
+        { from: 'SAA', to: 'CAAT', count: 1, totalAmount: 10_000 },
+      ]),
+    );
+    expect(result.pairs).toHaveLength(2); // deux lignes orientées distinctes, pas de netting CAAT<->SAA
   });
 
   it('quarter() ne considère que les recours RÉGLÉS pour la compensation multilatérale', async () => {
