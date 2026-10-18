@@ -30,13 +30,8 @@ class MeteringController {
   @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01)' })
   get(@Param('company') company: string, @Param('period') period: string) {
     const grid = this.service.getGrid();
-    const measured: Record<string, number> = {
-      apiCalls: 182000, claimsIngested: 710, matchings: 650, storageGB: 72,
-      bandwidthGB: 55, ocrPages: 5200, sms: 4100, emails: 12400,
-      activeUsers: 28, cpuHours: 430, memGBh: 2100, backupsGB: 58,
-    };
     const lines = grid.metrics.map((m) => {
-      const mesure = measured[m.metric] ?? 0;
+      const mesure = this.service.measuredFor(m.metric);
       const facturable = Math.max(0, mesure - m.includedQuota);
       const divider = m.unit.startsWith('1 000') ? 1000 : m.unit.startsWith('100 ') ? 100 : 1;
       const amount = Math.round((facturable / divider) * m.unitPrice);
@@ -49,6 +44,15 @@ class MeteringController {
       totalHT, totalTVA: Math.round(totalHT * 0.19), totalTTC: Math.round(totalHT * 1.19),
       status: 'EMISE',
     };
+  }
+
+  @Get('metering/:company/:period/history/:metric')
+  @ApiOperation({
+    summary:
+      'Historique mensuel (10 mois) d’une métrique de consommation — MOCK déterministe, rampe vers la valeur courante (collecte réelle OpenTelemetry/Kubernetes hors périmètre, voir doc de classe)',
+  })
+  history(@Param('period') period: string, @Param('metric') metric: string) {
+    return { metric, points: this.service.history(metric, period) };
   }
 
   @Get('pricing/grid')
