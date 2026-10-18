@@ -41,5 +41,9 @@ class StatsController {
   imports: [ClaimsModule, RecoursModule],
   controllers: [StatsController],
   providers: [StatsService],
+  // Exporté (2026-10-18) pour réutilisation par CockpitModule (écran 1,
+  // tuiles "déclarations du mois"/"top wilayas") — même principe que les
+  // exports déjà en place pour MeteringService/AdherentsService.
+  exports: [StatsService],
 })
 export class StatsModule {}
