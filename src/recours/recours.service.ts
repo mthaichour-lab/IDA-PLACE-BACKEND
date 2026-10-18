@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RealtimeGateway } from '../realtime/realtime.module';
 import {
   CreateRecoursDto,
@@ -186,7 +186,9 @@ export class RecoursService {
     return row;
   }
 
-  async create(dto: CreateRecoursDto): Promise<RecoursViewDto> {
+  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `dto.from` venait du corps sans vérification, un `CORRESPONDANT_IDA` pouvait créer un recours au nom d'une AUTRE compagnie (`from`). */
+  async create(dto: CreateRecoursDto, user?: AuthenticatedUser): Promise<RecoursViewDto> {
+    if (user) assertCompanyAccess(user, dto.from);
     const now = new Date();
     return withDegradedFallback(
       'RecoursService.create',

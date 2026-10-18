@@ -41,9 +41,9 @@ export class CommissionController {
 
   @Post('cases')
   @Privileges('exchange')
-  @ApiOperation({ summary: 'Ouverture d’un dossier de conciliation à partir d’un recours transmis en commission' })
-  createCase(@Body() dto: CreateCommissionCaseDto) {
-    return this.service.createCase(dto);
+  @ApiOperation({ summary: "Ouverture d'un dossier de conciliation à partir d'un recours transmis en commission (B.7 : le recours cité doit appartenir à la compagnie de l'appelant)" })
+  createCase(@Body() dto: CreateCommissionCaseDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.createCase(dto, user);
   }
 
   @Post('cases/:id/deliberate')

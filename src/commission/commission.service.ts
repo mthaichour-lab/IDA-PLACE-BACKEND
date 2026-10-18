@@ -152,10 +152,12 @@ export class CommissionService {
     return row;
   }
 
-  async createCase(dto: CreateCommissionCaseDto): Promise<CommissionCaseViewDto> {
+  /** Revue sécurité 2026-10-18 (B.7) : `user` est désormais transmis à `RecoursService.get`, dont le propre contrôle de périmètre (voir recours.service.ts `visibleToUser`) lève un 403 si le recours cité n'appartient pas à la compagnie de l'appelant — avant, l'appel sans `user` contournait entièrement ce contrôle (`visibleToUser` renvoie `true` quand `user` est absent). */
+  async createCase(dto: CreateCommissionCaseDto, user?: AuthenticatedUser): Promise<CommissionCaseViewDto> {
     // Validation + dénormalisation depuis RecoursModule (interface publique
-    // en lecture seule) — lève un 404 normalisé si le recours n'existe pas.
-    const recours = await this.recours.get(dto.recoursId);
+    // en lecture seule) — lève un 404 normalisé si le recours n'existe pas,
+    // un 403 s'il existe mais hors périmètre de la compagnie de l'appelant.
+    const recours = await this.recours.get(dto.recoursId, user);
     const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date(Date.now() + DEFAULT_SCHEDULE_DELAY_MS);
 
     return withDegradedFallback(

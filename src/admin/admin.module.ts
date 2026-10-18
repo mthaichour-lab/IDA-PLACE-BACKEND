@@ -45,7 +45,12 @@ class AdminController {
     private readonly users: PlaceUserDirectory,
   ) {}
 
+  // Revue sécurité 2026-10-18 (B.7) : `@Privileges('admin')` ajouté — seule
+  // route GET de ce contrôleur à en manquer un, elle exposait noms/emails/
+  // rôles/compagnies et dérogations de privilèges de TOUS les utilisateurs
+  // de la place à n'importe quel utilisateur authentifié.
   @Get('users')
+  @Privileges('admin')
   @ApiOperation({ summary: 'Utilisateurs & accès — RÉEL, paginé (6/p)' })
   listUsers(@Query() q: ListPlaceUsersQueryDto) {
     return this.users.list(q.page, q.pageSize);

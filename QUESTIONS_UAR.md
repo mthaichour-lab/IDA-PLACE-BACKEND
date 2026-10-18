@@ -245,6 +245,98 @@ refactoring.
 
 ---
 
+## 11. Compensation trimestrielle — qui peut clôturer la place entière ?
+
+**Trouvé lors de la revue sécurité RBAC du 2026-10-18** (voir HANDOFF.md
+backend, section de ce jour) : `POST /settlement/quarter/:q/close`
+(`closeQuarterly`) exige le privilège `synth`, détenu à la fois par les
+rôles "place" ET par `CORRESPONDANT_IDA`/`TRESORIER` (rôles scopés à UNE
+compagnie). Contrairement à `closeMonthly` (clôture PAR compagnie, où un
+`TRESORIER` ne clôturant que sa propre compagnie est légitime — corrigé
+ce jour, voir HANDOFF.md), `closeQuarterly` n'a PAS de paramètre
+compagnie : c'est une action **unique et place-entière** (compensation
+multilatérale de TOUTES les compagnies à la fois). Techniquement
+aujourd'hui, le trésorier d'UNE SEULE compagnie adhérente peut donc
+déclencher la clôture trimestrielle pour TOUTE la place — générer le
+bordereau Art.17 avant que les autres compagnies n'aient fini leurs
+propres vérifications, par exemple.
+
+**Pourquoi non corrigé seul** : ce n'est pas un trou de scoping tenant
+(il n'y a pas de "compagnie B dont les données fuient vers la compagnie
+A" ici) mais une question de matrice de privilèges — quel rôle doit
+légitimement pouvoir déclencher une action place-entière irréversible.
+Changer unilatéralement qui détient `synth` pour cette route précise
+serait une décision métier, pas un correctif mécanique.
+
+**Question** : La clôture trimestrielle (Art.17) doit-elle être réservée
+aux rôles "place" (OPERATEUR_PLACE/ADMIN_UAR), ou un TRESORIER/
+CORRESPONDANT_IDA peut-il légitimement la déclencher (ex: lors d'une
+réunion UAR où un représentant de compagnie est mandaté) ?
+
+**Une fois répondu** : si réservé aux rôles place, scinder un nouveau
+privilège dédié (ex. `closeQuarter`) tenu uniquement par
+OPERATEUR_PLACE/ADMIN_UAR/MEMBRE_COMMISSION, au lieu de réutiliser
+`synth` (qui reste nécessaire pour la LECTURE des synthèses par les
+compagnies). Changement de décorateur uniquement, pas de refactoring.
+
+---
+
+## 12. Référentiel de place — qui peut créer une NOUVELLE compagnie adhérente ?
+
+**Trouvé lors de la revue sécurité RBAC du 2026-10-18** : `POST
+/referential/companies` (`createCompany`) exige `refedit`, détenu par
+`CORRESPONDANT_IDA` (rôle représentant une compagnie déjà adhérente).
+Contrairement à `updateCompany`/`createAgency` (désormais vérifiés : un
+correspondant ne peut agir que sur SA PROPRE compagnie, voir
+HANDOFF.md), **créer une compagnie n'a pas de "propriétaire existant" à
+vérifier** — c'est un acte d'onboarding d'un NOUVEL adhérent à la place.
+Aujourd'hui, n'importe quel correspondant déjà adhérent peut créer une
+compagnie adhérente supplémentaire.
+
+**Pourquoi non corrigé seul** : décider si l'onboarding d'un nouvel
+adhérent doit être un acte réservé aux rôles "place" (ADMIN_UAR, typique
+d'un onboarding réglementaire) est une question de processus métier, pas
+un trou de scoping tenant mécanique.
+
+**Question** : L'admission d'une nouvelle compagnie à la convention IDA
+passe-t-elle par une procédure UAR documentée ailleurs (vote, signature
+de convention) qui devrait se refléter dans qui peut appeler cette
+route ?
+
+**Une fois répondu** : si réservé aux rôles place, retirer `refedit` de
+`CORRESPONDANT_IDA` pour cette route spécifique (un privilège dédié, ex.
+`onboardCompany`) — `refedit` resterait nécessaire pour
+`updateCompany`/`createAgency`/experts (déjà correctement restreints à
+sa propre compagnie).
+
+---
+
+## 13. Anti-fraude — le journal des actions suspectes doit-il être scopé ?
+
+**Trouvé lors de la revue sécurité RBAC du 2026-10-18** : `GET
+/fraud/cases` est désormais scopé par compagnie (`companiesInvolved`,
+voir HANDOFF.md), mais `GET /fraud/actions` (journal des actions
+suspectes de place : appariements manuels, déliage/reliage,
+transmissions tardives) reste volontairement NON scopé. Raison technique
+: `FraudAction.actor` est soit un identifiant utilisateur (décision
+humaine), soit un code compagnie (transmission tardive) — un champ au
+typage mixte, pas une paire `from`/`to` fiable pour filtrer par
+compagnie comme ailleurs dans le projet.
+
+**Question** : Ce journal doit-il rester place-wide (même esprit que
+`LedgerModule`, un audit trail partagé), ou faut-il le scoper par
+compagnie ? Si scopé, sur quel critère exactement — l'acteur humain
+appartient-il à une compagnie traçable, ou faut-il relier chaque action
+à son `claimId`/`matchId` pour en déduire les compagnies concernées ?
+
+**Une fois répondu** : si scoping souhaité, ajouter un champ
+`companiesInvolved`/`company` explicite à `FraudAction` (migration +
+peuplement au moment de la création de l'action, pas une déduction a
+posteriori fragile) — travail de modélisation, pas un filtre trivial à
+ajouter à `actions()`.
+
+---
+
 ## Comment utiliser ce document
 
 Chaque section est indépendante : répondre à une seule suffit à

@@ -291,6 +291,135 @@ cache Redis minimal.
    serveur Keycloak (indisponible dans cet environnement) — hors périmètre
    de cette vérification.
 
+## Revue sécurité RBAC/scoping tenant systématique (2026-10-18)
+
+Tous les écrans du guide illustré étant construits et vérifiés (voir
+HANDOFF.md frontend), audit systématique (pas réactif écran-par-écran
+comme jusqu'ici) de TOUS les contrôleurs backend contre le scoping tenant
+B.7 (`resolveTenantFilter`/`assertCompanyAccess`, `common/rbac/
+tenant-scope.ts`) — ce même angle mort avait déjà été trouvé et corrigé
+au moins 4 fois auparavant sur des modules isolés (Matching sprint 3,
+Recours sprint 3, Settlement/Commission revue PO) sans jamais être
+vérifié de façon exhaustive sur l'ensemble du code. Un agent dédié
+(revue sécurité) a d'abord cartographié tous les contrôleurs ; chaque
+trouvaille a ensuite été relue manuellement (fichier par fichier, jamais
+fait confiance au rapport seul) avant correctif.
+
+**Fuites cross-tenant réelles corrigées** (un `CORRESPONDANT_IDA`/
+`TRESORIER` d'une compagnie pouvait accéder aux données d'une AUTRE
+compagnie) :
+
+1. **`DocumentsModule`** — le plus sévère : `upload()` préfixait TOUTES
+   les pièces (constats, cartes grises, devis) sous la même clé
+   `"default-tenant/..."` partagée entre compagnies, et `presign(:key)`
+   signait une URL pour N'IMPORTE QUELLE clé sans aucune vérification de
+   propriétaire. Corrigé : préfixe par la compagnie réelle de
+   l'uploadeur (ou `"place"` pour les rôles place, décision documentée
+   dans le code), `presign` vérifie désormais le préfixe compagnie de la
+   clé contre l'appelant. `PrivilegesGuard` était également absent du
+   contrôleur (AUDITEUR_CSA pouvait uploader, son blocage absolu en
+   écriture n'était jamais évalué) — ajouté.
+2. **`MonitoringModule`** — `trajectories()` appelait
+   `MatchingService.queue()` SANS `user`, contournant le filtre tenant
+   déjà existant côté MatchingModule (`visibleToUser` renvoie `true`
+   quand `user` est `undefined` — un piège silencieux, pas une absence
+   de protection). `journeys(:code)` n'avait aucun contrôle du tout et
+   dupliquait une donnée (recours, montants, contreparties) déjà
+   protégée ailleurs (`RecoursModule`). `scores()` reste
+   DÉLIBÉRÉMENT place-wide — le dossier technique décrit explicitement
+   le "classement" comme une fonctionnalité documentée de l'écran 8, pas
+   un oubli ; restreindre ce endpoint aurait cassé une fonctionnalité
+   réelle sous couvert de "corriger un bug".
+3. **`FraudModule`** — même famille de trou : `cases()`/
+   `signalsByAdherent(:company)` sans aucun scoping. Corrigé par
+   filtrage sur `companiesInvolved` (même principe que `from`/`to`
+   ailleurs — un cas reste visible à une compagnie partie même s'il en
+   nomme une autre, la détection de fraude étant inter-compagnies par
+   nature, voir `fraud.detection.ts`). `actions()` (journal des actions
+   suspectes de PLACE) volontairement NON scopé — `FraudAction.actor`
+   est un champ à typage mixte (identité utilisateur OU code compagnie
+   selon le type d'action), pas un champ fiable pour filtrer ; point
+   ouvert documenté dans `QUESTIONS_UAR.md` plutôt que deviné.
+4. **`CommissionModule.createCase`** — appelait `RecoursService.get()`
+   SANS `user` (même piège silencieux que #2), permettant d'ouvrir un
+   dossier de conciliation à partir du `recoursId` de N'IMPORTE QUELLE
+   compagnie, avec fuite de ses données (contreparties, montant) dans la
+   réponse. Corrigé en transmettant `user` — le contrôle existant de
+   `RecoursService.get` s'applique alors normalement.
+5. **`SettlementModule.closeMonthly`** — `dto.company` venait du corps
+   de la requête sans vérification ; un `TRESORIER` (privilège `synth`,
+   scopé compagnie) pouvait clôturer la synthèse mensuelle d'une AUTRE
+   compagnie. Corrigé par `assertCompanyAccess`. `closeQuarterly` (pas
+   de paramètre compagnie, action place-entière) laissé tel quel —
+   question de matrice de privilèges, pas de scoping, voir
+   `QUESTIONS_UAR.md` §11.
+6. **`AdherentsModule`** (`updateCompany`/`createAgency`/`updateAgency`)
+   et **`ExpertsModule`** (`create`/`update`) — `refedit` est détenu par
+   `CORRESPONDANT_IDA`, mais aucune de ces mutations ne vérifiait que la
+   compagnie modifiée était bien celle de l'appelant. Corrigé par
+   `assertCompanyAccess` (Company/Agency, une seule compagnie
+   propriétaire) ou un nouvel `assertCompanyAmong` dédié (Expert, qui
+   sert PLUSIEURS compagnies à la fois via `companies: string[]` — la
+   vérification d'égalité stricte ne s'applique pas, voir
+   `experts.service.ts`). Vérification volontairement placée EN DEHORS
+   de tout `withDegradedFallback` de mutation dans les deux modules : une
+   `ForbiddenException` levée DEDANS y serait interceptée comme une
+   simple panne DB et déclencherait à tort le repli mémoire (qui aurait
+   pu réussir et renvoyer 200 au lieu de 403) — piège spécifique à ce
+   helper, documenté dans le code à chaque point d'usage.
+   `createCompany` (création d'une toute NOUVELLE compagnie, pas de
+   propriétaire existant à vérifier) laissé tel quel — question de
+   matrice de privilèges, voir `QUESTIONS_UAR.md` §12.
+7. **`RecoursModule.create`** — `dto.from` venait du corps sans
+   vérification ; un `CORRESPONDANT_IDA` pouvait créer un recours au nom
+   d'une AUTRE compagnie (usurpation de `from`). Corrigé par
+   `assertCompanyAccess` (paramètre `user` resté optionnel pour ne pas
+   casser les ~15 call sites de test existants qui créent des recours
+   sans contexte utilisateur — seul le contrôleur HTTP réel fournit
+   toujours `user`).
+8. **`MeteringModule`** (`get`/`history`, routes `:company/:period`) —
+   aucun scoping. Sévérité réelle aujourd'hui FAIBLE (la consommation
+   est un mock IDENTIQUE pour toutes les compagnies,
+   `MOCK_MEASURED_CONSUMPTION`, pas de vraie donnée différenciée à
+   fuiter) mais corrigé par anticipation : c'était la seule route du
+   module sans ce contrôle, un piège pour le jour où le TODO
+   "consommation réelle par tenant" sera implémenté.
+9. **`AdminModule`** — `GET /admin/users` était la seule route GET de ce
+   contrôleur sans `@Privileges('admin')`, exposant noms/emails/rôles/
+   compagnies et dérogations de privilèges de TOUS les utilisateurs de
+   la place à n'importe quel utilisateur authentifié. Corrigé.
+
+**Durcissement pour cohérence** (aucun comportement changé — ces
+contrôleurs n'ont aucune route d'écriture aujourd'hui, confirmé par
+grep) : `PrivilegesGuard` ajouté à `EligibilityModule`/`StatsModule`/
+`LedgerModule`/`CockpitModule` (manquait `AuthGuard` seul, déviation du
+motif établi partout ailleurs — piège pour la prochaine route POST
+ajoutée sans qu'on remarque l'absence du garde).
+
+**3 points volontairement NON corrigés seul**, parce qu'ils sont des
+questions de politique de privilèges (qui a le droit de faire X) et non
+des trous mécaniques de scoping tenant (donnée de compagnie A visible
+par compagnie B) — documentés avec la question précise à trancher dans
+`QUESTIONS_UAR.md` §11-13 : qui peut clôturer la compensation
+trimestrielle PLACE ENTIÈRE (`closeQuarterly`), qui peut créer une
+TOUTE NOUVELLE compagnie adhérente (`createCompany`), et si le journal
+des actions suspectes de fraude doit être scopé par compagnie.
+
+**Vérifié** : 272/272 tests unitaires (dont 20 nouveaux cas e2e dédiés
+dans `test/security-tenant-scope.e2e-spec.ts`, reproduisant chaque
+scénario d'exploitation exact avant/après correctif — et 17 nouveaux cas
+unitaires `adherents.service.spec.ts`/`experts.service.spec.ts`),
+`tsc --noEmit` propre, `npm run build` réussi. E2e : 60/61 (le seul échec,
+`claims-import.e2e-spec.ts` "exige le privilège import", est un flake
+`ECONNRESET` pré-existant sur l'upload multipart — reproduit IDENTIQUE
+sur le commit de base avant toute modification de cette revue, via
+`git stash`/`git stash pop` ; aucun rapport avec `ClaimsModule`, jamais
+touché ici). Smoke-testé en navigateur/curl réel après correctif (backend
+isolé port 3003, `OPERATEUR_PLACE`) sur chaque module modifié —
+`resolveTenantFilter`/`assertCompanyAccess` sont des no-op pour les
+rôles place, donc aucun impact visible sur l'expérience démo actuelle
+(qui tourne toujours en `OPERATEUR_PLACE`).
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)

@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PaginatedResult, paginateArray } from '../common/dto/pagination.dto';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { assertCompanyAccess } from '../common/rbac/tenant-scope';
 import { ClaimsService } from '../claims/claims.service';
 import { CommissionService } from '../commission/commission.service';
 import { MatchingService } from '../matching/matching.service';
@@ -169,8 +171,15 @@ export class MonitoringService {
     };
   }
 
-  /** "Vue par dossier — parcours complet" (écran 8), scopée à une compagnie — voir `MonitoringJourneyDto`. */
-  async journeys(code: string, page: number, pageSize: number): Promise<PaginatedResult<MonitoringJourneyDto>> {
+  /**
+   * "Vue par dossier — parcours complet" (écran 8), scopée à une compagnie
+   * — voir `MonitoringJourneyDto`. Revue sécurité 2026-10-18 (B.7) :
+   * `assertCompanyAccess` ajouté — ces lignes dérivent de `RecoursModule`,
+   * déjà protégé par tenant ailleurs ; sans ce contrôle, ce chemin parallèle
+   * exposait la même donnée sensible sans la même protection.
+   */
+  async journeys(code: string, page: number, pageSize: number, user: AuthenticatedUser): Promise<PaginatedResult<MonitoringJourneyDto>> {
+    assertCompanyAccess(user, code);
     const allRecours = await this.recours.listAll();
     const rows: MonitoringJourneyDto[] = allRecours
       .filter((r) => r.from === code || r.to === code)
@@ -188,9 +197,16 @@ export class MonitoringService {
     return paginateArray(rows, page, pageSize);
   }
 
-  /** Parcours inter-compagnies par dossier — dérivé de la file réelle de MatchingModule (B.5). */
-  async trajectories(page: number, pageSize: number): Promise<PaginatedResult<TrajectoryDto>> {
-    const queue = await this.matching.queue({ filter: 'TOUS', page: 1, pageSize: 100_000 });
+  /**
+   * Parcours inter-compagnies par dossier — dérivé de la file réelle de
+   * MatchingModule (B.5). Revue sécurité 2026-10-18 (B.7) : `user` transmis
+   * à `MatchingService.queue()`, qui applique déjà son propre filtre
+   * tenant (`visibleToUser`) — l'appeler sans `user` (comme avant) le
+   * contournait entièrement (`visibleToUser` renvoie `true` quand `user`
+   * est absent, voir matching.service.ts).
+   */
+  async trajectories(page: number, pageSize: number, user: AuthenticatedUser): Promise<PaginatedResult<TrajectoryDto>> {
+    const queue = await this.matching.queue({ filter: 'TOUS', page: 1, pageSize: 100_000 }, user);
     const rows: TrajectoryDto[] = queue.items.map((i) => ({
       claimRef: i.refA,
       companyA: i.companyA,

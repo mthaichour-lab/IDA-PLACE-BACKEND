@@ -1,13 +1,14 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { LedgerService } from './ledger.service';
 
 /** LedgerModule — écran 13 "Journal scellé" (chaînage SHA-256 append-only, voir ledger.service.ts). */
 @ApiTags('ledger')
 @ApiBearerAuth()
 @Controller('ledger')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PrivilegesGuard)
 export class LedgerController {
   constructor(private readonly service: LedgerService) {}
 

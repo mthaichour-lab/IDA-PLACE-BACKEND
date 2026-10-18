@@ -3,7 +3,7 @@ import { EntityRepository } from '@mikro-orm/postgresql';
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RecoursService } from '../recours/recours.service';
 import {
   Annexe7Dto,
@@ -187,7 +187,9 @@ export class SettlementService {
     return { period, companies };
   }
 
-  async closeMonthly(period: string, companyCode: string, closedBy: string): Promise<CompanyMonthlySynthesisDto> {
+  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `companyCode` venait du corps de la requête sans vérification, donc un `TRESORIER`/`CORRESPONDANT_IDA` (tous deux porteurs du privilège `synth`) pouvait clôturer la synthèse mensuelle d'une AUTRE compagnie. */
+  async closeMonthly(period: string, companyCode: string, closedBy: string, user: AuthenticatedUser): Promise<CompanyMonthlySynthesisDto> {
+    assertCompanyAccess(user, companyCode);
     this.parseMonthOrThrow(period);
     const existing = await this.findClosures(SettlementScope.MONTHLY, period);
     if (existing.some((c) => c.companyCode === companyCode)) {

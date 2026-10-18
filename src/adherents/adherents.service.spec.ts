@@ -1,10 +1,19 @@
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@mikro-orm/nestjs';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { AdherentsService } from './adherents.service';
 import { Company } from './entities/company.entity';
 import { Agency } from './entities/agency.entity';
 import { Wilaya } from './entities/wilaya.entity';
+
+/** Acteur scopé compagnie — voir claims.service.spec.ts `correspondant()`. */
+function correspondant(companyId: string): AuthenticatedUser {
+  return { id: 'u', name: 'Correspondant (test)', email: 'c@test.dz', role: 'CORRESPONDANT_IDA', companyId, privileges: ['refedit'] };
+}
+function placeUser(): AuthenticatedUser {
+  return { id: 'u2', name: 'Opérateur (test)', email: 'o@test.dz', role: 'OPERATEUR_PLACE', privileges: ['refedit'] };
+}
 
 function throwingRepo() {
   return {
@@ -79,5 +88,45 @@ describe('AdherentsService (mode dégradé)', () => {
     const motifs = service.getMotifs();
     expect(motifs.length).toBeGreaterThan(0);
     expect(motifs.every((m) => m.article.startsWith('Art.'))).toBe(true);
+  });
+
+  describe('scoping tenant sur les mutations référentielles (B.7, revue sécurité 2026-10-18)', () => {
+    it("updateCompany refuse avec un 403 qu'un CORRESPONDANT_IDA modifie une AUTRE compagnie", async () => {
+      await expect(service.updateCompany('c-saa', { name: 'SAA piraté' }, correspondant('CAAT'))).rejects.toMatchObject({
+        response: { code: 'FORBIDDEN' },
+      });
+    });
+
+    it('updateCompany autorise un CORRESPONDANT_IDA à modifier SA PROPRE compagnie', async () => {
+      const updated = await service.updateCompany('c-caat', { name: 'CAAT Assurance (MAJ)' }, correspondant('CAAT'));
+      expect(updated.name).toBe('CAAT Assurance (MAJ)');
+    });
+
+    it("updateCompany autorise toujours un rôle place (OPERATEUR_PLACE) sur n'importe quelle compagnie", async () => {
+      const updated = await service.updateCompany('c-saa', { name: 'SAA (MAJ place)' }, placeUser());
+      expect(updated.name).toBe('SAA (MAJ place)');
+    });
+
+    it("createAgency refuse avec un 403 qu'un CORRESPONDANT_IDA crée une agence pour une AUTRE compagnie", async () => {
+      await expect(
+        service.createAgency({ companyId: 'c-saa', code: 'AG-X', name: 'Agence pirate', type: 'AG' as never }, correspondant('CAAT')),
+      ).rejects.toMatchObject({ response: { code: 'FORBIDDEN' } });
+    });
+
+    it('createAgency autorise un CORRESPONDANT_IDA à créer une agence pour SA PROPRE compagnie', async () => {
+      const created = await service.createAgency({ companyId: 'c-caat', code: 'AG-NEW', name: 'Nouvelle agence CAAT', type: 'AG' as never }, correspondant('CAAT'));
+      expect(created.companyId).toBe('c-caat');
+    });
+
+    it("updateAgency refuse avec un 403 qu'un CORRESPONDANT_IDA modifie une agence d'une AUTRE compagnie", async () => {
+      await expect(service.updateAgency('a-saa-dg', { name: 'SAA DG piraté' }, correspondant('CAAT'))).rejects.toMatchObject({
+        response: { code: 'FORBIDDEN' },
+      });
+    });
+
+    it('updateAgency autorise un CORRESPONDANT_IDA à modifier une agence de SA PROPRE compagnie', async () => {
+      const updated = await service.updateAgency('a-caat-dg', { name: 'CAAT DG (MAJ)' }, correspondant('CAAT'));
+      expect(updated.name).toBe('CAAT DG (MAJ)');
+    });
   });
 });

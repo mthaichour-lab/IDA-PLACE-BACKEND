@@ -3,8 +3,11 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { assertCompanyAccess } from '../common/rbac/tenant-scope';
 import { MeteringService, PriceGrid } from './metering.service';
 
 /**
@@ -48,9 +51,16 @@ class MeteringController {
     return { period, ...this.service.placeSummary(total) };
   }
 
+  // Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté par
+  // anticipation — la consommation est aujourd'hui un mock IDENTIQUE pour
+  // toutes les compagnies (`MOCK_MEASURED_CONSUMPTION`, metering.service.ts),
+  // donc pas de fuite de donnée réelle aujourd'hui, mais la route était la
+  // seule du module sans ce contrôle, un piège pour le jour où le TODO
+  // "consommation réelle par tenant" (voir doc de classe) sera implémenté.
   @Get('metering/:company/:period')
-  @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01)' })
-  get(@Param('company') company: string, @Param('period') period: string) {
+  @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01) — B.7 : scopée par compagnie' })
+  get(@Param('company') company: string, @Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
+    assertCompanyAccess(user, company);
     const grid = this.service.getGrid();
     const lines = this.service.computeInvoiceLines();
     const totalHT = grid.subscription.monthly + lines.reduce((s, l) => s + l.amount, 0);
@@ -65,9 +75,10 @@ class MeteringController {
   @Get('metering/:company/:period/history/:metric')
   @ApiOperation({
     summary:
-      'Historique mensuel (10 mois) d’une métrique de consommation — MOCK déterministe, rampe vers la valeur courante (collecte réelle OpenTelemetry/Kubernetes hors périmètre, voir doc de classe)',
+      'Historique mensuel (10 mois) d’une métrique de consommation — MOCK déterministe, rampe vers la valeur courante (collecte réelle OpenTelemetry/Kubernetes hors périmètre, voir doc de classe) — B.7 : scopée par compagnie',
   })
-  history(@Param('period') period: string, @Param('metric') metric: string) {
+  history(@Param('company') company: string, @Param('period') period: string, @Param('metric') metric: string, @CurrentUser() user: AuthenticatedUser) {
+    assertCompanyAccess(user, company);
     return { metric, points: this.service.history(metric, period) };
   }
 

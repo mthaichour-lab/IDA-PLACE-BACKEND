@@ -40,9 +40,9 @@ export class RecoursController {
 
   @Post()
   @Privileges('insert')
-  @ApiOperation({ summary: "Enregistrement d'un nouveau recours (Annexe 2) pour un dossier éligible IDA" })
-  create(@Body() dto: CreateRecoursDto) {
-    return this.service.create(dto);
+  @ApiOperation({ summary: "Enregistrement d'un nouveau recours (Annexe 2) pour un dossier éligible IDA (B.7 : `from` doit être la compagnie de l'appelant, sauf rôle place)" })
+  create(@Body() dto: CreateRecoursDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.create(dto, user);
   }
 
   @Post(':id/transition')

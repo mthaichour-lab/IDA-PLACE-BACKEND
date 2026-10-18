@@ -5,6 +5,8 @@ import { EntityRepository } from '@mikro-orm/postgresql';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { assertCompanyAccess } from '../common/rbac/tenant-scope';
 import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
 import { DEFAULT_RECOURS_TIMER_CONFIG } from '../recours/recours.rules';
 import { CreateAgencyDto, AgencyViewDto, UpdateAgencyDto } from './dto/agency.dto';
@@ -195,7 +197,20 @@ export class AdherentsService {
     );
   }
 
-  async updateCompany(id: string, dto: UpdateCompanyDto): Promise<CompanyViewDto> {
+  /**
+   * Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` appelé AVANT le
+   * `withDegradedFallback` de la mutation elle-même, jamais dedans — une
+   * `ForbiddenException` levée à l'intérieur de `withDegradedFallback` y
+   * serait interceptée comme une simple panne DB et déclencherait à tort le
+   * repli mémoire (qui pourrait réussir et renvoyer 200 au lieu de 403).
+   * `getCompany(id)` gère déjà la double voie DB/mémoire et expose `code`
+   * (le `companyId` RBAC — à ne pas confondre avec l'`id` UUID interne de
+   * ce module, deux identifiants différents ici, voir `MemoryAgency` vs
+   * `AuthenticatedUser.companyId`).
+   */
+  async updateCompany(id: string, dto: UpdateCompanyDto, user: AuthenticatedUser): Promise<CompanyViewDto> {
+    const existing = await this.getCompany(id);
+    assertCompanyAccess(user, existing.code);
     return withDegradedFallback(
       'AdherentsService.updateCompany',
       async () => {
@@ -236,7 +251,10 @@ export class AdherentsService {
     );
   }
 
-  async createAgency(dto: CreateAgencyDto): Promise<AgencyViewDto> {
+  /** Revue sécurité 2026-10-18 (B.7) : voir le commentaire de `updateCompany` — vérifié AVANT tout `withDegradedFallback` de mutation, jamais dedans. */
+  async createAgency(dto: CreateAgencyDto, user: AuthenticatedUser): Promise<AgencyViewDto> {
+    const owner = await this.getCompany(dto.companyId);
+    assertCompanyAccess(user, owner.code);
     return withDegradedFallback(
       'AdherentsService.createAgency',
       async () => {
@@ -280,7 +298,27 @@ export class AdherentsService {
     );
   }
 
-  async updateAgency(id: string, dto: UpdateAgencyDto): Promise<AgencyViewDto> {
+  /**
+   * Revue sécurité 2026-10-18 (B.7) : résout la compagnie propriétaire de
+   * l'agence (DB, puis repli mémoire si injoignable — jamais l'inverse)
+   * UNIQUEMENT pour le contrôle d'accès, en dehors de tout
+   * `withDegradedFallback` de mutation (voir `updateCompany`).
+   */
+  private async resolveAgencyOwnerCode(id: string): Promise<string> {
+    try {
+      const a = await this.agencies.findOneOrFail({ id }, { populate: ['company'] });
+      return a.company.code;
+    } catch {
+      const a = MEMORY_AGENCIES.find((m) => m.id === id);
+      if (!a) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Agence introuvable (mode dégradé).' });
+      const company = MEMORY_COMPANIES.find((c) => c.id === a.companyId);
+      if (!company) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
+      return company.code;
+    }
+  }
+
+  async updateAgency(id: string, dto: UpdateAgencyDto, user: AuthenticatedUser): Promise<AgencyViewDto> {
+    assertCompanyAccess(user, await this.resolveAgencyOwnerCode(id));
     return withDegradedFallback(
       'AdherentsService.updateAgency',
       async () => {

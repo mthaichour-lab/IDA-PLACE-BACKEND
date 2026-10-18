@@ -1,11 +1,28 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { CreateExpertDto, ExpertViewDto, UpdateExpertDto } from './dto/expert.dto';
 import { Expert, ExpertStatus } from './entities/expert.entity';
+
+/**
+ * Revue sécurité 2026-10-18 (B.7) : un `Expert` sert PLUSIEURS compagnies à
+ * la fois (`companies: string[]`), à la différence de `Company`/`Agency`
+ * (une seule compagnie propriétaire chacune) — `assertCompanyAccess`
+ * (égalité stricte à UNE compagnie, `tenant-scope.ts`) ne s'applique donc
+ * pas tel quel ; on vérifie que la compagnie de l'appelant fait partie de
+ * la liste des compagnies servies, pas qu'elle lui soit égale.
+ */
+function assertCompanyAmong(user: AuthenticatedUser, companies: string[]): void {
+  const tenant = resolveTenantFilter(user);
+  if (tenant && !companies.includes(tenant)) {
+    throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
+  }
+}
 
 const MEMORY_EXPERTS: ExpertViewDto[] = [
   { id: 'e-1', name: 'Karim Belkacem', firm: 'Cabinet Belkacem', agrement: 'AGR-2019-0042', wilayas: ['16', '09'], specialties: ['Carrosserie'], companies: ['CAAT', 'SAA'], status: ExpertStatus.ACTIF },
@@ -38,7 +55,8 @@ export class ExpertsService {
    * levait une erreur 500 dès que PostgreSQL était absent, alors que le
    * README promet que "l'app démarre toujours, le repli est explicite".
    */
-  async create(dto: CreateExpertDto): Promise<ExpertViewDto> {
+  async create(dto: CreateExpertDto, user: AuthenticatedUser): Promise<ExpertViewDto> {
+    assertCompanyAmong(user, dto.companies ?? []);
     return withDegradedFallback(
       'ExpertsService.create',
       async () => {
@@ -72,7 +90,20 @@ export class ExpertsService {
     );
   }
 
-  async update(id: string, dto: UpdateExpertDto): Promise<ExpertViewDto> {
+  /** Résout les compagnies actuellement servies par l'expert, DB puis repli mémoire — uniquement pour le contrôle d'accès, en dehors de tout `withDegradedFallback` de mutation (voir `adherents.service.ts` pour l'explication de ce découplage). */
+  private async resolveExpertCompanies(id: string): Promise<string[]> {
+    try {
+      const e = await this.repo.findOneOrFail({ id });
+      return e.companies;
+    } catch {
+      const e = MEMORY_EXPERTS.find((m) => m.id === id);
+      if (!e) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Expert introuvable (mode dégradé).' });
+      return e.companies;
+    }
+  }
+
+  async update(id: string, dto: UpdateExpertDto, user: AuthenticatedUser): Promise<ExpertViewDto> {
+    assertCompanyAmong(user, await this.resolveExpertCompanies(id));
     return withDegradedFallback(
       'ExpertsService.update',
       async () => {

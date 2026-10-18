@@ -1,6 +1,7 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { EligibilityService } from './eligibility.service';
 
 /**
@@ -16,7 +17,7 @@ import { EligibilityService } from './eligibility.service';
 @ApiTags('eligibility')
 @ApiBearerAuth()
 @Controller('eligibility')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PrivilegesGuard)
 class EligibilityController {
   constructor(private readonly service: EligibilityService) {}
 

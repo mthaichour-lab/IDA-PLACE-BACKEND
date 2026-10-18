@@ -42,7 +42,7 @@ export class SettlementController {
   @Privileges('synth')
   @ApiOperation({ summary: 'Clôture de la synthèse mensuelle d’une compagnie et génération du bordereau (idempotent : 409 si déjà clôturée)' })
   closeMonthly(@Param('period') period: string, @Body() dto: CloseMonthlyDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.closeMonthly(period, dto.company, user.name);
+    return this.service.closeMonthly(period, dto.company, user.name, user);
   }
 
   @Get('quarter/:q')

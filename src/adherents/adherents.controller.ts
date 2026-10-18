@@ -1,9 +1,11 @@
 import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { AdherentsService } from './adherents.service';
 import { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
 import { CreateCompanyDto, UpdateCompanyDto } from './dto/company.dto';
@@ -40,9 +42,9 @@ export class AdherentsController {
 
   @Put('companies/:id')
   @Privileges('refedit')
-  @ApiOperation({ summary: 'Mise à jour d’une compagnie adhérente' })
-  updateCompany(@Param('id') id: string, @Body() dto: UpdateCompanyDto) {
-    return this.service.updateCompany(id, dto);
+  @ApiOperation({ summary: "Mise à jour d'une compagnie adhérente (B.7 : un CORRESPONDANT_IDA ne peut modifier que SA propre compagnie)" })
+  updateCompany(@Param('id') id: string, @Body() dto: UpdateCompanyDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.updateCompany(id, dto, user);
   }
 
   @Get('agencies')
@@ -53,16 +55,16 @@ export class AdherentsController {
 
   @Post('agencies')
   @Privileges('refedit')
-  @ApiOperation({ summary: 'Création d’une agence' })
-  createAgency(@Body() dto: CreateAgencyDto) {
-    return this.service.createAgency(dto);
+  @ApiOperation({ summary: "Création d'une agence (B.7 : uniquement pour SA propre compagnie)" })
+  createAgency(@Body() dto: CreateAgencyDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.createAgency(dto, user);
   }
 
   @Put('agencies/:id')
   @Privileges('refedit')
-  @ApiOperation({ summary: 'Mise à jour d’une agence' })
-  updateAgency(@Param('id') id: string, @Body() dto: UpdateAgencyDto) {
-    return this.service.updateAgency(id, dto);
+  @ApiOperation({ summary: "Mise à jour d'une agence (B.7 : uniquement une agence de SA propre compagnie)" })
+  updateAgency(@Param('id') id: string, @Body() dto: UpdateAgencyDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.updateAgency(id, dto, user);
   }
 
   @Get('wilayas')

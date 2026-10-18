@@ -13,6 +13,11 @@ function fakeUser(name: string): AuthenticatedUser {
   return { id: name, name, email: `${name}@test.local`, role: 'OPERATEUR_PLACE', privileges: [] };
 }
 
+/** Acteur scopé compagnie (TRESORIER) — voir claims.service.spec.ts `correspondant()`. */
+function fakeTresorier(companyId: string): AuthenticatedUser {
+  return { id: 't', name: `tresorier.${companyId.toLowerCase()}`, email: 't@test.local', role: 'TRESORIER', companyId, privileges: ['synth'] };
+}
+
 /** Repli mémoire forcé — voir recours.service.spec.ts / claims.service.spec.ts. */
 function throwingRepo() {
   return {
@@ -109,16 +114,37 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     const r = await recours.create({ claimId: 'clm-3', from: 'CAAT', to: 'SAA', amount: 10_000 });
     const period = new Date(r.requestSentAt).toISOString().slice(0, 7);
 
-    const closed = await settlement.closeMonthly(period, 'CAAT', 'tresorier.caat');
+    const closed = await settlement.closeMonthly(period, 'CAAT', 'tresorier.caat', fakeTresorier('CAAT'));
     expect(closed.status).toBe('CLOTURE');
     expect(closed.bordereauRef).toContain('CAAT');
 
-    await expect(settlement.closeMonthly(period, 'CAAT', 'tresorier.caat')).rejects.toMatchObject({
+    await expect(settlement.closeMonthly(period, 'CAAT', 'tresorier.caat', fakeTresorier('CAAT'))).rejects.toMatchObject({
       response: { code: 'ALREADY_CLOSED' },
     });
 
     const result = await settlement.monthly(period);
     expect(result.companies.find((c) => c.code === 'CAAT')?.status).toBe('CLOTURE');
+  });
+
+  /** Revue sécurité 2026-10-18 (B.7) : un TRESORIER ne doit clôturer que SA propre compagnie. */
+  it("closeMonthly() refuse avec un 403 qu'un TRESORIER clôture la synthèse d'une AUTRE compagnie", async () => {
+    const r = await recours.create({ claimId: 'clm-cross-tenant', from: 'SAA', to: 'CAAT', amount: 10_000 });
+    const period = new Date(r.requestSentAt).toISOString().slice(0, 7);
+
+    await expect(settlement.closeMonthly(period, 'SAA', 'tresorier.caat', fakeTresorier('CAAT'))).rejects.toMatchObject({
+      response: { code: 'FORBIDDEN' },
+    });
+
+    const result = await settlement.monthly(period);
+    expect(result.companies.find((c) => c.code === 'SAA')?.status).not.toBe('CLOTURE');
+  });
+
+  it('closeMonthly() autorise un rôle "place" (OPERATEUR_PLACE) à clôturer pour n\'importe quelle compagnie', async () => {
+    const r = await recours.create({ claimId: 'clm-place-close', from: 'SAA', to: 'CAAT', amount: 5_000 });
+    const period = new Date(r.requestSentAt).toISOString().slice(0, 7);
+
+    const closed = await settlement.closeMonthly(period, 'SAA', 'operateur.place', fakeUser('operateur.place'));
+    expect(closed.status).toBe('CLOTURE');
   });
 
   it('monthlySummary() calcule la bonne insertionDeadline (5e jour calendaire du mois suivant)', async () => {

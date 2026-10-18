@@ -1,6 +1,7 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { ClaimsModule } from '../claims/claims.module';
 import { RecoursModule } from '../recours/recours.module';
 import { StatsService } from './stats.service';
@@ -14,7 +15,7 @@ import { StatsService } from './stats.service';
 @ApiTags('stats')
 @ApiBearerAuth()
 @Controller('stats')
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, PrivilegesGuard)
 class StatsController {
   constructor(private readonly service: StatsService) {}
 

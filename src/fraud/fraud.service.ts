@@ -5,6 +5,8 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { ClaimsService } from '../claims/claims.service';
 import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
 import { MatchingService } from '../matching/matching.service';
@@ -152,8 +154,11 @@ export class FraudService {
     return paginateArray(rows, page, pageSize);
   }
 
-  async cases(page: number, pageSize: number): Promise<PaginatedResult<FraudCaseViewDto>> {
-    const rows = await this.allCasesWithPlate();
+  /** Revue sécurité 2026-10-18 (B.7) : filtre par `companiesInvolved` quand l'appelant est scopé compagnie — même principe que `from`/`to` ailleurs, un cas reste visible à une compagnie partie même s'il en nomme une autre (détection inter-compagnies par nature). */
+  async cases(page: number, pageSize: number, user?: AuthenticatedUser): Promise<PaginatedResult<FraudCaseViewDto>> {
+    let rows = await this.allCasesWithPlate();
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    if (tenant) rows = rows.filter((c) => c.companiesInvolved.includes(tenant));
     rows.sort((a, b) => b.score - a.score);
     return paginateArray(rows, page, pageSize);
   }
@@ -190,7 +195,9 @@ export class FraudService {
    * détail) — voir `FraudSignalGroupDto`. Ne conserve que les groupes ayant
    * au moins un cas (pas de section vide affichée pour rien).
    */
-  async signalsByAdherent(company: string): Promise<FraudSignalGroupDto[]> {
+  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `company` venait du path sans aucune vérification. */
+  async signalsByAdherent(company: string, user: AuthenticatedUser): Promise<FraudSignalGroupDto[]> {
+    assertCompanyAccess(user, company);
     const all = await this.allCasesWithPlate();
     const involving = all.filter((c) => c.companiesInvolved.includes(company));
 
