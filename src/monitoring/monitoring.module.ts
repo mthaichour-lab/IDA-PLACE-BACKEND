@@ -1,4 +1,4 @@
-import { Controller, Get, Module, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
@@ -35,6 +35,12 @@ class MonitoringController {
   @ApiOperation({ summary: 'Parcours inter-compagnies par dossier (réel, dérivé de la file de confrontation MatchingModule)' })
   trajectories(@Query() q: PaginationQueryDto) {
     return this.service.trajectories(q.page, q.pageSize);
+  }
+
+  @Get('companies/:code/journeys')
+  @ApiOperation({ summary: 'Vue par dossier — parcours complet pour une compagnie (étapes réelles du recours, voir recours.rules.ts)' })
+  journeys(@Param('code') code: string, @Query() q: PaginationQueryDto) {
+    return this.service.journeys(code, q.page, q.pageSize);
   }
 }
 

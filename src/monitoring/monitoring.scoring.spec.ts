@@ -3,15 +3,22 @@ import {
   computeDelaisScore,
   computeDemandesTardivesScore,
   computeForclusionsScore,
+  computeMonitoringProfile,
   computeOppositionsScore,
   computePenalitesScore,
   computeQualiteDonneesScore,
   computeSilencesScore,
+  gradeFromScore,
   MONITORING_WEIGHTS,
   MonitoringComponentKey,
   MonitoringComponentValue,
   ClaimMonitoringInput,
+  RecoursMonitoringInput,
 } from './monitoring.scoring';
+
+function recours(overrides: Partial<RecoursMonitoringInput>): RecoursMonitoringInput {
+  return { from: 'CAAT', to: 'SAA', state: 'REGLE', requestSentAt: '2026-10-01T00:00:00.000Z', ...overrides };
+}
 
 function claim(overrides: Partial<ClaimMonitoringInput>): ClaimMonitoringInput {
   return { company: 'CAAT', createdAt: '2026-01-10T00:00:00.000Z', ...overrides };
@@ -240,5 +247,47 @@ describe('monitoring.scoring (fonctions pures)', () => {
   it('les pondérations du dossier technique totalisent 100% (B.2 écran 8)', () => {
     const total = Object.values(MONITORING_WEIGHTS).reduce((s, w) => s + w, 0);
     expect(total).toBeCloseTo(1, 5);
+  });
+
+  describe('gradeFromScore', () => {
+    it('renvoie null sans score', () => expect(gradeFromScore(null)).toBeNull());
+    it('A à partir de 90', () => expect(gradeFromScore(90)).toBe('A'));
+    it('B entre 72 et 89.9', () => {
+      expect(gradeFromScore(73)).toBe('B');
+      expect(gradeFromScore(72)).toBe('B');
+    });
+    it('C entre 50 et 71.9 (ex. guide illustré : 71 → C)', () => expect(gradeFromScore(71)).toBe('C'));
+    it('D sous 50', () => expect(gradeFromScore(10)).toBe('D'));
+  });
+
+  describe('computeMonitoringProfile', () => {
+    it('compte les recours émis/reçus et calcule le taux de réponse à temps (silenceDays=30)', () => {
+      const data = [
+        // reçu par SAA, répondu en 5j → à temps
+        recours({ from: 'CAAT', to: 'SAA', requestSentAt: '2026-10-01T00:00:00.000Z', responseAt: '2026-10-06T00:00:00.000Z', resolutionKind: 'ACCEPTATION_EXPRESSE' }),
+        // reçu par SAA, répondu en 40j → hors délai
+        recours({ from: 'CASH', to: 'SAA', requestSentAt: '2026-09-01T00:00:00.000Z', responseAt: '2026-10-11T00:00:00.000Z', resolutionKind: 'ACCEPTATION_EXPRESSE' }),
+        // reçu par SAA, résolu par silence Art.10 (pas une réponse à temps)
+        recours({ from: 'CAAR', to: 'SAA', resolutionKind: 'ACCEPTATION_TACITE_ART10' }),
+        // émis par SAA, avec opposition reçue
+        recours({ from: 'SAA', to: 'CAAT', opposition: {} }),
+        // émis par SAA, forclos
+        recours({ from: 'SAA', to: 'CASH', resolutionKind: 'FORCLUSION_ART19' }),
+      ];
+      const p = computeMonitoringProfile(data, 'SAA', 30);
+      expect(p.onTimeResponsePct).toBeCloseTo((1 / 3) * 100, 1); // 1 à temps / 3 reçus résolus
+      expect(p.avgResponseDays).toBeCloseTo((5 + 40) / 2, 1);
+      expect(p.silencesCount).toBe(1);
+      expect(p.oppositionsEmisesCount).toBe(1);
+      expect(p.forclosCount).toBe(1);
+    });
+
+    it('renvoie null pour les taux sans population (aucun recours reçu/émis)', () => {
+      const p = computeMonitoringProfile([], 'SAA', 30);
+      expect(p.onTimeResponsePct).toBeNull();
+      expect(p.avgResponseDays).toBeNull();
+      expect(p.silencesRatePct).toBeNull();
+      expect(p.oppositionsRatePct).toBeNull();
+    });
   });
 });

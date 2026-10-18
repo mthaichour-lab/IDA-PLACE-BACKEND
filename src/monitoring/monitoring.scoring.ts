@@ -92,8 +92,10 @@ export interface MonitoringComponentValue {
 export interface MonitoringCompanyResult {
   code: string;
   score: number | null;
+  grade: 'A' | 'B' | 'C' | 'D' | null;
   rank: number;
   details: Record<MonitoringComponentKey, MonitoringComponentValue>;
+  profile: MonitoringCompanyProfile;
 }
 
 /** Écart en jours CALENDAIRES (UTC, heure ignorée) — un accident et une ingestion le même jour civil comptent pour 0 jour de latence, quelle que soit l'heure. */
@@ -170,7 +172,10 @@ export interface RecoursMonitoringInput {
   to: string;
   state: string;
   opposition?: unknown;
+  contestation?: unknown;
   resolutionKind?: string;
+  requestSentAt?: string;
+  responseAt?: string;
 }
 
 /** silences — voir hypothèse en tête de fichier. */
@@ -219,4 +224,94 @@ export function computeCompositeScore(details: Record<MonitoringComponentKey, Mo
   }
   if (weightTotal === 0) return null;
   return Math.round((weightedSum / weightTotal) * 10) / 10;
+}
+
+/**
+ * Note lettrée (écran 8, guide illustré) — endpoint additif, dérivée
+ * UNIQUEMENT pour l'affichage (aucune règle de conformité recodée, le score
+ * composite ci-dessus reste la seule donnée de référence). Seuils **hypothèse
+ * non chiffrée par le dossier technique** (calée sur l'exemple du guide :
+ * 73 → B, 71 → C), à valider avec l'UAR avant mise en production.
+ */
+export const GRADE_THRESHOLDS = { A: 90, B: 72, C: 50 } as const;
+
+/** Seuil d'alerte "oppositions fréquentes" (guide illustré, §6.8) — hypothèse non chiffrée par le dossier technique, à valider avec l'UAR. */
+export const OPPOSITION_ALERT_THRESHOLD_PCT = 20;
+
+export function gradeFromScore(score: number | null): 'A' | 'B' | 'C' | 'D' | null {
+  if (score === null) return null;
+  if (score >= GRADE_THRESHOLDS.A) return 'A';
+  if (score >= GRADE_THRESHOLDS.B) return 'B';
+  if (score >= GRADE_THRESHOLDS.C) return 'C';
+  return 'D';
+}
+
+/**
+ * Profil détaillé par compagnie (écran 8, guide illustré — tuiles + colonnes
+ * de taux bruts) — endpoint additif, COMPLÈTE `details` ci-dessus (scores
+ * normalisés 0-100 pour le composite) sans le remplacer : ici, des COMPTES
+ * et TAUX BRUTS réels, dans le sens d'affichage du guide (ex. "Silences"
+ * est un taux brut de silences, pas l'inverse du score de conformité).
+ *
+ * ⚠️ `onTimeResponsePct`/`avgResponseDays` réutilisent `silenceDays`
+ * (`RecoursService.getTimerConfig()`, Art.10 — 30 j par défaut, PAS les
+ * "10 j" affichés tels quels dans le guide illustré) : le guide semble
+ * utiliser une fenêtre différente, mais dupliquer une seconde constante de
+ * délai Art.10 dans ce module créerait une incohérence interne avec le
+ * RecoursModule — le libellé front affiche la vraie valeur configurée.
+ */
+export interface MonitoringCompanyProfile {
+  /** % de recours REÇUS (to=compagnie) répondus EXPLICITEMENT dans le délai Art.10 configuré (silence exclu : un silence n'est pas "à temps", voir hypothèse ci-dessus). */
+  onTimeResponsePct: number | null;
+  /** Délai moyen de réponse explicite (jours), recours reçus avec `responseAt`. */
+  avgResponseDays: number | null;
+  /** Recours ÉMIS (from=compagnie) ayant fait l'objet d'une opposition de la partie adverse. */
+  oppositionsEmisesCount: number;
+  /** Recours REÇUS (to=compagnie) sur lesquels la compagnie a levé une opposition. */
+  oppositionsSubiesCount: number;
+  /** Recours REÇUS résolus par silence Art.10 (acceptation tacite). */
+  silencesCount: number;
+  /** Recours ÉMIS sur lesquels la compagnie a contesté l'opposition reçue (transmission commission). */
+  contestationsCount: number;
+  /** Recours (émis OU reçus) forclos (Art.19). */
+  forclosCount: number;
+  /** Taux brut de silences parmi les recours reçus déjà résolus (PAS l'inverse du score `silences` du composite). */
+  silencesRatePct: number | null;
+  /** Taux brut d'oppositions reçues parmi les recours émis (PAS l'inverse du score `oppositions` du composite). */
+  oppositionsRatePct: number | null;
+}
+
+export function computeMonitoringProfile(recours: RecoursMonitoringInput[], company: string, silenceDays: number): MonitoringCompanyProfile {
+  const received = recours.filter((r) => r.to === company);
+  const resolvedReceived = received.filter((r) => r.resolutionKind);
+  const silences = resolvedReceived.filter((r) => r.resolutionKind === 'ACCEPTATION_TACITE_ART10');
+  const explicitResponses = received.filter((r) => r.responseAt && r.requestSentAt);
+
+  const responseDelays = explicitResponses.map((r) => {
+    const sent = new Date(r.requestSentAt!).getTime();
+    const resp = new Date(r.responseAt!).getTime();
+    return (resp - sent) / 86_400_000;
+  });
+  const onTimeCount = responseDelays.filter((d) => d <= silenceDays).length;
+  const onTimeResponsePct = resolvedReceived.length > 0 ? Math.round(((onTimeCount) / resolvedReceived.length) * 1000) / 10 : null;
+  const avgResponseDays =
+    responseDelays.length > 0 ? Math.round((responseDelays.reduce((s, v) => s + v, 0) / responseDelays.length) * 10) / 10 : null;
+
+  const emitted = recours.filter((r) => r.from === company);
+  const oppositionsEmisesCount = emitted.filter((r) => r.opposition).length;
+  const oppositionsSubiesCount = received.filter((r) => r.opposition).length;
+  const contestationsCount = emitted.filter((r) => r.contestation).length;
+  const forclosCount = recours.filter((r) => (r.from === company || r.to === company) && r.resolutionKind === 'FORCLUSION_ART19').length;
+
+  return {
+    onTimeResponsePct,
+    avgResponseDays,
+    oppositionsEmisesCount,
+    oppositionsSubiesCount,
+    silencesCount: silences.length,
+    contestationsCount,
+    forclosCount,
+    silencesRatePct: resolvedReceived.length > 0 ? Math.round((silences.length / resolvedReceived.length) * 1000) / 10 : null,
+    oppositionsRatePct: emitted.length > 0 ? Math.round((oppositionsEmisesCount / emitted.length) * 1000) / 10 : null,
+  };
 }

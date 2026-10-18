@@ -345,3 +345,32 @@ export function applyManualTransition(
       throw new Error(`Action de transition recours non gérée: ${action as string}`);
   }
 }
+
+export type RecoursJourneyStepKind = 'annexe2' | 'annexe3' | 'annexe4' | 'commission' | 'resolution';
+
+export interface RecoursJourneyStep {
+  key: RecoursJourneyStepKind;
+  at: string;
+}
+
+/**
+ * Parcours RÉEL d'un recours — mêmes étapes que `buildTimeline` (front,
+ * `exchanges/page.tsx`), reconstruites ici pour `MonitoringService`
+ * ("Vue par dossier — parcours complet", écran 8 guide illustré).
+ *
+ * ⚠️ Le guide illustré montre un nombre d'étapes fixe par parcours (8 ou
+ * 11) qui ressemble à une taxonomie procédurale détaillée des Annexes
+ * 2/3/4 — AUCUNE définition de ces étapes n'existe dans le dossier
+ * technique. Plutôt que d'inventer des étapes non documentées pour
+ * reproduire ces chiffres, cette fonction retourne les SEULES étapes
+ * réellement persistées : la longueur varie donc avec l'historique réel du
+ * recours (1 à 5 étapes), pas un compte fixe de 8/11.
+ */
+export function buildRecoursJourneySteps(snapshot: RecoursSnapshot): RecoursJourneyStep[] {
+  const steps: RecoursJourneyStep[] = [{ key: 'annexe2', at: snapshot.requestSentAt }];
+  if (snapshot.opposition) steps.push({ key: 'annexe3', at: snapshot.opposition.raisedAt });
+  if (snapshot.contestation) steps.push({ key: 'annexe4', at: snapshot.contestation.raisedAt });
+  if (snapshot.commissionAt) steps.push({ key: 'commission', at: snapshot.commissionAt });
+  if (snapshot.resolution) steps.push({ key: 'resolution', at: snapshot.resolution.at });
+  return steps.sort((a, b) => a.at.localeCompare(b.at));
+}

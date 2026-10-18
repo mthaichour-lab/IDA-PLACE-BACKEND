@@ -5,23 +5,45 @@ import { ClaimsService } from '../claims/claims.service';
 import { CommissionService } from '../commission/commission.service';
 import { MatchingService } from '../matching/matching.service';
 import { RecoursService } from '../recours/recours.service';
+import { buildRecoursJourneySteps, RecoursJourneyStep, RecoursSnapshot } from '../recours/recours.rules';
 import {
   ClaimMonitoringInput,
   computeCompositeScore,
   computeDelaisScore,
   computeDemandesTardivesScore,
   computeForclusionsScore,
+  computeMonitoringProfile,
   computeOppositionsScore,
   computePenalitesScore,
   computeQualiteDonneesScore,
   computeSilencesScore,
+  gradeFromScore,
   MONITORING_WEIGHTS,
+  MonitoringCompanyProfile,
   MonitoringCompanyResult,
   MonitoringComponentKey,
   MonitoringComponentValue,
+  OPPOSITION_ALERT_THRESHOLD_PCT,
   RecoursMonitoringInput,
 } from './monitoring.scoring';
 import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
+
+/**
+ * Ligne "Vue par dossier — parcours complet" (écran 8, guide illustré),
+ * scopée à une compagnie (`GET /monitoring/companies/:code/journeys`) —
+ * voir `buildRecoursJourneySteps` (recours.rules.ts) pour le détail des
+ * étapes réelles (pas de taxonomie fixe 8/11 inventée).
+ */
+export interface MonitoringJourneyDto {
+  id: string;
+  claimId: string;
+  direction: 'EMIS' | 'RECU';
+  counterparty: string;
+  amount: number;
+  state: string;
+  steps: RecoursJourneyStep[];
+  requestSentAt: string;
+}
 
 export interface TrajectoryDto {
   claimRef: string;
@@ -63,7 +85,13 @@ export class MonitoringService {
     );
   }
 
-  async scores(): Promise<{ weights: typeof MONITORING_WEIGHTS; companies: MonitoringCompanyResult[]; notes: string[] }> {
+  async scores(): Promise<{
+    weights: typeof MONITORING_WEIGHTS;
+    companies: MonitoringCompanyResult[];
+    notes: string[];
+    silenceDays: number;
+    oppositionAlertThresholdPct: number;
+  }> {
     const [{ items: allClaims }, allRecours, { items: allSanctions }] = await Promise.all([
       this.claims.list({ page: 1, pageSize: 100_000 }),
       this.recours.listAll(),
@@ -75,8 +103,12 @@ export class MonitoringService {
       to: r.to,
       state: r.state,
       opposition: r.opposition,
+      contestation: r.contestation,
       resolutionKind: r.resolution?.kind,
+      requestSentAt: r.requestSentAt,
+      responseAt: r.responseAt,
     }));
+    const silenceDays = this.recours.getTimerConfig().silenceDays;
 
     const sanctionCountByCompany = new Map<string, number>();
     for (const s of allSanctions) {
@@ -115,7 +147,8 @@ export class MonitoringService {
         penalites: computePenalitesScore(sanctionCountByCompany, code),
       };
 
-      return { code, score: computeCompositeScore(details), rank: 0, details };
+      const score = computeCompositeScore(details);
+      return { code, score, grade: gradeFromScore(score), rank: 0, details, profile: computeMonitoringProfile(recoursInputs, code, silenceDays) };
     });
 
     results.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
@@ -124,6 +157,8 @@ export class MonitoringService {
     return {
       weights: MONITORING_WEIGHTS,
       companies: results,
+      silenceDays,
+      oppositionAlertThresholdPct: OPPOSITION_ALERT_THRESHOLD_PCT,
       notes: [
         'silences : taux de recours reçus résolus par silence (Art.10) parmi ceux déjà résolus — hypothèse documentée, voir monitoring.scoring.ts.',
         'oppositions : taux d’oppositions reçues (sur les recours émis par la compagnie) non suivies d’effet (Art.12, faute de transmission en commission) — hypothèse documentée, mesure l’engagement, pas la légitimité du recours initial.',
@@ -132,6 +167,25 @@ export class MonitoringService {
         'demandesTardives : hypothèse documentée (plus de 50% du délai de recours autorisé écoulé, sans être forclos) — à valider avec le métier.',
       ],
     };
+  }
+
+  /** "Vue par dossier — parcours complet" (écran 8), scopée à une compagnie — voir `MonitoringJourneyDto`. */
+  async journeys(code: string, page: number, pageSize: number): Promise<PaginatedResult<MonitoringJourneyDto>> {
+    const allRecours = await this.recours.listAll();
+    const rows: MonitoringJourneyDto[] = allRecours
+      .filter((r) => r.from === code || r.to === code)
+      .map((r) => ({
+        id: r.id,
+        claimId: r.claimId,
+        direction: (r.from === code ? 'EMIS' : 'RECU') as 'EMIS' | 'RECU',
+        counterparty: r.from === code ? r.to : r.from,
+        amount: r.amount,
+        state: r.state,
+        steps: buildRecoursJourneySteps(r as unknown as RecoursSnapshot),
+        requestSentAt: r.requestSentAt,
+      }))
+      .sort((a, b) => b.requestSentAt.localeCompare(a.requestSentAt));
+    return paginateArray(rows, page, pageSize);
   }
 
   /** Parcours inter-compagnies par dossier — dérivé de la file réelle de MatchingModule (B.5). */

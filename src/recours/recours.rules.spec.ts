@@ -1,6 +1,7 @@
 import {
   applyAutomaticTransitions,
   applyManualTransition,
+  buildRecoursJourneySteps,
   computeTimerState,
   DEFAULT_RECOURS_TIMER_CONFIG,
   isActionAllowed,
@@ -256,5 +257,33 @@ describe('applyManualTransition', () => {
 describe('cohérence par défaut (DEFAULT_RECOURS_TIMER_CONFIG)', () => {
   it('silence 30 jours / opposition 15 jours / forclusion 6 mois (hypothèse documentée, paramétrable)', () => {
     expect(DEFAULT_RECOURS_TIMER_CONFIG).toEqual({ silenceDays: 30, oppositionDays: 15, forclusionMonths: 6 });
+  });
+});
+
+describe('buildRecoursJourneySteps — parcours réel (MonitoringModule, écran 8)', () => {
+  it('chemin direct (silence ou acceptation) : une seule étape (annexe2)', () => {
+    const steps = buildRecoursJourneySteps(snapshot());
+    expect(steps.map((s) => s.key)).toEqual(['annexe2']);
+  });
+
+  it('chemin avec opposition levée : annexe2 + annexe3, triées chronologiquement', () => {
+    const s = snapshot({
+      state: 'OPPOSITION',
+      opposition: { raisedAt: '2026-01-05T00:00:00.000Z', status: 'EN_COURS', deadlineAt: '2026-01-20T00:00:00.000Z' },
+    });
+    const steps = buildRecoursJourneySteps(s);
+    expect(steps.map((s) => s.key)).toEqual(['annexe2', 'annexe3']);
+  });
+
+  it('chemin complet (opposition → contestation → commission → décision) : 5 étapes réelles, jamais un compte fixe inventé', () => {
+    const s = snapshot({
+      state: 'REGLE',
+      opposition: { raisedAt: '2026-01-05T00:00:00.000Z', status: 'REJETEE', deadlineAt: '2026-01-20T00:00:00.000Z', decidedAt: '2026-01-25T00:00:00.000Z' },
+      contestation: { raisedAt: '2026-01-10T00:00:00.000Z', status: 'TRANSMISE_COMMISSION' },
+      commissionAt: '2026-01-15T00:00:00.000Z',
+      resolution: { kind: 'DECISION_COMMISSION_FAVORABLE', at: '2026-01-25T00:00:00.000Z' },
+    });
+    const steps = buildRecoursJourneySteps(s);
+    expect(steps.map((s) => s.key)).toEqual(['annexe2', 'annexe3', 'annexe4', 'commission', 'resolution']);
   });
 });
