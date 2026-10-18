@@ -71,3 +71,42 @@ export class QuarterlySummaryDto {
   @ApiProperty({ description: 'Nombre de recours réglés inclus dans la compensation de ce trimestre' }) settledCount!: number;
   @ApiProperty({ description: 'Nombre de recours actuellement en opposition (hors circuit de compensation, toutes périodes confondues)' }) opposedCount!: number;
 }
+
+/**
+ * Nouveaux endpoints additifs (`GET /settlement/monthly/:period/summary`,
+ * `GET /settlement/monthly/:period/annexe7`) — écran 5 "Cycle mensuel" du
+ * guide illustré. `MonthlySettlementDto`/`CompanyMonthlySynthesisDto`
+ * ci-dessus ne changent pas de forme (contrat figé, ARCHITECTURE.md §1) ;
+ * ces compléments vivent sur des routes séparées et appliquent une
+ * convention de regroupement DIFFÉRENTE (par date de RÈGLEMENT, pas
+ * d'ENVOI) — voir l'en-tête de `settlement.service.ts`.
+ */
+export class MonthlySummaryDto {
+  @ApiProperty() period!: string;
+  @ApiProperty({ description: 'Nombre de recours RÉGLÉS dont le règlement (ou, à défaut, l’envoi) tombe dans le mois' })
+  settledCount!: number;
+  @ApiProperty({ description: 'Montant total des recours réglés du mois' }) totalAmount!: number;
+  @ApiProperty({ description: 'Nombre de recours actuellement en opposition — exclus du circuit, toutes périodes confondues (RG-06)' })
+  excludedOppositionCount!: number;
+  @ApiProperty({
+    description:
+      'Échéance de saisie — 5e jour du mois suivant, en ISO simple (AAAA-MM-05). Hypothèse simplificatrice : jours calendaires, pas ouvrés (aucun calendrier de jours fériés algériens disponible).',
+  })
+  insertionDeadline!: string;
+}
+
+export class Annexe7PairDto {
+  @ApiProperty() from!: string;
+  @ApiProperty() to!: string;
+  @ApiProperty({ description: 'Nombre de recours réglés pour cette paire orientée créancier→débiteur' }) count!: number;
+  @ApiProperty({ description: 'Montant total pour cette paire orientée' }) totalAmount!: number;
+}
+
+export class Annexe7Dto {
+  @ApiProperty() period!: string;
+  @ApiProperty({
+    type: [Annexe7PairDto],
+    description: 'Paires créancier(from)→débiteur(to) EXACTES, non nettées — une ligne par sens si les deux existent (pas de netting, contrairement à /settlement/quarter)',
+  })
+  pairs!: Annexe7PairDto[];
+}

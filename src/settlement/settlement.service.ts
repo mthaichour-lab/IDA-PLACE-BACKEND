@@ -6,8 +6,10 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RecoursService } from '../recours/recours.service';
 import {
+  Annexe7Dto,
   CompanyMonthlySynthesisDto,
   MonthlySettlementDto,
+  MonthlySummaryDto,
   QuarterlyMatrixDto,
   QuarterlySettlementDto,
   QuarterlySummaryDto,
@@ -16,10 +18,13 @@ import { SettlementClosure, SettlementScope } from './entities/settlement-closur
 import {
   computeBilateralMatrix,
   computeBilateralNetPositions,
+  computeDirectionalPairs,
+  computeInsertionDeadline,
   computeMultilateralNetPositions,
   isIsoDateInMonth,
   isIsoDateInQuarter,
   parsePeriodMonth,
+  PeriodMonth,
   parsePeriodQuarter,
 } from './settlement.rules';
 
@@ -43,11 +48,33 @@ interface ClosureRecord {
  *  - la compensation multilatérale trimestrielle (écran 6, à partir des
  *    recours RÉGLÉS uniquement — voir `settlement.rules.ts`).
  *
- * ⚠️ HYPOTHÈSE documentée (voir HANDOFF.md) : la synthèse mensuelle regroupe
- * les recours par mois d'ENVOI (`requestSentAt`) et par compagnie
- * DEMANDERESSE (`from`) — le dossier technique ne précise pas cette
- * convention ; la compensation trimestrielle utilise la date de règlement
- * (`settledAt`) si connue, sinon `requestSentAt` en repli.
+ * ⚠️ CONVENTION DE REGROUPEMENT MENSUEL — CORRIGÉE (verdict Product Owner,
+ * voir HANDOFF.md) : `monthly()` regroupait jusqu'ici les recours par mois
+ * d'ENVOI (`requestSentAt`), ce qui NE correspondait PAS à la capture de
+ * référence du guide illustré (colonnes "Réglé le"/"Inséré le", sous-titre
+ * "Saisie des recours réglés au plus tard le 5e jour ouvré de M+1"). Le PO a
+ * confirmé qu'il s'agissait d'un vrai bug de convention (pas juste une
+ * hypothèse à trancher) : `monthly()` regroupe désormais par mois de
+ * RÈGLEMENT (`settledAt`, repli `requestSentAt` si absent — même filet de
+ * sécurité que `quarter()`/`settledAndMatrixFor()` ci-dessous), toujours par
+ * compagnie DEMANDERESSE (`from`). C'est un changement de VALEUR (quels
+ * recours entrent dans le mois), PAS de FORME — `MonthlySettlementDto`/
+ * `CompanyMonthlySynthesisDto` ne changent pas (contrat figé intact).
+ *
+ * ⚠️ RG-06 — CORRIGÉE (même verdict PO) : `monthly()` exclut désormais du
+ * calcul par compagnie (`claimsCount`/`resolvedCount`/`totalAmount`) tout
+ * recours actuellement à l'état `OPPOSITION` — une opposition en cours sort
+ * le dossier du circuit du lot mensuel (RG-06), ce n'était pas appliqué
+ * avant (seul le nouvel endpoint `monthlySummary()` l'affichait en KPI
+ * d'exclusion, sans que `monthly()` lui-même n'exclue réellement ces
+ * dossiers de ses propres totaux).
+ *
+ * Les deux endpoints ADDITIFS `monthlySummary()`/`annexe7()` (`GET
+ * /settlement/monthly/:period/summary` et `.../annexe7`, écran 5 du guide
+ * illustré) suivent la MÊME convention de règlement que `monthly()`
+ * ci-dessus (plus de divergence depuis la correction PO) ; la compensation
+ * trimestrielle (`quarter()`/`matrix()`/`summary()`) utilise elle aussi la
+ * date de règlement avec le même repli, de façon indépendante.
  */
 @Injectable()
 export class SettlementService {
@@ -116,11 +143,19 @@ export class SettlementService {
     );
   }
 
-  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que la ligne de SA compagnie, jamais le bordereau des concurrentes ; les rôles "place" voient tout. Comblé en revue Product Owner, sprint 3 — absent jusqu'ici. */
+  /**
+   * B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que la ligne de SA
+   * compagnie, jamais le bordereau des concurrentes ; les rôles "place"
+   * voient tout. Comblé en revue Product Owner, sprint 3 — absent jusqu'ici.
+   *
+   * Regroupement par mois de RÈGLEMENT (`settledAt`, repli `requestSentAt`)
+   * et exclusion RG-06 des recours en `OPPOSITION` — corrections confirmées
+   * par le Product Owner, voir l'en-tête de cette classe.
+   */
   async monthly(period: string, user?: AuthenticatedUser): Promise<MonthlySettlementDto> {
     const parsed = this.parseMonthOrThrow(period);
     const [allRecours, closures] = await Promise.all([this.recours.listAll(), this.findClosures(SettlementScope.MONTHLY, period)]);
-    const inPeriod = allRecours.filter((r) => isIsoDateInMonth(r.requestSentAt, parsed));
+    const inPeriod = allRecours.filter((r) => r.state !== 'OPPOSITION' && isIsoDateInMonth(r.settledAt ?? r.requestSentAt, parsed));
 
     const byCompany = new Map<string, { claimsCount: number; resolvedCount: number; totalAmount: number }>();
     for (const r of inPeriod) {
@@ -177,6 +212,74 @@ export class SettlementService {
         bordereauRef: `BORD-M-${period}-${companyCode}`,
       }
     );
+  }
+
+  /**
+   * Recours RÉGLÉS du mois `period`, sur leur date de RÈGLEMENT si connue,
+   * sinon leur date d'envoi (repli — même convention que `monthly()`
+   * ci-dessus depuis la correction PO, voir l'en-tête de cette classe) —
+   * factorisé entre `monthlySummary()` et `annexe7()` pour ne calculer
+   * qu'une fois par appel.
+   */
+  private async settledForMonth(period: string): Promise<{ parsed: PeriodMonth; settled: Awaited<ReturnType<RecoursService['listAll']>> }> {
+    const parsed = this.parseMonthOrThrow(period);
+    const allRecours = await this.recours.listAll();
+    const settled = allRecours.filter((r) => r.state === 'REGLE' && isIsoDateInMonth(r.settledAt ?? r.requestSentAt, parsed));
+    return { parsed, settled };
+  }
+
+  /**
+   * KPI de synthèse du cycle mensuel (écran 5, guide illustré) — endpoint
+   * additif (`GET /settlement/monthly/:period/summary`),
+   * `MonthlySettlementDto` ne change pas de forme (contrat figé).
+   *
+   * B.7 — `settledCount`/`totalAmount` suivent la MÊME convention de
+   * scoping tenant que `monthly()` existant : un `CORRESPONDANT_IDA`/
+   * `TRESORIER` ne voit que les recours dont SA compagnie est la compagnie
+   * demanderesse (`from`), cohérente avec le regroupement de `monthly()`
+   * (voir son en-tête). `excludedOppositionCount`, en revanche, suit le
+   * même raisonnement que `opposedCount` de `summary()` (trimestre) : une
+   * opposition peut être levée par l'une ou l'autre partie (`from` OU
+   * `to`), et exclut le dossier du circuit quelle que soit la période —
+   * donc toutes périodes confondues, place entière filtrée par `from` OU
+   * `to`.
+   */
+  async monthlySummary(period: string, user?: AuthenticatedUser): Promise<MonthlySummaryDto> {
+    const [{ parsed, settled }, allRecours] = await Promise.all([this.settledForMonth(period), this.recours.listAll()]);
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+
+    const settledForTenant = tenant ? settled.filter((r) => r.from === tenant) : settled;
+    const totalAmount = settledForTenant.reduce((sum, r) => sum + r.amount, 0);
+
+    const opposed = allRecours.filter((r) => r.state === 'OPPOSITION' && (!tenant || r.from === tenant || r.to === tenant));
+
+    return {
+      period,
+      settledCount: settledForTenant.length,
+      totalAmount,
+      excludedOppositionCount: opposed.length,
+      insertionDeadline: computeInsertionDeadline(parsed),
+    };
+  }
+
+  /**
+   * Synthèse Annexe 7 — créanciers/débiteurs du cycle mensuel (écran 5,
+   * guide illustré) : endpoint additif (`GET
+   * /settlement/monthly/:period/annexe7`). Regroupe les recours réglés du
+   * mois par paire orientée (from, to) EXACTE, SANS netting (voir
+   * `computeDirectionalPairs` dans `settlement.rules.ts`) — une ligne
+   * CAAT→SAA et une ligne SAA→CAAT distinctes si les deux existent,
+   * contrairement au netting bilatéral de `/settlement/quarter`. Même
+   * scoping tenant que `monthlySummary()` (filtre par compagnie
+   * demanderesse `from`, cohérent avec `monthly()`).
+   */
+  async annexe7(period: string, user?: AuthenticatedUser): Promise<Annexe7Dto> {
+    const { settled } = await this.settledForMonth(period);
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const settledForTenant = tenant ? settled.filter((r) => r.from === tenant) : settled;
+
+    const pairs = computeDirectionalPairs(settledForTenant.map((r) => ({ from: r.from, to: r.to, amount: r.amount })));
+    return { period, pairs };
   }
 
   /**

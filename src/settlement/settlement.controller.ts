@@ -26,6 +26,18 @@ export class SettlementController {
     return this.service.monthly(period, user);
   }
 
+  @Get('monthly/:period/summary')
+  @ApiOperation({ summary: 'KPI de synthèse du cycle mensuel : recours réglés intégrés, montant, oppositions exclues (RG-06), échéance de saisie (B.7 : scopée par compagnie)' })
+  monthlySummary(@Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.monthlySummary(period, user);
+  }
+
+  @Get('monthly/:period/annexe7')
+  @ApiOperation({ summary: 'Synthèse Annexe 7 — regroupement des recours réglés du mois par paire créancier→débiteur, sans netting (B.7 : scopée par compagnie)' })
+  annexe7(@Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.annexe7(period, user);
+  }
+
   @Post('monthly/:period/close')
   @Privileges('synth')
   @ApiOperation({ summary: 'Clôture de la synthèse mensuelle d’une compagnie et génération du bordereau (idempotent : 409 si déjà clôturée)' })

@@ -138,3 +138,46 @@ export function computeMultilateralNetPositions(matrix: BilateralMatrix): Compan
     return { code, net: incoming - outgoing };
   });
 }
+
+export interface DirectionalPair {
+  from: string;
+  to: string;
+  count: number;
+  totalAmount: number;
+}
+
+/**
+ * Regroupe des recours par paire orientée (from, to) EXACTE, SANS aucun
+ * netting — à la différence de `computeBilateralMatrix`/
+ * `computeBilateralNetPositions` (compensation trimestrielle). Pour
+ * l'Annexe 7 du cycle mensuel (écran 5, guide illustré) : une ligne
+ * CAAT→SAA et une ligne SAA→CAAT restent deux lignes distinctes si les deux
+ * existent, chacune avec son propre nombre de recours et son montant total.
+ */
+export function computeDirectionalPairs(rows: SettledRecoursLike[]): DirectionalPair[] {
+  const map = new Map<string, DirectionalPair>();
+  for (const r of rows) {
+    const key = `${r.from}\u0000${r.to}`;
+    const bucket = map.get(key) ?? { from: r.from, to: r.to, count: 0, totalAmount: 0 };
+    bucket.count += 1;
+    bucket.totalAmount += r.amount;
+    map.set(key, bucket);
+  }
+  return Array.from(map.values());
+}
+
+/**
+ * Échéance de saisie des recours réglés du cycle mensuel (écran 5, guide
+ * illustré) : le 5e jour du mois suivant `period`, en ISO simple
+ * (AAAA-MM-05).
+ *
+ * ⚠️ HYPOTHÈSE SIMPLIFICATRICE documentée (voir `settlement.service.ts`) :
+ * jours CALENDAIRES, pas ouvrés — la capture de référence affiche "5e jour
+ * ouvré", mais aucun calendrier de jours fériés algériens n'existe dans ce
+ * dépôt ; en inventer un serait plus risqué que de documenter cet écart.
+ */
+export function computeInsertionDeadline(period: PeriodMonth): string {
+  const nextMonth = period.month === 12 ? 1 : period.month + 1;
+  const nextYear = period.month === 12 ? period.year + 1 : period.year;
+  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-05`;
+}
