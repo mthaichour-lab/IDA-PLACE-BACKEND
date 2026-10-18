@@ -283,9 +283,18 @@ export interface MonitoringCompanyProfile {
 
 export function computeMonitoringProfile(recours: RecoursMonitoringInput[], company: string, silenceDays: number): MonitoringCompanyProfile {
   const received = recours.filter((r) => r.to === company);
-  const resolvedReceived = received.filter((r) => r.resolutionKind);
-  const silences = resolvedReceived.filter((r) => r.resolutionKind === 'ACCEPTATION_TACITE_ART10');
-  const explicitResponses = received.filter((r) => r.responseAt && r.requestSentAt);
+  // Population "répondue" — un recours reçu dont la question "répondu à
+  // temps ?" est déjà tranchable : soit une réponse explicite a été donnée
+  // (`responseAt`, y compris une opposition — s'opposer EST une réponse),
+  // soit le silence Art.10 a déjà expiré (`resolutionKind`). Bug corrigé
+  // (2026-10-18, trouvé en vérification navigateur réelle) : utiliser
+  // `resolutionKind` seul comme dénominateur alors que le numérateur
+  // (`onTimeCount`) comptait aussi les oppositions (répondues mais jamais
+  // "résolues") produisait des taux > 100% — numérateur et dénominateur
+  // doivent porter sur EXACTEMENT la même population.
+  const responded = received.filter((r) => r.resolutionKind || r.responseAt);
+  const silences = responded.filter((r) => r.resolutionKind === 'ACCEPTATION_TACITE_ART10');
+  const explicitResponses = responded.filter((r) => r.responseAt && r.requestSentAt);
 
   const responseDelays = explicitResponses.map((r) => {
     const sent = new Date(r.requestSentAt!).getTime();
@@ -293,7 +302,7 @@ export function computeMonitoringProfile(recours: RecoursMonitoringInput[], comp
     return (resp - sent) / 86_400_000;
   });
   const onTimeCount = responseDelays.filter((d) => d <= silenceDays).length;
-  const onTimeResponsePct = resolvedReceived.length > 0 ? Math.round(((onTimeCount) / resolvedReceived.length) * 1000) / 10 : null;
+  const onTimeResponsePct = responded.length > 0 ? Math.round((onTimeCount / responded.length) * 1000) / 10 : null;
   const avgResponseDays =
     responseDelays.length > 0 ? Math.round((responseDelays.reduce((s, v) => s + v, 0) / responseDelays.length) * 10) / 10 : null;
 
@@ -311,7 +320,7 @@ export function computeMonitoringProfile(recours: RecoursMonitoringInput[], comp
     silencesCount: silences.length,
     contestationsCount,
     forclosCount,
-    silencesRatePct: resolvedReceived.length > 0 ? Math.round((silences.length / resolvedReceived.length) * 1000) / 10 : null,
+    silencesRatePct: responded.length > 0 ? Math.round((silences.length / responded.length) * 1000) / 10 : null,
     oppositionsRatePct: emitted.length > 0 ? Math.round((oppositionsEmisesCount / emitted.length) * 1000) / 10 : null,
   };
 }

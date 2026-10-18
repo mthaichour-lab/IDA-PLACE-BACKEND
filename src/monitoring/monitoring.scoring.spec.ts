@@ -289,5 +289,30 @@ describe('monitoring.scoring (fonctions pures)', () => {
       expect(p.silencesRatePct).toBeNull();
       expect(p.oppositionsRatePct).toBeNull();
     });
+
+    it('onTimeResponsePct ne dépasse jamais 100% — une opposition (réponse explicite, pas encore "résolue") doit compter dans le dénominateur, pas seulement le numérateur (bug trouvé en vérification navigateur réelle, 2026-10-18)', () => {
+      const data = [
+        // reçu par CAAT, réponse explicite (opposition) en 1j, state=OPPOSITION, resolutionKind pas encore posé (le litige n'est pas tranché).
+        recours({
+          from: 'SAA',
+          to: 'CAAT',
+          state: 'OPPOSITION',
+          requestSentAt: '2026-10-10T00:00:00.000Z',
+          responseAt: '2026-10-11T00:00:00.000Z',
+          opposition: {},
+        }),
+        // reçu par CAAT, résolu (accepté explicitement) en 1j.
+        recours({
+          from: 'CASH',
+          to: 'CAAT',
+          requestSentAt: '2026-09-22T00:00:00.000Z',
+          responseAt: '2026-09-23T00:00:00.000Z',
+          resolutionKind: 'ACCEPTATION_EXPRESSE',
+        }),
+      ];
+      const p = computeMonitoringProfile(data, 'CAAT', 30);
+      expect(p.onTimeResponsePct).toBeLessThanOrEqual(100);
+      expect(p.onTimeResponsePct).toBe(100); // les deux réponses sont à temps, sur une population de 2 (pas 1).
+    });
   });
 });
