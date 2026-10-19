@@ -1,6 +1,7 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Module } from '@nestjs/common';
 import { AdherentsModule } from '../adherents/adherents.module';
+import { LedgerModule } from '../ledger/ledger.module';
 import { RecoursModule } from '../recours/recours.module';
 import { CommissionController } from './commission.controller';
 import { CommissionService } from './commission.service';
@@ -18,7 +19,7 @@ import { MembershipService } from './membership.service';
  * commission.service.ts).
  */
 @Module({
-  imports: [MikroOrmModule.forFeature([CommissionCase, Sanction, MembershipRequest]), RecoursModule, AdherentsModule],
+  imports: [MikroOrmModule.forFeature([CommissionCase, Sanction, MembershipRequest]), RecoursModule, AdherentsModule, LedgerModule],
   controllers: [CommissionController, MembershipController],
   providers: [CommissionService, MembershipService],
   exports: [CommissionService],

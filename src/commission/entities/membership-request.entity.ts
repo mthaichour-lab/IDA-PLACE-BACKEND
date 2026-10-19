@@ -38,6 +38,10 @@ export class MembershipRequest {
   @Property({ length: 10 })
   receivedAt!: string;
 
+  /** SEC-47 : référence du courrier reçu par l'UAR (traçabilité de la date de réception). */
+  @Property({ nullable: true, length: 64 })
+  letterRef?: string;
+
   /** RETRAIT uniquement, AAAA-MM-JJ — voir `computeWithdrawalEffectiveDate`. */
   @Property({ nullable: true, length: 10 })
   effectiveDate?: string;

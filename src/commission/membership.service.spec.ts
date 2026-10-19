@@ -1,5 +1,6 @@
 import { getRepositoryToken } from '@mikro-orm/nestjs';
 import { NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { AdherentsService } from '../adherents/adherents.service';
 import { CLOCK } from '../common/clock';
@@ -46,31 +47,36 @@ describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-
       }),
       markCompanyWithdrawn: jest.fn(async (id: string) => ({ ...COMPANIES[id], status: 'EN_RETRAIT' })),
     };
+    service = await build();
+  });
+
+  async function build(config: Record<string, string> = {}) {
     const moduleRef = await Test.createTestingModule({
       providers: [
         MembershipService,
         { provide: getRepositoryToken(MembershipRequest), useFactory: throwingRepo },
         { provide: AdherentsService, useValue: adherents },
         { provide: CLOCK, useValue: () => now },
+        { provide: ConfigService, useValue: { get: (k: string) => config[k] } },
       ],
     }).compile();
-    service = moduleRef.get(MembershipService);
-  });
+    return moduleRef.get(MembershipService);
+  }
 
-  const adhesion = () => service.create({ type: 'ADHESION', receivedAt: '2026-10-01', candidateName: 'Nouvelle Assurance' }, OPERATEUR);
-  const retrait = (receivedAt = '2026-09-30', companyId = 'c-saa') => service.create({ type: 'RETRAIT', receivedAt, companyId }, OPERATEUR);
+  const adhesion = () => service.create({ type: 'ADHESION', receivedAt: '2026-10-01', candidateName: 'Nouvelle Assurance', letterRef: 'UAR/2026/101' }, OPERATEUR);
+  const retrait = (receivedAt = '2026-09-30', companyId = 'c-saa') => service.create({ type: 'RETRAIT', receivedAt, companyId, letterRef: `UAR/${receivedAt}` }, OPERATEUR);
 
   describe('création', () => {
     it('ADHESION exige la raison sociale de la candidate (400)', async () => {
-      await expect(service.create({ type: 'ADHESION', receivedAt: '2026-10-01' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
+      await expect(service.create({ type: 'ADHESION', receivedAt: '2026-10-01', letterRef: 'L' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
     });
 
     it('ADHESION ne se lie pas à une compagnie à la création (400)', async () => {
-      await expect(service.create({ type: 'ADHESION', receivedAt: '2026-10-01', candidateName: 'X', companyId: 'c-caat' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
+      await expect(service.create({ type: 'ADHESION', receivedAt: '2026-10-01', candidateName: 'X', companyId: 'c-caat', letterRef: 'L' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
     });
 
     it('RETRAIT exige une compagnie existante (400 sans, 404 inconnue)', async () => {
-      await expect(service.create({ type: 'RETRAIT', receivedAt: '2026-09-30' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
+      await expect(service.create({ type: 'RETRAIT', receivedAt: '2026-09-30', letterRef: 'L' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
       await expect(retrait('2026-09-30', 'inconnue')).rejects.toMatchObject({ status: 404 });
     });
 
@@ -89,6 +95,36 @@ describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-
     it('refuse une date de réception future ou invalide (400)', async () => {
       await expect(retrait('2026-10-19')).rejects.toMatchObject({ status: 400 });
       await expect(retrait('2026-02-30')).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('SEC-47 : un retrait reçu en octobre ne peut pas être antidaté au 30/09 au-delà du plafond (400 DATE_RECEPTION_TROP_ANCIENNE)', async () => {
+      now = new Date('2026-10-20T10:00:00Z');
+      // 30/09 est à 20 jours : accepté avec le plafond par défaut (30 jours).
+      await expect(retrait('2026-09-30')).resolves.toMatchObject({ effectiveDate: '2026-12-31' });
+      // Avec un plafond de 7 jours, le même antidatage est refusé.
+      const strict = await build({ MEMBERSHIP_RECEIVED_MAX_AGE_DAYS: '7' });
+      await expect(strict.create({ type: 'RETRAIT', receivedAt: '2026-09-30', companyId: 'c-caat', letterRef: 'L' }, OPERATEUR)).rejects.toMatchObject({ status: 400, response: { code: 'DATE_RECEPTION_TROP_ANCIENNE' } });
+      await expect(strict.create({ type: 'RETRAIT', receivedAt: '2026-10-14', companyId: 'c-caat', letterRef: 'L' }, OPERATEUR)).resolves.toMatchObject({ effectiveDate: '2027-12-31' });
+    });
+
+    it('SEC-47 : une date plus ancienne que le plafond par défaut (30 jours) est refusée', async () => {
+      await expect(retrait('2026-09-17')).rejects.toMatchObject({ response: { code: 'DATE_RECEPTION_TROP_ANCIENNE' } });
+    });
+
+    it('SEC-47 : la référence du courrier est obligatoire et conservée', async () => {
+      await expect(service.create({ type: 'RETRAIT', receivedAt: '2026-10-01', companyId: 'c-saa', letterRef: '  ' }, OPERATEUR)).rejects.toMatchObject({ status: 400 });
+      await expect(retrait('2026-10-01')).resolves.toMatchObject({ letterRef: 'UAR/2026-10-01' });
+    });
+
+    it('SEC-48 : un plafond invalide fait échouer la construction', async () => {
+      await expect(build({ MEMBERSHIP_RECEIVED_MAX_AGE_DAYS: 'abc' })).rejects.toThrow(/Configuration invalide/);
+    });
+
+    it('SEC-25 : un utilisateur compagnie (même avec le privilège membership) ne peut instruire (403)', async () => {
+      const derogation = { ...correspondant('CAAT'), privileges: ['membership'] } as AuthenticatedUser;
+      await expect(service.create({ type: 'RETRAIT', receivedAt: '2026-10-01', companyId: 'c-caat', letterRef: 'L' }, derogation)).rejects.toMatchObject({ status: 403 });
+      const r = await retrait();
+      await expect(service.cancel(r.id, undefined, derogation)).rejects.toMatchObject({ status: 403 });
     });
   });
 
@@ -150,8 +186,23 @@ describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-
       now = new Date('2027-01-01T08:00:00Z');
       const effective = await service.markEffective(r.id, 'Courrier du 30/09', OPERATEUR);
       expect(effective).toMatchObject({ state: 'EFFECTIVE', decisionNote: 'Courrier du 30/09' });
-      expect(adherents.markCompanyWithdrawn).toHaveBeenCalledWith('c-saa', r.effectiveDate);
+      expect(adherents.markCompanyWithdrawn).toHaveBeenCalledWith('c-saa', r.effectiveDate, OPERATEUR);
       await expect(service.cancel(r.id, undefined, OPERATEUR)).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('SEC-47 : si le passage EN_RETRAIT échoue, la demande reste RECUE (écritures liées)', async () => {
+      const r = await retrait();
+      now = new Date('2027-01-01T08:00:00Z');
+      adherents.markCompanyWithdrawn.mockRejectedValueOnce(new Error('échec écriture compagnie'));
+      await expect(service.markEffective(r.id, undefined, OPERATEUR)).rejects.toThrow();
+      expect((await service.get(r.id)).state).toBe('RECUE');
+    });
+
+    it('SEC-33 : deux décisions concurrentes sur la même demande — une seule réussit (409 pour l’autre)', async () => {
+      const r = await retrait();
+      const results = await Promise.allSettled([service.cancel(r.id, 'a', OPERATEUR), service.cancel(r.id, 'b', OPERATEUR)]);
+      expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+      expect((results.find((x) => x.status === 'rejected') as PromiseRejectedResult).reason.getStatus()).toBe(409);
     });
 
     it('annulation : ANNULEE, puis un nouveau retrait redevient possible', async () => {

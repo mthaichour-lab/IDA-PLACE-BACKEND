@@ -1,12 +1,19 @@
+import { LockMode } from '@mikro-orm/core';
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EntityManager, EntityRepository } from '@mikro-orm/postgresql';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
-import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
-import { RecoursService } from '../recours/recours.service';
+import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
+import { LedgerService } from '../ledger/ledger.service';
+import { isValidMoney, MAX_TECHNICAL_AMOUNT_DA } from '../recours/money';
+import { assertPlaceUser } from '../recours/place-role';
+import { CommissionDecisionForRecours, RecoursService } from '../recours/recours.service';
+import { isUniqueViolation, toConflict, withStrictFallback } from '../recours/strict-persistence';
 import {
   CommissionCaseViewDto,
   CommissionSummaryDto,
@@ -15,7 +22,6 @@ import {
   ListCommissionCasesQueryDto,
   ListSanctionsQueryDto,
   PenaltyDto,
-  PvSignDto,
   SanctionOrderDto,
   SanctionViewDto,
 } from './dto/commission.dto';
@@ -27,7 +33,7 @@ const DEFAULT_SCHEDULE_DELAY_MS = 14 * 86_400_000;
 /** Délai de conciliation Art. 24 — même valeur que le KPI "hors délai de 15j" du guide illustré de référence. */
 const ART24_CONCILIATION_DAYS = 15;
 
-/** Repli mémoire — dossier de conciliation. */
+/** Repli mémoire — dossier de conciliation (mode dégradé, hors production). */
 type MemoryCase = {
   id: string;
   recoursId: string;
@@ -42,6 +48,7 @@ type MemoryCase = {
   decision?: CommissionDecisionInfo;
   pv?: CommissionPvInfo;
   createdAt: string;
+  version: number;
 };
 
 /** Repli mémoire — sanction. */
@@ -54,6 +61,11 @@ type MemorySanction = {
   reason: string;
   orderedAt: string;
   orderedBy: string;
+  orderedById?: string;
+  status: string;
+  countersignedBy?: string;
+  countersignedById?: string;
+  countersignedAt?: string;
 };
 
 function toCaseView(e: CommissionCase): CommissionCaseViewDto {
@@ -63,19 +75,20 @@ function toCaseView(e: CommissionCase): CommissionCaseViewDto {
     claimId: e.claimId,
     companyA: e.companyA,
     companyB: e.companyB,
-    amount: e.amount,
+    amount: Number(e.amount),
     motif: e.motif,
     status: e.status,
     scheduledAt: e.scheduledAt.toISOString(),
     decidedAt: e.decidedAt?.toISOString(),
-    decision: e.decision,
+    decision: e.decision ? { outcome: e.decision.outcome, motif: e.decision.motif } : undefined,
     pv: e.pv,
     createdAt: e.createdAt.toISOString(),
   };
 }
 
 function toCaseViewFromMemory(row: MemoryCase): CommissionCaseViewDto {
-  return { ...row };
+  const { version: _version, decision, ...rest } = row;
+  return { ...rest, decision: decision ? { outcome: decision.outcome, motif: decision.motif } : undefined };
 }
 
 function toSanctionView(e: Sanction): SanctionViewDto {
@@ -84,52 +97,99 @@ function toSanctionView(e: Sanction): SanctionViewDto {
     commissionCaseId: e.commissionCaseId,
     companyCode: e.companyCode,
     type: e.type,
-    amount: e.amount,
+    amount: e.amount === undefined || e.amount === null ? undefined : Number(e.amount),
     reason: e.reason,
     orderedAt: e.orderedAt.toISOString(),
     orderedBy: e.orderedBy,
+    status: e.status,
+    countersignedBy: e.countersignedBy,
+    countersignedAt: e.countersignedAt?.toISOString(),
   };
 }
 
 function toSanctionViewFromMemory(row: MemorySanction): SanctionViewDto {
-  return { ...row };
+  const { orderedById: _o, countersignedById: _c, ...rest } = row;
+  return rest;
+}
+
+const CASE_NOT_FOUND = () => new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
+const CONCURRENT = () => new ConflictException({ code: 'CONFLIT_CONCURRENT', message: 'Le dossier a été modifié entre-temps : rechargez-le avant de recommencer.' });
+
+/** Plafond des pénalités financières (SEC-32) — paramétrable ; défaut : plafond conventionnel Art. 4 (valeur à confirmer par l'UAR). */
+function parsePenaltyCap(raw: string | undefined, fallback: string | undefined): number {
+  const text = (raw ?? fallback ?? '').trim();
+  if (!text) return DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA;
+  const value = Number(text);
+  if (!/^\d+(\.\d{1,2})?$/.test(text) || value <= 0 || value > MAX_TECHNICAL_AMOUNT_DA) {
+    throw new Error(`Configuration invalide : COMMISSION_PENALTY_MAX_DA="${text}".`);
+  }
+  return value;
 }
 
 /**
  * CommissionModule — B.2, écran 7 "Commission" : file de conciliation
- * (`CommissionCase`), prononcé de pénalités/sanctions (`Sanction`), PV de
- * commission. Dépend de `RecoursModule` (lecture seule, interface publique
- * `RecoursService.get()`) pour valider et dénormaliser `claimId`/
- * `companyA`/`companyB`/`amount` à l'ouverture d'un dossier — jamais
- * l'inverse (pas de cycle, voir ARCHITECTURE.md). La transmission
- * `RecoursModule -> CommissionModule` reste pour l'instant une action
- * MANUELLE en deux temps (voir HANDOFF.md, limite connue) : le correspondant
- * ouvre le dossier de commission via `POST /commission/cases` après avoir
- * transitionné le recours en `COMMISSION` (`transmettre_commission`).
+ * (`CommissionCase`), prononcé de pénalités/sanctions (`Sanction`), PV.
+ * Dépend de `RecoursModule` (interface publique) — jamais l'inverse.
+ *
+ * Revue sécurité 2026-10-19 :
+ *  - SEC-32 : dossier ouvert seulement pour un recours en COMMISSION, un seul
+ *    par recours ; PV signé une seule fois, référence générée par le serveur,
+ *    par une autre personne que l'auteur du prononcé (collégialité minimale) ;
+ *    pénalités/sanctions seulement après décision prononcée au PV signé,
+ *    uniques par (dossier, compagnie, type), plafonnées, et contresignées par
+ *    un second membre ; la clôture du recours exige ce PV (voir
+ *    `RecoursService.registerCommissionDecisionLookup`) ; tout est scellé au journal ;
+ *  - SEC-25 : actes de commission réservés aux rôles place, même avec un privilège obtenu par dérogation ;
+ *  - SEC-33 : transitions sous verrou + version ;
+ *  - SEC-46 : hors périmètre, 404 identique à un dossier inexistant (routes de ce module).
  */
 @Injectable()
-export class CommissionService {
+export class CommissionService implements OnModuleInit {
   private readonly memoryCases: MemoryCase[] = [];
   private readonly memorySanctions: MemorySanction[] = [];
+  private readonly penaltyCap: number;
 
   constructor(
     @InjectRepository(CommissionCase) private readonly caseRepo: EntityRepository<CommissionCase>,
     @InjectRepository(Sanction) private readonly sanctionRepo: EntityRepository<Sanction>,
     private readonly recours: RecoursService,
-  ) {}
+    @Optional() private readonly ledger?: LedgerService,
+    @Optional() configService?: ConfigService,
+  ) {
+    this.penaltyCap = parsePenaltyCap(configService?.get<string>('COMMISSION_PENALTY_MAX_DA'), configService?.get<string>('ELIGIBILITY_MAX_AMOUNT_DA'));
+  }
+
+  /** SEC-32 : expose au RecoursModule la décision de commission d'un recours (clôture conditionnée au PV signé). */
+  onModuleInit(): void {
+    this.recours.registerCommissionDecisionLookup((recoursId) => this.decisionForRecours(recoursId));
+  }
+
+  async decisionForRecours(recoursId: string): Promise<CommissionDecisionForRecours | undefined> {
+    const kase = (await this.loadAllCaseViews()).find((c) => c.recoursId === recoursId);
+    if (!kase) return undefined;
+    return { caseId: kase.id, status: kase.status, outcome: kase.decision?.outcome as CommissionDecisionForRecours['outcome'], pvRef: kase.pv?.ref, pvSigned: !!kase.pv };
+  }
+
+  private async seal(type: string, ref: string, actorId: string, summary: Record<string, unknown>): Promise<void> {
+    if (this.ledger) await this.ledger.append(type, ref, actorId, JSON.stringify(summary));
+  }
+
+  private freshEm(repo: { getEntityManager(): unknown }): EntityManager {
+    return (repo.getEntityManager() as EntityManager).fork({ clear: true });
+  }
 
   private async loadAllCaseViews(): Promise<CommissionCaseViewDto[]> {
     return withDegradedFallback(
       'CommissionService.loadAllCaseViews',
       async () => {
-        const rows = await this.caseRepo.findAll({ orderBy: { scheduledAt: 'DESC' } });
+        const rows = await this.freshEm(this.caseRepo).find(CommissionCase, {}, { orderBy: { scheduledAt: 'DESC' } });
         return rows.map(toCaseView);
       },
       () => [...this.memoryCases].sort((a, b) => (a.scheduledAt < b.scheduledAt ? 1 : -1)).map(toCaseViewFromMemory),
     );
   }
 
-  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les dossiers où sa compagnie est `companyA` ou `companyB` ; les rôles "place" (dont les membres de la commission) voient tout. Ajouté par cohérence avec Recours/Settlement — absent jusqu'ici (voir revue Product Owner, sprint 3 : signalé comme question ouverte, tranché par défaut vers le scoping plutôt que la transparence totale, à confirmer avec l'UAR si une transparence de place était en fait voulue). */
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les dossiers où sa compagnie est `companyA` ou `companyB` ; les rôles "place" voient tout. */
   private visibleToUser(r: { companyA: string; companyB: string }, user?: AuthenticatedUser): boolean {
     if (!user) return true;
     const tenant = resolveTenantFilter(user);
@@ -144,40 +204,67 @@ export class CommissionService {
     return paginateArray(rows, query.page, query.pageSize);
   }
 
+  /** Interface inter-modules historique (DocumentsModule) : 404 si inexistant, 403 si hors périmètre. */
   async getCase(id: string, user?: AuthenticatedUser): Promise<CommissionCaseViewDto> {
     const rows = await this.loadAllCaseViews();
     const row = rows.find((r) => r.id === id);
-    if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
+    if (!row) throw CASE_NOT_FOUND();
     if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
     return row;
   }
 
-  /** Revue sécurité 2026-10-18 (B.7) : `user` est désormais transmis à `RecoursService.get`, dont le propre contrôle de périmètre (voir recours.service.ts `visibleToUser`) lève un 403 si le recours cité n'appartient pas à la compagnie de l'appelant — avant, l'appel sans `user` contournait entièrement ce contrôle (`visibleToUser` renvoie `true` quand `user` est absent). */
-  async createCase(dto: CreateCommissionCaseDto, user?: AuthenticatedUser): Promise<CommissionCaseViewDto> {
-    // Validation + dénormalisation depuis RecoursModule (interface publique
-    // en lecture seule) — lève un 404 normalisé si le recours n'existe pas,
-    // un 403 s'il existe mais hors périmètre de la compagnie de l'appelant.
-    const recours = await this.recours.get(dto.recoursId, user);
-    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date(Date.now() + DEFAULT_SCHEDULE_DELAY_MS);
+  /** SEC-46 — routes de ce module : hors périmètre, réponse identique à un dossier inexistant. */
+  async getCaseForUser(id: string, user: AuthenticatedUser): Promise<CommissionCaseViewDto> {
+    const row = (await this.loadAllCaseViews()).find((r) => r.id === id);
+    if (!row || !this.visibleToUser(row, user)) throw CASE_NOT_FOUND();
+    return row;
+  }
 
-    return withDegradedFallback(
+  /**
+   * Ouverture d'un dossier de conciliation : le recours doit être visible de
+   * l'appelant (404 sinon, SEC-46), à l'état COMMISSION (SEC-32) et sans
+   * dossier existant (SEC-20 : `UNIQUE(recours_id)`, 409).
+   */
+  async createCase(dto: CreateCommissionCaseDto, user: AuthenticatedUser): Promise<CommissionCaseViewDto> {
+    const recours = await this.recours.getForUser(dto.recoursId, user);
+    if (recours.state !== 'COMMISSION') {
+      throw new ConflictException({ code: 'RECOURS_HORS_COMMISSION', message: 'Un dossier de commission ne s’ouvre que pour un recours transmis en commission.' });
+    }
+    const now = new Date();
+    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : new Date(now.getTime() + DEFAULT_SCHEDULE_DELAY_MS);
+    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < now.getTime()) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'La date de séance ne peut pas être dans le passé.' });
+    }
+    const duplicate = () => new ConflictException({ code: 'DOSSIER_COMMISSION_EXISTANT', message: 'Un dossier de commission existe déjà pour ce recours.' });
+    const summary = { recoursId: recours.id, claimId: recours.claimId, companyA: recours.from, companyB: recours.to, amount: recours.amount, role: user.role };
+
+    return withStrictFallback(
       'CommissionService.createCase',
       async () => {
-        const entity = this.caseRepo.create({
-          recoursId: recours.id,
-          claimId: recours.claimId,
-          companyA: recours.from,
-          companyB: recours.to,
-          amount: recours.amount,
-          motif: dto.motif,
-          status: 'A_INSTRUIRE',
-          scheduledAt,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        await this.caseRepo.getEntityManager().persistAndFlush(entity);
-        return toCaseView(entity);
+        try {
+          return await this.freshEm(this.caseRepo).transactional(async (tem) => {
+            if (await tem.findOne(CommissionCase, { recoursId: recours.id })) throw duplicate();
+            const entity = tem.create(CommissionCase, {
+              recoursId: recours.id,
+              claimId: recours.claimId,
+              companyA: recours.from,
+              companyB: recours.to,
+              amount: recours.amount,
+              motif: dto.motif,
+              status: 'A_INSTRUIRE',
+              scheduledAt,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any);
+            await tem.flush();
+            await this.seal('COMMISSION_SAISINE', entity.id, user.id, summary);
+            return toCaseView(entity);
+          });
+        } catch (err) {
+          throw isUniqueViolation(err) ? duplicate() : err;
+        }
       },
-      () => {
+      async () => {
+        if (this.memoryCases.some((c) => c.recoursId === recours.id)) throw duplicate();
         const row: MemoryCase = {
           id: randomUUID(),
           recoursId: recours.id,
@@ -188,168 +275,232 @@ export class CommissionService {
           motif: dto.motif,
           status: 'A_INSTRUIRE',
           scheduledAt: scheduledAt.toISOString(),
-          createdAt: new Date().toISOString(),
+          createdAt: now.toISOString(),
+          version: 1,
         };
         this.memoryCases.push(row);
+        await this.seal('COMMISSION_SAISINE', row.id, user.id, summary);
         return toCaseViewFromMemory(row);
       },
     );
   }
 
   /**
-   * Récupère un dossier (DB ou repli mémoire) SANS passer par
-   * `withDegradedFallback` — même raison que `RecoursService.loadForTransition` :
-   * ne jamais confondre une exception MÉTIER (404/400) avec une bascule en
-   * mode dégradé.
+   * Mutation d'un dossier sous verrou (SEC-33) : `mutate` reçoit l'état
+   * courant et renvoie le patch à appliquer (ou lève une erreur métier) ; la
+   * même logique sert la base (transaction + `SELECT … FOR UPDATE` + version)
+   * et le repli mémoire (comparer-et-écrire synchrone).
    */
-  private async loadCaseForMutation(id: string): Promise<{ mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }> {
-    try {
-      const entity = await this.caseRepo.findOne({ id });
-      if (entity) return { mode: 'db', entity };
-    } catch (err) {
-      logDegraded('CommissionService.loadCaseForMutation', `base de données injoignable (${(err as Error).message}) — repli mémoire`);
-    }
-    const row = this.memoryCases.find((r) => r.id === id);
-    if (row) return { mode: 'memory', row };
-    throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier de commission introuvable.' });
-  }
-
-  private statusOf(loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }): CommissionCaseStatus {
-    return (loaded.mode === 'db' ? loaded.entity.status : loaded.row.status) as CommissionCaseStatus;
-  }
-
-  private partiesOf(loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase }): { companyA: string; companyB: string } {
-    return loaded.mode === 'db' ? loaded.entity : loaded.row;
-  }
-
-  private async persistCaseStatus(
-    loaded: { mode: 'db'; entity: CommissionCase } | { mode: 'memory'; row: MemoryCase },
-    status: CommissionCaseStatus,
-    extra: Partial<Pick<MemoryCase, 'decidedAt' | 'decision' | 'pv'>> = {},
+  private async mutateCase(
+    id: string,
+    mutate: (current: CommissionCaseViewDto & { decidedBy?: string }) => Promise<Partial<Pick<MemoryCase, 'status' | 'decidedAt' | 'decision' | 'pv'>>> | Partial<Pick<MemoryCase, 'status' | 'decidedAt' | 'decision' | 'pv'>>,
+    sealType: string,
+    actorId: string,
   ): Promise<CommissionCaseViewDto> {
-    if (loaded.mode === 'db') {
-      loaded.entity.status = status;
-      if (extra.decidedAt) loaded.entity.decidedAt = new Date(extra.decidedAt);
-      if (extra.decision) loaded.entity.decision = extra.decision;
-      if (extra.pv) loaded.entity.pv = extra.pv;
-      await this.caseRepo.getEntityManager().flush();
-      return toCaseView(loaded.entity);
-    }
-    Object.assign(loaded.row, { status, ...extra });
-    return toCaseViewFromMemory(loaded.row);
+    return withStrictFallback(
+      'CommissionService.mutateCase',
+      async () => {
+        try {
+          return await this.freshEm(this.caseRepo).transactional(async (tem) => {
+            const e = await tem.findOne(CommissionCase, { id }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+            if (!e) throw CASE_NOT_FOUND();
+            const patch = await mutate({ ...toCaseView(e), decidedBy: e.decision?.decidedBy });
+            if (patch.status) e.status = patch.status;
+            if (patch.decidedAt) e.decidedAt = new Date(patch.decidedAt);
+            if (patch.decision) e.decision = patch.decision;
+            if (patch.pv) e.pv = patch.pv;
+            await tem.flush();
+            await this.seal(sealType, id, actorId, { status: e.status, outcome: e.decision?.outcome, pvRef: e.pv?.ref });
+            return toCaseView(e);
+          });
+        } catch (err) {
+          throw toConflict(err, 'CONFLIT_CONCURRENT', 'Le dossier a été modifié entre-temps : rechargez-le avant de recommencer.');
+        }
+      },
+      async () => {
+        const row = this.memoryCases.find((r) => r.id === id);
+        if (!row) throw CASE_NOT_FOUND();
+        const version = row.version;
+        const patch = await mutate({ ...toCaseViewFromMemory(row), decidedBy: row.decision?.decidedBy });
+        if (row.version !== version) throw CONCURRENT();
+        Object.assign(row, patch);
+        row.version += 1;
+        await this.seal(sealType, id, actorId, { status: row.status, outcome: row.decision?.outcome, pvRef: row.pv?.ref });
+        return toCaseViewFromMemory(row);
+      },
+    );
   }
 
-  async deliberate(id: string): Promise<CommissionCaseViewDto> {
-    const loaded = await this.loadCaseForMutation(id);
-    const current = this.statusOf(loaded);
-    if (!canAdvanceCaseStatus(current, 'EN_DELIBERE')) {
-      throw new BadRequestException({ code: 'INVALID_TRANSITION', message: `Impossible de délibérer depuis l'état "${current}".` });
-    }
-    return this.persistCaseStatus(loaded, 'EN_DELIBERE');
+  async deliberate(id: string, user: AuthenticatedUser): Promise<CommissionCaseViewDto> {
+    assertPlaceUser(user);
+    return this.mutateCase(
+      id,
+      (current) => {
+        if (!canAdvanceCaseStatus(current.status as CommissionCaseStatus, 'EN_DELIBERE')) {
+          throw new BadRequestException({ code: 'INVALID_TRANSITION', message: `Impossible de délibérer depuis l'état "${current.status}".` });
+        }
+        return { status: 'EN_DELIBERE' };
+      },
+      'COMMISSION_DELIBERE',
+      user.id,
+    );
   }
 
-  async decide(id: string, dto: DecideCommissionDto): Promise<CommissionCaseViewDto> {
-    const loaded = await this.loadCaseForMutation(id);
-    const current = this.statusOf(loaded);
-    if (!canAdvanceCaseStatus(current, 'PRONONCE')) {
-      throw new BadRequestException({
-        code: 'INVALID_TRANSITION',
-        message: `Impossible de prononcer une décision depuis l'état "${current}" (délibération requise au préalable).`,
-      });
-    }
-    const decidedAt = new Date().toISOString();
-    return this.persistCaseStatus(loaded, 'PRONONCE', {
-      decidedAt,
-      decision: { outcome: dto.outcome as CommissionDecisionInfo['outcome'], motif: dto.motif },
-    });
+  async decide(id: string, dto: DecideCommissionDto, user: AuthenticatedUser): Promise<CommissionCaseViewDto> {
+    assertPlaceUser(user);
+    return this.mutateCase(
+      id,
+      (current) => {
+        if (!canAdvanceCaseStatus(current.status as CommissionCaseStatus, 'PRONONCE')) {
+          throw new BadRequestException({
+            code: 'INVALID_TRANSITION',
+            message: `Impossible de prononcer une décision depuis l'état "${current.status}" (délibération requise au préalable).`,
+          });
+        }
+        return {
+          status: 'PRONONCE',
+          decidedAt: new Date().toISOString(),
+          decision: { outcome: dto.outcome as CommissionDecisionInfo['outcome'], motif: dto.motif, decidedBy: user.id },
+        };
+      },
+      'COMMISSION_DECISION',
+      user.id,
+    );
   }
 
-  async penalty(id: string, dto: PenaltyDto, orderedBy: string): Promise<SanctionViewDto> {
-    const loaded = await this.loadCaseForMutation(id);
-    const { companyA, companyB } = this.partiesOf(loaded);
-    if (!isCompanyPartyToCase(dto.companyCode, companyA, companyB)) {
-      throw new BadRequestException({
-        code: 'BAD_REQUEST',
-        message: `"${dto.companyCode}" n'est pas partie à ce dossier (${companyA}/${companyB}).`,
-      });
-    }
-    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: 'PENALITE_FINANCIERE', amount: dto.amount, reason: dto.reason, orderedBy });
+  /** SEC-32 : PV signé une seule fois (409), référence générée par le serveur, par une autre personne que l'auteur du prononcé. */
+  async pvSign(id: string, user: AuthenticatedUser): Promise<CommissionCaseViewDto> {
+    assertPlaceUser(user);
+    return this.mutateCase(
+      id,
+      (current) => {
+        if (current.status !== 'PRONONCE') {
+          throw new BadRequestException({ code: 'INVALID_TRANSITION', message: 'Le PV ne peut être signé qu’après le prononcé de la décision.' });
+        }
+        if (current.pv) throw new ConflictException({ code: 'PV_DEJA_SIGNE', message: 'Le PV de ce dossier est déjà signé : il ne se réécrit pas.' });
+        if (current.decidedBy && current.decidedBy === user.id) {
+          throw new ConflictException({ code: 'FOUR_EYES', message: 'Le PV doit être signé par un autre membre que l’auteur du prononcé.' });
+        }
+        return { pv: { signedBy: user.name, signedAt: new Date().toISOString(), ref: `PV-${id}` } };
+      },
+      'COMMISSION_PV',
+      user.id,
+    );
   }
 
-  async sanction(id: string, dto: SanctionOrderDto, orderedBy: string): Promise<SanctionViewDto> {
-    const loaded = await this.loadCaseForMutation(id);
-    const { companyA, companyB } = this.partiesOf(loaded);
-    if (!isCompanyPartyToCase(dto.companyCode, companyA, companyB)) {
-      throw new BadRequestException({
-        code: 'BAD_REQUEST',
-        message: `"${dto.companyCode}" n'est pas partie à ce dossier (${companyA}/${companyB}).`,
-      });
+  /** SEC-32 : une sanction suppose une décision prononcée dont le PV est signé, et vise une partie au dossier. */
+  private async assertSanctionable(id: string, companyCode: string): Promise<CommissionCaseViewDto> {
+    const kase = (await this.loadAllCaseViews()).find((c) => c.id === id);
+    if (!kase) throw CASE_NOT_FOUND();
+    if (kase.status !== 'PRONONCE' || !kase.pv) {
+      throw new ConflictException({ code: 'DECISION_REQUISE', message: 'Une pénalité ou une sanction exige une décision prononcée dont le PV est signé.' });
     }
-    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: dto.type, reason: dto.reason, orderedBy });
+    if (!isCompanyPartyToCase(companyCode, kase.companyA, kase.companyB)) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'La compagnie visée n’est pas partie à ce dossier.' });
+    }
+    return kase;
   }
 
-  async pvSign(id: string, dto: PvSignDto, signedBy: string): Promise<CommissionCaseViewDto> {
-    const loaded = await this.loadCaseForMutation(id);
-    const current = this.statusOf(loaded);
-    if (current !== 'PRONONCE') {
-      throw new BadRequestException({ code: 'INVALID_TRANSITION', message: 'Le PV ne peut être signé qu’après le prononcé de la décision.' });
+  async penalty(id: string, dto: PenaltyDto, user: AuthenticatedUser): Promise<SanctionViewDto> {
+    assertPlaceUser(user);
+    if (!isValidMoney(dto.amount)) {
+      throw new BadRequestException({ code: 'MONTANT_INVALIDE', message: 'Montant invalide : nombre fini, strictement positif, deux décimales au plus.' });
     }
-    const pv: CommissionPvInfo = { signedBy, signedAt: new Date().toISOString(), ref: dto.ref ?? `PV-${id}` };
-    return this.persistCaseStatus(loaded, current, { pv });
+    if (dto.amount > this.penaltyCap) {
+      throw new BadRequestException({ code: 'PENALITE_PLAFOND', message: `Pénalité supérieure au plafond paramétré (${this.penaltyCap} DA).` });
+    }
+    await this.assertSanctionable(id, dto.companyCode);
+    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: 'PENALITE_FINANCIERE', amount: dto.amount, reason: dto.reason, orderedBy: user.name, orderedById: user.id });
   }
 
-  private async persistSanction(record: Omit<MemorySanction, 'id' | 'orderedAt'>): Promise<SanctionViewDto> {
-    return withDegradedFallback(
+  async sanction(id: string, dto: SanctionOrderDto, user: AuthenticatedUser): Promise<SanctionViewDto> {
+    assertPlaceUser(user);
+    await this.assertSanctionable(id, dto.companyCode);
+    return this.persistSanction({ commissionCaseId: id, companyCode: dto.companyCode, type: dto.type, reason: dto.reason, orderedBy: user.name, orderedById: user.id });
+  }
+
+  private async persistSanction(record: Omit<MemorySanction, 'id' | 'orderedAt' | 'status'>): Promise<SanctionViewDto> {
+    const duplicate = () => new ConflictException({ code: 'SANCTION_EXISTANTE', message: 'Cette mesure a déjà été proposée pour cette compagnie dans ce dossier.' });
+    const summary = { case: record.commissionCaseId, company: record.companyCode, type: record.type, amount: record.amount, status: 'A_CONTRESIGNER' };
+    return withStrictFallback(
       'CommissionService.persistSanction',
       async () => {
-        const entity = this.sanctionRepo.create({
-          commissionCaseId: record.commissionCaseId,
-          companyCode: record.companyCode,
-          type: record.type,
-          amount: record.amount,
-          reason: record.reason,
-          orderedBy: record.orderedBy,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        await this.sanctionRepo.getEntityManager().persistAndFlush(entity);
-        return toSanctionView(entity);
+        try {
+          return await this.freshEm(this.sanctionRepo).transactional(async (tem) => {
+            const entity = tem.create(Sanction, { ...record, status: 'A_CONTRESIGNER' } as never);
+            await tem.flush();
+            await this.seal('SANCTION_PROPOSEE', entity.id, record.orderedById ?? record.orderedBy, summary);
+            return toSanctionView(entity);
+          });
+        } catch (err) {
+          throw isUniqueViolation(err) ? duplicate() : err;
+        }
       },
-      () => {
-        const row: MemorySanction = { id: randomUUID(), orderedAt: new Date().toISOString(), ...record };
+      async () => {
+        if (this.memorySanctions.some((s) => s.commissionCaseId === record.commissionCaseId && s.companyCode === record.companyCode && s.type === record.type)) throw duplicate();
+        const row: MemorySanction = { id: randomUUID(), orderedAt: new Date().toISOString(), status: 'A_CONTRESIGNER', ...record };
         this.memorySanctions.push(row);
+        await this.seal('SANCTION_PROPOSEE', row.id, record.orderedById ?? record.orderedBy, summary);
         return toSanctionViewFromMemory(row);
       },
     );
   }
 
-  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les sanctions de SA compagnie, quel que soit le filtre `company` demandé (ignoré s'il désigne une autre compagnie). */
+  /** SEC-32 : contreseing d'une sanction par un second membre de la place (jamais l'auteur de la proposition). */
+  async countersignSanction(sanctionId: string, user: AuthenticatedUser): Promise<SanctionViewDto> {
+    assertPlaceUser(user);
+    const notFound = () => new NotFoundException({ code: 'NOT_FOUND', message: 'Sanction introuvable.' });
+    const check = (s: { status: string; orderedById?: string }) => {
+      if (s.status !== 'A_CONTRESIGNER') throw new ConflictException({ code: 'SANCTION_DEJA_PRONONCEE', message: 'Cette sanction est déjà prononcée.' });
+      if (s.orderedById === user.id) throw new ConflictException({ code: 'FOUR_EYES', message: 'La sanction doit être contresignée par un autre membre que son auteur.' });
+    };
+    const at = new Date();
+    return withStrictFallback(
+      'CommissionService.countersignSanction',
+      async () => {
+        try {
+          return await this.freshEm(this.sanctionRepo).transactional(async (tem) => {
+            const s = await tem.findOne(Sanction, { id: sanctionId }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+            if (!s) throw notFound();
+            check(s);
+            Object.assign(s, { status: 'PRONONCEE', countersignedBy: user.name, countersignedById: user.id, countersignedAt: at });
+            await tem.flush();
+            await this.seal('SANCTION_PRONONCEE', s.id, user.id, { case: s.commissionCaseId, company: s.companyCode, type: s.type, amount: s.amount, proposedBy: s.orderedById });
+            return toSanctionView(s);
+          });
+        } catch (err) {
+          throw toConflict(err, 'CONFLIT_CONCURRENT', 'La sanction a été modifiée entre-temps.');
+        }
+      },
+      async () => {
+        const s = this.memorySanctions.find((r) => r.id === sanctionId);
+        if (!s) throw notFound();
+        check(s);
+        Object.assign(s, { status: 'PRONONCEE', countersignedBy: user.name, countersignedById: user.id, countersignedAt: at.toISOString() });
+        await this.seal('SANCTION_PRONONCEE', s.id, user.id, { case: s.commissionCaseId, company: s.companyCode, type: s.type, amount: s.amount, proposedBy: s.orderedById });
+        return toSanctionViewFromMemory(s);
+      },
+    );
+  }
+
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les sanctions de SA compagnie, quel que soit le filtre `company` demandé. */
   async listSanctions(query: ListSanctionsQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<SanctionViewDto>> {
     const rows = await withDegradedFallback(
       'CommissionService.listSanctions',
       async () => {
-        const all = await this.sanctionRepo.findAll({ orderBy: { orderedAt: 'DESC' } });
+        const all = await this.freshEm(this.sanctionRepo).find(Sanction, {}, { orderBy: { orderedAt: 'DESC' } });
         return all.map(toSanctionView);
       },
       () => [...this.memorySanctions].sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1)).map(toSanctionViewFromMemory),
     );
     const tenant = user ? resolveTenantFilter(user) : undefined;
     const effectiveCompany = tenant ?? query.company;
-    const filtered = effectiveCompany ? rows.filter((r) => r.companyCode === effectiveCompany) : rows;
+    let filtered = effectiveCompany ? rows.filter((r) => r.companyCode === effectiveCompany) : rows;
+    if (query.status) filtered = filtered.filter((r) => r.status === query.status);
     return paginateArray(filtered, query.page, query.pageSize);
   }
 
-  /**
-   * KPI de synthèse (écran 7, guide illustré) — endpoint additif, même
-   * scoping tenant que `listCases()`. `oppositionsFondeesCount` est une
-   * mesure RecoursModule (résolution `OPPOSITION_FONDEE_ART12`, Art. 12 —
-   * déjà réelle, voir `recours.rules.ts` et `MonitoringModule` qui l'agrège
-   * déjà pour le scoring de conformité) : INDÉPENDANTE des dossiers de
-   * commission, une opposition peut être réputée fondée sans jamais
-   * remonter en commission. Hypothèse à confirmer avec le Product Owner si
-   * le guide voulait plutôt dire "oppositions dont la contestation a été
-   * tranchée en commission" — aucun champ ne distingue ce sous-cas
-   * aujourd'hui, voir HANDOFF.md.
-   */
+  /** KPI de synthèse (écran 7) — même scoping tenant que `listCases()`. */
   async summary(user?: AuthenticatedUser): Promise<CommissionSummaryDto> {
     const rows = (await this.loadAllCaseViews()).filter((r) => this.visibleToUser(r, user));
     const now = Date.now();

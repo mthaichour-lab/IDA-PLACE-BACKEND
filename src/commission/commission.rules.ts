@@ -25,6 +25,10 @@ export function canAdvanceCaseStatus(from: CommissionCaseStatus, to: CommissionC
 export const SANCTION_TYPES = ['PENALITE_FINANCIERE', 'AVERTISSEMENT', 'SUSPENSION'] as const;
 export type SanctionType = (typeof SANCTION_TYPES)[number];
 
+/** SEC-32 : une sanction proposée n'est prononcée qu'après le contreseing d'un second membre. */
+export const SANCTION_STATUSES = ['A_CONTRESIGNER', 'PRONONCEE'] as const;
+export type SanctionStatus = (typeof SANCTION_STATUSES)[number];
+
 /** Une pénalité/sanction ne peut viser qu'une des deux compagnies parties au recours à l'origine du dossier. */
 export function isCompanyPartyToCase(companyCode: string, companyA: string, companyB: string): boolean {
   return companyCode === companyA || companyCode === companyB;
