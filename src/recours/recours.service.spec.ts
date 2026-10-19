@@ -166,6 +166,8 @@ describe('RecoursService — motif d’opposition (reasonCode, décision PO §1)
     });
     const convention = new ConventionReferentialService(failing() as never, failing() as never, failing() as never);
     await convention.createMotif({ code: 'MONTANT_CONTESTE', label: 'Montant contesté' }, fakeUser('op'));
+    await convention.createMotif({ code: 'EN_ATTENTE_UAR', label: 'Motif non encore validé' }, fakeUser('op'));
+    await convention.validateMotif('MONTANT_CONTESTE', fakeUser('uar'));
     const moduleRef = await Test.createTestingModule({
       providers: [
         RecoursService,
@@ -190,6 +192,14 @@ describe('RecoursService — motif d’opposition (reasonCode, décision PO §1)
     const err = await service.transition(created.id, { action: 'opposer', reasonCode: 'NON_DECLARATION' }, fakeUser('saa')).catch((e) => e);
     expect(err.getStatus()).toBe(400);
     expect(err.response).toMatchObject({ code: 'MOTIF_INTERDIT', message: expect.stringMatching(/Art\. 10/) });
+    expect((await service.get(created.id)).state).toBe('EN_ATTENTE');
+  });
+
+  it('refuse (400) un motif saisi mais pas encore validé UAR, sans changer l’état du recours', async () => {
+    const created = await service.create({ claimId: 'clm-rc-6', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await expect(service.transition(created.id, { action: 'opposer', reasonCode: 'EN_ATTENTE_UAR' }, fakeUser('saa'))).rejects.toMatchObject({
+      response: { code: 'MOTIF_NON_VALIDE' },
+    });
     expect((await service.get(created.id)).state).toBe('EN_ATTENTE');
   });
 

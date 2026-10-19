@@ -104,6 +104,13 @@ describe('BaremeReferentialService (mode dégradé, décision PO §5)', () => {
       await expect(service.validateCategory('VL', autreOperateur)).rejects.toMatchObject({ response: { code: 'FOUR_EYES' } });
       await expect(service.validateCategory('VL', user('uar-2', 'ADMIN_UAR'))).resolves.toMatchObject({ status: 'VALIDE_UAR' });
     });
+
+    it('catégorie validée : figée (409 CATEGORIE_IMMUABLE), libellé inchangé', async () => {
+      await service.createCategory({ code: 'PL', label: 'Poids lourd' }, operateur);
+      await service.validateCategory('PL', adminUar);
+      await expect(service.updateCategory('PL', { label: 'Autre' }, operateur)).rejects.toMatchObject({ response: { code: 'CATEGORIE_IMMUABLE' } });
+      expect((await service.listCategories()).find((c) => c.code === 'PL')).toMatchObject({ label: 'Poids lourd', status: 'VALIDE_UAR' });
+    });
   });
 
   describe('immuabilité d’une version validée', () => {

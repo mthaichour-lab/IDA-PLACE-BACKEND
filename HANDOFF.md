@@ -670,15 +670,19 @@ recherche paginée).
 **Testeur (vérification réelle, mode dégradé)** : 2 bugs réels, corrigés —
 (1) la clôture trimestrielle par l'API ignorait l'ordre des étapes ;
 (2) fériés fixes figés sur 2026-2027. Remarques non bloquantes laissées en
-l'état et à trancher : motif d'opposition non validé déjà accepté ;
-catégorie de véhicule validée encore modifiable ; `fixedHolidays` de
+l'état : `fixedHolidays` de
 `GET /referential/calendar` sans bornes = année N-1 à N+1 ; import CSV des
 populations : une seule erreur par ligne ; préexistants hors périmètre :
 `POST /recours` accepte un `claimId` inexistant, file du matching en double
 (A↔B et B↔A), `createdAt` d'une compagnie recalculé à chaque lecture en
 mode dégradé.
 
-**Vérifié** : `npm run lint` OK, `npm test` 423/423, e2e 128/128 (le flake
+**Décisions PO du 2026-10-19 (après le Testeur)** : seul un motif
+d'opposition `VALIDE_UAR` est accepté (`MOTIF_NON_VALIDE`) ; une catégorie
+de véhicule validée est figée (`CATEGORIE_IMMUABLE`) ; échéance de l'étape 3
+= dernier jour du mois M, confirmée.
+
+**Vérifié** : `npm run lint` OK, `npm test` 425/425, e2e 128/128 (le flake
 `claims-import` ECONNRESET passe ou échoue selon les exécutions), build OK.
 
 **Environnement** : dans un worktree neuf, `AUTH_PROVIDER=dev` doit être

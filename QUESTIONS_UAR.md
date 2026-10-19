@@ -34,9 +34,9 @@ non-déclaration ».
 
 **Reste à valider par l'UAR** : existence d'un document « RG-01 » ;
 formulation et version arabe des 17 circonstances algériennes ; liste des
-motifs d'opposition admis. Remarque du Testeur : un motif seulement saisi
-(non validé) est déjà proposé et accepté — à trancher si seule une valeur
-`VALIDE_UAR` doit compter.
+motifs d'opposition admis. **Décision PO (2026-10-19)** : seul un motif
+`VALIDE_UAR` peut fonder une opposition (400 `MOTIF_NON_VALIDE` sinon) ;
+tant qu'aucun motif n'est validé, l'écran 4 garde l'attestation.
 
 ---
 
@@ -115,10 +115,10 @@ sur l'écran 11.
 
 **Reste à publier par l'UAR** : la table B01-B11 (codes, parts A/B), la
 correspondance circonstances → codes, la liste des catégories, et la règle
-d'arbitrage quand A et B déclarent des codes différents. Remarque du
-Testeur : une catégorie validée reste modifiable (elle repasse « saisie »)
-alors qu'une version de barème validée est immuable — à harmoniser si
-l'UAR le souhaite.
+d'arbitrage quand A et B déclarent des codes différents. **Décision PO
+(2026-10-19)** : une catégorie de véhicule validée est figée comme une
+version de barème (409 `CATEGORIE_IMMUABLE`) ; corriger = créer une
+nouvelle catégorie.
 
 ---
 
@@ -175,7 +175,7 @@ suit le trimestre :
 1. Saisie et validation des recours — 5ᵉ jour ouvré de M (Art. 16) ;
 2. Synthèse mensuelle automatisée, Annexe 7 — le 10 de M ;
 3. Insertion des règlements (Annexe 8) et transmission aux tiers — dernier
-   jour de M (« à la clôture du mois » : interprétation) ;
+   jour de M (« à la clôture du mois », confirmé par le PO le 2026-10-19) ;
 4. Synthèse globale trimestrielle et réunion UAR — dernier jour de M ;
 5. Signature du PV (Annexe 9) et règlement — réunion + 8 jours (Art. 18).
 
@@ -186,8 +186,8 @@ L'étape 5 = clôture trimestrielle, qui exige désormais les étapes 1-4
 « Avancement du lot » et bouton « Clôturer le trimestre » (aucun accès
 écran à la clôture n'existait auparavant).
 
-**À confirmer** : l'échéance de l'étape 3 (interprétation) et le libellé
-exact des étapes de la maquette de l'écran 6, qui est une image.
+**À confirmer** : le libellé exact des étapes de la maquette de l'écran 6,
+qui est une image.
 
 ---
 

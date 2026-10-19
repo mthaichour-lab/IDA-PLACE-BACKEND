@@ -470,6 +470,10 @@ export class ConventionReferentialService {
         message: `Le motif "${motif.label}" ne peut pas motiver une opposition (Art. 10 de la convention IDA ; guide pédagogique UAR, diapo 10)${motif.sourceRef ? ` — source : ${motif.sourceRef}` : ''}.`,
       });
     }
+    // Décision PO (2026-10-19) : seul un motif validé UAR peut fonder une opposition.
+    if (motif.status !== 'VALIDE_UAR') {
+      throw new BadRequestException({ code: 'MOTIF_NON_VALIDE', message: `Le motif "${motif.label}" n'est pas encore validé par l'UAR.` });
+    }
     return motif;
   }
 }

@@ -65,8 +65,10 @@ describe('ConventionReferentialService (mode dégradé)', () => {
       await expect(service.assertOppositionMotifUsable('INCONNU')).rejects.toMatchObject({ response: { code: 'MOTIF_INCONNU' } });
     });
 
-    it('accepte un motif saisi non interdit', async () => {
+    it('refuse un motif seulement saisi (400 MOTIF_NON_VALIDE), l’accepte une fois validé UAR', async () => {
       await service.createMotif({ code: 'MONTANT_CONTESTE', label: 'Montant contesté' }, operateur);
+      await expect(service.assertOppositionMotifUsable('MONTANT_CONTESTE')).rejects.toMatchObject({ response: { code: 'MOTIF_NON_VALIDE' } });
+      await service.validateMotif('MONTANT_CONTESTE', adminUar);
       await expect(service.assertOppositionMotifUsable('MONTANT_CONTESTE')).resolves.toMatchObject({ code: 'MONTANT_CONTESTE' });
     });
 

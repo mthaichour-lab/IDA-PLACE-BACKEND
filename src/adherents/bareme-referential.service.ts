@@ -344,8 +344,15 @@ export class BaremeReferentialService {
   }
 
   /** Une modification fait repasser la catégorie en attente de validation UAR. */
+  /** Décision PO (2026-10-19) : une catégorie validée est figée comme une version de barème — un dossier déjà codé ne doit pas voir son libellé changer. */
   async updateCategory(code: string, dto: UpdateVehicleCategoryDto, user: AuthenticatedUser): Promise<VehicleCategoryView> {
-    await this.getCategory(code);
+    const current = await this.getCategory(code);
+    if (current.status === 'VALIDE_UAR') {
+      throw new ConflictException({
+        code: 'CATEGORIE_IMMUABLE',
+        message: `La catégorie « ${current.code} » est validée UAR : elle ne se modifie plus, créez une nouvelle catégorie.`,
+      });
+    }
     return this.writeCategory(code, { label: dto.label, status: 'SAISI', updatedBy: user.id, validatedBy: null, validatedAt: null }, 'updateCategory');
   }
 

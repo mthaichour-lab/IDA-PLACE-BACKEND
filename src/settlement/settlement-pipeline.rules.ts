@@ -71,8 +71,8 @@ export function computeFixedDueDates(
   return {
     SAISIE: nthBusinessDayOfMonth(m.year, m.month, 5, calendar, extraHolidays),
     SYNTHESE_ANNEXE_7: isoUtc(m.year, m.month - 1, 10),
-    // Le Diagramme 2 dit « à la clôture du mois » sans autre précision :
-    // interprété comme le dernier jour du mois M.
+    // Le Diagramme 2 dit « à la clôture du mois » : dernier jour du mois M
+    // (décision PO 2026-10-19 — la fin du trimestre précéderait les étapes 1 et 2).
     TRANSMISSION_ANNEXE_8: lastDayOfM,
     // « au plus tard fin du mois suivant le trimestre ».
     SYNTHESE_GLOBALE_REUNION: lastDayOfM,
