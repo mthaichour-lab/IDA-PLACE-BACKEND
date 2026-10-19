@@ -36,4 +36,18 @@ export interface ClaimMatchInput {
   assureIdentite?: string;
   /** Canal de déclaration PROPRE à cette déclaration (ERP/ECONSTAT/IMPORT/API — B.4 colonne 47). Additif (2026-10-18), affichage uniquement. */
   canalDeclaration?: string;
+  /** Barème Art. 14 tel que saisi sur CETTE déclaration (décision PO §5) — affichage écran 2, jamais dans le score. */
+  responsabilite?: DeclarationResponsabilite;
+}
+
+/** Saisie Art. 14 d'une déclaration, du point de vue de sa compagnie (A = son assuré, B = l'adverse). */
+export interface DeclarationResponsabilite {
+  circonstancesA?: number[];
+  circonstancesB?: number[];
+  baremeVersionId?: string;
+  baremeCode?: string;
+  vehicleCategoryA?: string;
+  vehicleCategoryB?: string;
+  responsabiliteDeclareeA?: number;
+  responsabiliteDeclareeB?: number;
 }

@@ -6,18 +6,25 @@ import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { BaremeReferentialService } from './bareme-referential.service';
 import { ConventionReferentialService } from './convention-referential.service';
 import {
   ConfirmMobileHolidayDto,
+  CreateBaremeCaseDto,
+  CreateBaremeVersionDto,
   CreateIrsamBenchmarkDto,
   CreateMobileHolidayDto,
   CreateOppositionMotifDto,
+  CreateVehicleCategoryDto,
   CreateWilayaPopulationDto,
   ListMobileHolidaysQueryDto,
   ListWilayaPopulationsQueryDto,
+  UpdateBaremeCaseDto,
+  UpdateBaremeVersionDto,
   UpdateConstatCircumstanceDto,
   UpdateMobileHolidayDto,
   UpdateOppositionMotifDto,
+  UpdateVehicleCategoryDto,
   UpdateWilayaPerimeterDto,
   UpdateWilayaPopulationDto,
 } from './dto/place-referential.dto';
@@ -25,7 +32,7 @@ import { PlaceMetricsReferentialService } from './place-metrics-referential.serv
 import { MOBILE_HOLIDAY_KIND_LABELS, MOBILE_HOLIDAY_KINDS } from './place-referential.data';
 
 /**
- * Référentiels de place — écran 12, décisions PO points 1 à 4. Lecture : tous
+ * Référentiels de place — écran 12, décisions PO points 1 à 5. Lecture : tous
  * les profils. Saisie : `params`. Validation UAR : `validateRef` (ADMIN_UAR).
  */
 @ApiTags('referential')
@@ -36,6 +43,7 @@ export class PlaceReferentialController {
   constructor(
     private readonly convention: ConventionReferentialService,
     private readonly metrics: PlaceMetricsReferentialService,
+    private readonly bareme: BaremeReferentialService,
   ) {}
 
   // ---- Fériés mobiles (§2) ----------------------------------------------
@@ -204,5 +212,89 @@ export class PlaceReferentialController {
   @ApiOperation({ summary: 'Archivage d’une référence IRSAM (retirée du comparatif)' })
   archiveIrsam(@Param('id') id: string) {
     return this.metrics.archiveIrsam(id);
+  }
+
+  // ---- Barème Art. 14 et catégories de véhicule (§5) ----------------------
+
+  @Get('bareme-versions')
+  @ApiOperation({ summary: 'Versions du barème Art. 14 et leurs cas (aucune pré-remplie) — BROUILLON / VALIDE_UAR / ARCHIVE' })
+  listBaremeVersions() {
+    return this.bareme.listVersions();
+  }
+
+  @Post('bareme-versions')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Nouvelle version BROUILLON du barème (corriger une version validée = en créer une nouvelle)' })
+  createBaremeVersion(@Body() dto: CreateBaremeVersionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.createVersion(dto, user);
+  }
+
+  @Put('bareme-versions/:id')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Libellé / source d’une version BROUILLON (409 si validée ou archivée)' })
+  updateBaremeVersion(@Param('id') id: string, @Body() dto: UpdateBaremeVersionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.updateVersion(id, dto, user);
+  }
+
+  @Post('bareme-versions/:id/cases')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Ajout d’un cas (code, libellé, partA + partB = 100) à une version BROUILLON' })
+  addBaremeCase(@Param('id') id: string, @Body() dto: CreateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.addCase(id, dto, user);
+  }
+
+  @Put('bareme-versions/:id/cases/:code')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Modification d’un cas d’une version BROUILLON (partA + partB = 100)' })
+  updateBaremeCase(@Param('id') id: string, @Param('code') code: string, @Body() dto: UpdateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.updateCase(id, code, dto, user);
+  }
+
+  @Delete('bareme-versions/:id/cases/:code')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Suppression d’un cas d’une version BROUILLON' })
+  removeBaremeCase(@Param('id') id: string, @Param('code') code: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.removeCase(id, code, user);
+  }
+
+  @Post('bareme-versions/:id/validate')
+  @Privileges('validateRef')
+  @ApiOperation({ summary: 'Validation UAR d’une version (quatre yeux : 409 si le validateur a saisi la version ou l’un de ses cas) — la version devient immuable' })
+  validateBaremeVersion(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.validateVersion(id, user);
+  }
+
+  @Post('bareme-versions/:id/archive')
+  @Privileges('validateRef')
+  @ApiOperation({ summary: 'Archivage d’une version VALIDE_UAR (n’est plus proposée ni utilisée pour le taux selon barème)' })
+  archiveBaremeVersion(@Param('id') id: string) {
+    return this.bareme.archiveVersion(id);
+  }
+
+  @Get('vehicle-categories')
+  @ApiOperation({ summary: 'Catégories de véhicule (aucune pré-remplie) — SAISI / VALIDE_UAR' })
+  listVehicleCategories() {
+    return this.bareme.listCategories();
+  }
+
+  @Post('vehicle-categories')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Saisie d’une catégorie de véhicule (statut SAISI)' })
+  createVehicleCategory(@Body() dto: CreateVehicleCategoryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.createCategory(dto, user);
+  }
+
+  @Put('vehicle-categories/:code')
+  @Privileges('params')
+  @ApiOperation({ summary: 'Modification du libellé d’une catégorie (repasse au statut SAISI)' })
+  updateVehicleCategory(@Param('code') code: string, @Body() dto: UpdateVehicleCategoryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.updateCategory(code, dto, user);
+  }
+
+  @Post('vehicle-categories/:code/validate')
+  @Privileges('validateRef')
+  @ApiOperation({ summary: 'Validation UAR d’une catégorie (quatre yeux : 409 si le validateur en est l’auteur)' })
+  validateVehicleCategory(@Param('code') code: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.validateCategory(code, user);
   }
 }

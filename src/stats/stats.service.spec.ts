@@ -5,7 +5,9 @@ import { ClaimsService } from '../claims/claims.service';
 import { RecoursService } from '../recours/recours.service';
 import { StatsService } from './stats.service';
 
-function fakeClaims(claims: { wilaya?: string; expertAmount?: number; estimatedAmount?: number; accidentDate?: string; createdAt?: string; canalDeclaration?: string }[]): ClaimsService {
+function fakeClaims(
+  claims: { wilaya?: string; expertAmount?: number; estimatedAmount?: number; accidentDate?: string; createdAt?: string; canalDeclaration?: string; baremeCode?: string; vehicleCategoryA?: string }[],
+): ClaimsService {
   return {
     list: jest.fn(async () => ({ page: 1, total: claims.length, items: claims })),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,6 +201,27 @@ describe('StatsService', () => {
       const summary = await service.summary();
       expect(summary.irsamStatus).toBe('VALIDE');
       expect(summary.irsam).toEqual({ value: 74, periodFrom: '2025-01-01', periodTo: '2025-12-31', sourceRef: 'E-Recours 2025', measureDefinition, deltaDays: -64 });
+    });
+  });
+
+  describe('summary() : répartition par code de barème et par catégorie (décision PO §5)', () => {
+    it('compte chaque valeur saisie et, à part, les dossiers sans valeur', async () => {
+      const claims = [
+        { baremeCode: 'B01', vehicleCategoryA: 'VL' },
+        { baremeCode: 'B01' },
+        { baremeCode: 'B03', vehicleCategoryA: 'PL' },
+        {},
+      ];
+      const summary = await new StatsService(fakeClaims(claims), fakeRecours([]), fakeAdherents()).summary();
+      expect(summary.declarations).toBe(4);
+      expect(summary.baremeCodes).toEqual({ items: [{ code: 'B01', count: 2 }, { code: 'B03', count: 1 }], sansValeur: 1 });
+      expect(summary.vehicleCategories).toEqual({ items: [{ code: 'PL', count: 1 }, { code: 'VL', count: 1 }], sansValeur: 2 });
+    });
+
+    it('aucun dossier renseigné : listes vides, tout est compté sans valeur', async () => {
+      const summary = await new StatsService(fakeClaims([{}, {}]), fakeRecours([]), fakeAdherents()).summary();
+      expect(summary.baremeCodes).toEqual({ items: [], sansValeur: 2 });
+      expect(summary.vehicleCategories).toEqual({ items: [], sansValeur: 2 });
     });
   });
 });

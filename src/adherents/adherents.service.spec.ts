@@ -13,6 +13,10 @@ import { OppositionMotif } from './entities/opposition-motif.entity';
 import { WilayaPopulation } from './entities/wilaya-population.entity';
 import { ConventionReferentialService } from './convention-referential.service';
 import { PlaceMetricsReferentialService } from './place-metrics-referential.service';
+import { BaremeReferentialService } from './bareme-referential.service';
+import { BaremeCase } from './entities/bareme-case.entity';
+import { BaremeVersion } from './entities/bareme-version.entity';
+import { VehicleCategory } from './entities/vehicle-category.entity';
 
 /** Acteur scopé compagnie — voir claims.service.spec.ts `correspondant()`. */
 function correspondant(companyId: string): AuthenticatedUser {
@@ -44,7 +48,8 @@ describe('AdherentsService (mode dégradé)', () => {
         AdherentsService,
         ConventionReferentialService,
         PlaceMetricsReferentialService,
-        ...[MobileHoliday, ConstatCircumstance, OppositionMotif, WilayaPopulation, IrsamBenchmark].map((e) => ({ provide: getRepositoryToken(e), useFactory: throwingRepo })),
+        BaremeReferentialService,
+        ...[MobileHoliday, ConstatCircumstance, OppositionMotif, WilayaPopulation, IrsamBenchmark, BaremeVersion, BaremeCase, VehicleCategory].map((e) => ({ provide: getRepositoryToken(e), useFactory: throwingRepo })),
         { provide: getRepositoryToken(Company), useFactory: throwingRepo },
         { provide: getRepositoryToken(Agency), useFactory: throwingRepo },
         { provide: getRepositoryToken(Wilaya), useFactory: throwingRepo },

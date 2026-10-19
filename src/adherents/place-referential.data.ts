@@ -36,6 +36,16 @@ export type IrsamIndicator = (typeof IRSAM_INDICATORS)[number];
 export const IRSAM_STATUSES = ['SAISI', 'VALIDE_UAR', 'ARCHIVE'] as const;
 export type IrsamStatus = (typeof IRSAM_STATUSES)[number];
 
+// Barème Art. 14 et catégories de véhicule (§5) : origine (c), aucune valeur pré-remplie.
+export const BAREME_VERSION_STATUSES = ['BROUILLON', 'VALIDE_UAR', 'ARCHIVE'] as const;
+export type BaremeVersionStatus = (typeof BAREME_VERSION_STATUSES)[number];
+
+export const VEHICLE_CATEGORY_STATUSES = ['SAISI', 'VALIDE_UAR'] as const;
+export type VehicleCategoryStatus = (typeof VEHICLE_CATEGORY_STATUSES)[number];
+
+export const CONSTAT_CIRCUMSTANCE_MIN = 1;
+export const CONSTAT_CIRCUMSTANCE_MAX = 17;
+
 /** Auteur des lignes pré-remplies : jamais un utilisateur réel, donc la règle des quatre yeux reste satisfaite. */
 export const SEED_AUTHOR = 'system:seed';
 

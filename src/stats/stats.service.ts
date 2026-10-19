@@ -51,6 +51,27 @@ export interface StatsSummaryDto {
   irsam: IrsamComparisonDto | null;
   /** État de la référence IRSAM, pour distinguer « non renseignée » et « en attente de validation UAR ». */
   irsamStatus: 'NON_RENSEIGNE' | 'EN_ATTENTE_VALIDATION' | 'VALIDE';
+  /** Répartition des dossiers par code de barème Art. 14 (décision PO §5). */
+  baremeCodes: RepartitionDto;
+  /** Répartition des dossiers par catégorie du véhicule assuré par la compagnie déclarante (véhicule A). */
+  vehicleCategories: RepartitionDto;
+}
+
+export interface RepartitionDto {
+  items: Array<{ code: string; count: number }>;
+  /** Dossiers sans valeur (non renseignés ou antérieurs au modèle étendu), comptés à part. */
+  sansValeur: number;
+}
+
+function repartition(values: Array<string | undefined>): RepartitionDto {
+  const counts = new Map<string, number>();
+  let sansValeur = 0;
+  for (const v of values) {
+    if (!v) sansValeur += 1;
+    else counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  const items = [...counts.entries()].map(([code, count]) => ({ code, count })).sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+  return { items, sansValeur };
 }
 
 /**
@@ -86,10 +107,9 @@ export interface StatsSummaryDto {
  *  - Comparatif "vs IRSAM" : `irsam` reste `null` tant qu'aucune référence
  *    saisie n'est validée UAR (décision PO §4) ; le « 74j » de la capture est
  *    une valeur de maquette, jamais injectée.
- *  - Codes de barème Art.14 (B01-B11), catégories de véhicules, tableau
- *    "Délais de bout en bout" : nécessitent des champs qui n'existent pas
- *    sur `Claim` (code barème, catégorie véhicule) — hors périmètre de
- *    cette passe, à chiffrer séparément si repris.
+ *  - Tableau "Délais de bout en bout" : hors périmètre. Les répartitions
+ *    par code de barème et par catégorie (décision PO §5) ne comptent que
+ *    les valeurs saisies ; rien n'est déduit pour les dossiers sans valeur.
  */
 @Injectable()
 export class StatsService {
@@ -181,7 +201,7 @@ export class StatsService {
   }
 
   async summary(): Promise<StatsSummaryDto> {
-    const { total: declarations } = await this.claims.list({ page: 1, pageSize: 1 });
+    const { total: declarations, items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
     const allRecours = await this.recours.listAll();
 
     const withOpposition = allRecours.filter((r) => !!r.opposition).length;
@@ -209,6 +229,16 @@ export class StatsService {
         }
       : null;
 
-    return { declarations, oppositionRatePct, settledAmount, avgSettlementDays, irsam, irsamStatus: reference.status };
+    return {
+      declarations,
+      oppositionRatePct,
+      settledAmount,
+      avgSettlementDays,
+      irsam,
+      irsamStatus: reference.status,
+      baremeCodes: repartition(allClaims.map((c) => c.baremeCode)),
+      // Véhicule A seulement : dans une paire appariée, le véhicule B d'une déclaration est le véhicule A de l'autre.
+      vehicleCategories: repartition(allClaims.map((c) => c.vehicleCategoryA)),
+    };
   }
 }

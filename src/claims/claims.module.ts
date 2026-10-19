@@ -1,8 +1,10 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Module } from '@nestjs/common';
+import { AdherentsModule } from '../adherents/adherents.module';
 import { EligibilityModule } from '../eligibility/eligibility.module';
 import { MatchingModule } from '../matching/matching.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { RecoursModule } from '../recours/recours.module';
 import { ClaimsController } from './claims.controller';
 import { ClaimsService } from './claims.service';
 import { Claim } from './entities/claim.entity';
@@ -15,7 +17,9 @@ import { Claim } from './entities/claim.entity';
  * ARCHITECTURE.md et matching.service.ts.
  */
 @Module({
-  imports: [MikroOrmModule.forFeature([Claim]), EligibilityModule, MatchingModule, RealtimeModule],
+  // RecoursModule (recours ouvert sur le dossier) et AdherentsModule (barème
+  // publié) n'importent jamais ClaimsModule : pas de cycle.
+  imports: [MikroOrmModule.forFeature([Claim]), EligibilityModule, MatchingModule, RealtimeModule, RecoursModule, AdherentsModule],
   controllers: [ClaimsController],
   providers: [ClaimsService],
   exports: [ClaimsService],

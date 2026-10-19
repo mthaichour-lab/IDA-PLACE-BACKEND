@@ -34,6 +34,12 @@ export class MatchingController {
     return this.service.getThresholds();
   }
 
+  @Get(':id')
+  @ApiOperation({ summary: 'Détail d’un appariement : saisies Art. 14 de A et B, divergence de code, taux selon barème si une version VALIDE_UAR couvre le code (B.7 : scopé par compagnie)' })
+  get(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.getItem(id, user);
+  }
+
   @Post(':id/decide')
   @Privileges('matchDecide')
   @ApiOperation({ summary: 'Décision de confrontation : confirm | reject | complement | link (Art. 14, validation humaine)' })

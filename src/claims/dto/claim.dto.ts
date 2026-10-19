@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
 
 export const CLAIM_STATES = [
@@ -65,4 +65,61 @@ export class ClaimViewDto {
   // typée, aucune migration nécessaire) — affichage uniquement
   // (MatchingModule, cartes "Véhicule A/B"), n'entre dans aucun calcul.
   @ApiPropertyOptional() assureIdentite?: string;
+  // --- Barème Art. 14 (décision PO §5) : absents tant que non renseignés.
+  @ApiPropertyOptional({ type: [Number] }) circonstancesA?: number[];
+  @ApiPropertyOptional({ type: [Number] }) circonstancesB?: number[];
+  @ApiPropertyOptional() baremeVersionId?: string;
+  @ApiPropertyOptional() baremeCode?: string;
+  @ApiPropertyOptional() vehicleCategoryA?: string;
+  @ApiPropertyOptional() vehicleCategoryB?: string;
+  @ApiPropertyOptional({ description: 'Responsabilité déclarée A (%), colonne 32 du fichier importé' }) responsabiliteDeclareeA?: number;
+  @ApiPropertyOptional({ description: 'Responsabilité déclarée B (%), colonne 33 du fichier importé' }) responsabiliteDeclareeB?: number;
+}
+
+/**
+ * `PATCH /claims/:id/responsabilite` — champ absent : inchangé ; `null` :
+ * effacé. La responsabilité déclarée (colonnes 32-33) ne vient que de l'import.
+ */
+export class UpdateClaimResponsabiliteDto {
+  @ApiPropertyOptional({ type: [Number], nullable: true, description: 'Cases 1 à 17 du constat, véhicule A' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(17)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(17, { each: true })
+  circonstancesA?: number[] | null;
+
+  @ApiPropertyOptional({ type: [Number], nullable: true, description: 'Cases 1 à 17 du constat, véhicule B' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(17)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(17, { each: true })
+  circonstancesB?: number[] | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Code présent dans une version VALIDE_UAR du barème (sinon 400)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  baremeCode?: string | null;
+
+  @ApiPropertyOptional({ description: 'Version VALIDE_UAR visée (id) ; par défaut, la plus récemment validée qui contient le code' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  baremeVersionId?: string;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Catégorie VALIDE_UAR (sinon 400)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  vehicleCategoryA?: string | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Catégorie VALIDE_UAR (sinon 400)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  vehicleCategoryB?: string | null;
 }

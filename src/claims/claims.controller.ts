@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -8,7 +8,7 @@ import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ClaimsService } from './claims.service';
 import { ClaimImportReportDto } from './dto/claim-import.dto';
-import { ListClaimsQueryDto } from './dto/claim.dto';
+import { ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from './dto/claim.dto';
 
 /**
  * ClaimsModule — écrans 2 (matching) et 3 (import). Contrat stable
@@ -25,6 +25,12 @@ export class ClaimsController {
   @ApiOperation({ summary: "Modèle 47 colonnes (identification + éligibilité) — B.4" })
   columns() {
     return this.service.columns();
+  }
+
+  @Get('import/columns/v2')
+  @ApiOperation({ summary: 'Modèle v2 : les 47 colonnes du v1 puis les colonnes 48-53 du barème Art. 14 (décision PO §5)' })
+  columnsV2() {
+    return this.service.columnsV2();
   }
 
   // Revue sécurité 2026-10-18 : taille/type jamais bornés auparavant
@@ -61,5 +67,15 @@ export class ClaimsController {
   @ApiOperation({ summary: "Détail d'un dossier — scopé par compagnie (B.7)" })
   get(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.get(id, user);
+  }
+
+  @Patch(':id/responsabilite')
+  @Privileges('insert', 'matchDecide')
+  @ApiOperation({
+    summary:
+      'Barème Art. 14 du dossier : circonstances (1-17), code de barème et catégories (VALIDE_UAR, sinon 400). CORRESPONDANT_IDA (insert) : sa compagnie, avant tout recours ; ensuite, rôles matchDecide',
+  })
+  updateResponsabilite(@Param('id') id: string, @Body() dto: UpdateClaimResponsabiliteDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.updateResponsabilite(id, dto, user);
   }
 }

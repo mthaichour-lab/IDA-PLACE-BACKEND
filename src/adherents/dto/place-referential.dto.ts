@@ -112,3 +112,40 @@ export class CreateIrsamBenchmarkDto {
   @ApiProperty({ type: IrsamMeasureDefinitionDto }) @IsObject() @ValidateNested() @Type(() => IrsamMeasureDefinitionDto) measureDefinition!: IrsamMeasureDefinitionDto;
   @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(255) sourceRef!: string;
 }
+
+// ---- Barème Art. 14 et catégories de véhicule (§5) ---------------------
+
+const REFERENCE_CODE_PATTERN = /^[A-Z0-9_-]{1,32}$/;
+const REFERENCE_CODE_MESSAGE = 'code : majuscules, chiffres, _ et - (1 à 32)';
+
+export class CreateBaremeVersionDto {
+  @ApiProperty({ example: 'Barème UAR 2026' }) @IsString() @IsNotEmpty() @MaxLength(128) label!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) sourceRef?: string;
+}
+
+export class UpdateBaremeVersionDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @IsNotEmpty() @MaxLength(128) label?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) sourceRef?: string;
+}
+
+export class CreateBaremeCaseDto {
+  @ApiProperty() @Matches(REFERENCE_CODE_PATTERN, { message: REFERENCE_CODE_MESSAGE }) code!: string;
+  @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(255) label!: string;
+  @ApiProperty({ minimum: 0, maximum: 100 }) @IsInt() @Min(0) @Max(100) partA!: number;
+  @ApiProperty({ minimum: 0, maximum: 100 }) @IsInt() @Min(0) @Max(100) partB!: number;
+}
+
+export class UpdateBaremeCaseDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @IsNotEmpty() @MaxLength(255) label?: string;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsOptional() @IsInt() @Min(0) @Max(100) partA?: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 100 }) @IsOptional() @IsInt() @Min(0) @Max(100) partB?: number;
+}
+
+export class CreateVehicleCategoryDto {
+  @ApiProperty() @Matches(REFERENCE_CODE_PATTERN, { message: REFERENCE_CODE_MESSAGE }) code!: string;
+  @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(255) label!: string;
+}
+
+export class UpdateVehicleCategoryDto {
+  @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(255) label!: string;
+}

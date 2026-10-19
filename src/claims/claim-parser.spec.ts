@@ -1,5 +1,7 @@
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
-import { mapRow, parseClaimFile, splitCsvLine } from './claim-parser';
+import * as ExcelJS from 'exceljs';
+import { CLAIM_IMPORT_EXTENSION_COLUMNS } from './claim-extension-columns';
+import { mapExtensionRow, mapRow, parseClaimFile, splitCsvLine } from './claim-parser';
 
 describe('splitCsvLine', () => {
   it('découpe des champs simples séparés par des virgules', () => {
@@ -141,5 +143,44 @@ describe('parseClaimFile (CSV)', () => {
     const buffer = Buffer.from(`${header}\n${row1}\n`, 'utf-8');
     const rows = await parseClaimFile(buffer, 'import.csv');
     expect(rows[0].values.nombreVehicules).toBe(2);
+  });
+});
+
+describe('colonnes d’extension 48-53 (barème Art. 14)', () => {
+  const header47 = CLAIM_IMPORT_COLUMNS.map((c) => c.label).join(',');
+  const row47 = CLAIM_IMPORT_COLUMNS.map((c) => (c.key === 'nombreVehicules' ? '2' : '')).join(',');
+
+  it('un fichier à 47 colonnes reste valide : aucune erreur, aucun avertissement, aucune valeur d’extension', async () => {
+    const [row] = await parseClaimFile(Buffer.from(`${header47}\n${row47}\n`, 'utf-8'), 'v1.csv');
+    expect(row.errors).toEqual([]);
+    expect(row.warnings).toEqual([]);
+    expect(row.extension).toEqual({});
+    expect(row.values.nombreVehicules).toBe(2);
+  });
+
+  it('lit les colonnes 48-53 par position, circonstances dédoublonnées et triées', async () => {
+    const ext = ['8|1|8', '"3,17"', 'Barème 2026', 'B01', 'VL', 'PL'];
+    const headerV2 = [header47, ...CLAIM_IMPORT_EXTENSION_COLUMNS.map((c) => c.label)].join(',');
+    const [row] = await parseClaimFile(Buffer.from(`${headerV2}\n${row47},${ext.join(',')}\n`, 'utf-8'), 'v2.csv');
+    expect(row.errors).toEqual([]);
+    expect(row.extension).toEqual({ circonstancesA: [1, 8], circonstancesB: [3, 17], baremeVersion: 'Barème 2026', baremeCode: 'B01', vehicleCategoryA: 'VL', vehicleCategoryB: 'PL' });
+  });
+
+  it('une circonstance hors 1-17 est ignorée avec un avertissement, jamais une erreur de format', () => {
+    const cells = Array.from({ length: 53 }, () => '');
+    cells[47] = '1|18';
+    const { extension, warnings } = mapExtensionRow(cells);
+    expect(extension.circonstancesA).toBeUndefined();
+    expect(warnings).toEqual([expect.objectContaining({ column: 48, columnKey: 'circonstancesA', code: 'CIRCONSTANCE_INVALIDE' })]);
+  });
+
+  it('Excel : les cellules au-delà de la 47e sont lues', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('import');
+    sheet.addRow([...CLAIM_IMPORT_COLUMNS.map((c) => c.label), ...CLAIM_IMPORT_EXTENSION_COLUMNS.map((c) => c.label)]);
+    sheet.addRow([...CLAIM_IMPORT_COLUMNS.map(() => null), '2|5', null, null, 'B03']);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    const [row] = await parseClaimFile(buffer, 'v2.xlsx');
+    expect(row.extension).toEqual({ circonstancesA: [2, 5], baremeCode: 'B03' });
   });
 });

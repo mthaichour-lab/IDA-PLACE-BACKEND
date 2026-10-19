@@ -3,6 +3,7 @@ import { EntityRepository } from '@mikro-orm/postgresql';
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
+import { AdherentsService } from '../adherents/adherents.service';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -16,6 +17,7 @@ import {
   MatchThresholdsDto,
 } from './dto/matching.dto';
 import { MatchLevel, MatchQueueItem, MatchStatus } from './entities/match-queue-item.entity';
+import { compactResponsabilite, computeDivergence, withTauxSelonBareme } from './matching.bareme';
 import { computeMatchScore, levelForScore, MatchLevelThresholds, MatchScoreResult } from './matching.scoring';
 import { ClaimMatchInput } from './matching.types';
 
@@ -31,7 +33,7 @@ type MemoryMatchRow = MatchQueueItemDto & { declAId: string; declBId?: string };
  */
 function toPublicDto(row: MemoryMatchRow): MatchQueueItemDto {
   const { declAId: _declAId, declBId: _declBId, ...rest } = row;
-  return rest;
+  return { ...rest, divergence: computeDivergence(rest.responsabiliteA, rest.responsabiliteB) };
 }
 
 const TERMINAL_STATUSES = new Set<string>([MatchStatus.CONFIRME_MANUEL, MatchStatus.REJETE, MatchStatus.COMPLEMENT]);
@@ -68,6 +70,9 @@ function toDto(e: MatchQueueItem): MatchQueueItemDto {
     canalDeclarationB: e.canalDeclarationB,
     policeA: e.policeA,
     policeB: e.policeB,
+    responsabiliteA: e.responsabiliteA ?? undefined,
+    responsabiliteB: e.responsabiliteB ?? undefined,
+    divergence: computeDivergence(e.responsabiliteA, e.responsabiliteB),
   };
 }
 
@@ -113,6 +118,7 @@ export class MatchingService {
     @InjectRepository(MatchQueueItem) private readonly repo: EntityRepository<MatchQueueItem>,
     private readonly configService: ConfigService,
     private readonly realtime: RealtimeGateway,
+    private readonly adherents: AdherentsService,
   ) {
     // Seuils paramétrables (B.5) — variables d'environnement plutôt qu'en
     // dur (80/50 restent les valeurs par défaut documentées par le dossier).
@@ -151,7 +157,49 @@ export class MatchingService {
     if (query.filter === 'AUTO') rows = rows.filter((r) => r.level === 'AUTO');
     if (query.filter === 'A_CONFIRMER') rows = rows.filter((r) => r.status === 'A_CONFIRMER');
     if (query.filter === 'NON_APPARIES') rows = rows.filter((r) => !r.refB);
-    return paginateArray(rows, query.page, query.pageSize);
+    const page = paginateArray(rows, query.page, query.pageSize);
+    return new PaginatedResult(await this.withBareme(page.items), page.total, page.page);
+  }
+
+  /** Détail d'un appariement (écran 2), avec les deux saisies Art. 14 côte à côte. */
+  async getItem(id: string, user?: AuthenticatedUser): Promise<MatchQueueItemDto> {
+    const row = (await this.findAllDtos()).find((r) => r.id === id);
+    if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
+    if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
+    return (await this.withBareme([row]))[0];
+  }
+
+  /** Taux selon barème calculé à la lecture : une version archivée entre-temps n'est plus citée. */
+  private async withBareme(rows: MatchQueueItemDto[]): Promise<MatchQueueItemDto[]> {
+    if (!rows.some((r) => r.responsabiliteA?.baremeCode || r.responsabiliteB?.baremeCode)) return rows;
+    const cases = await this.adherents.publishedBaremeCases();
+    return rows.map((r) => ({ ...r, responsabiliteA: withTauxSelonBareme(r.responsabiliteA, cases), responsabiliteB: withTauxSelonBareme(r.responsabiliteB, cases) }));
+  }
+
+  /**
+   * Rafraîchit la saisie Art. 14 d'une déclaration sur toutes les lignes qui
+   * la portent (côté A ou B), y compris une ligne déjà tranchée : ce n'est
+   * qu'un affichage, la décision humaine n'est pas touchée.
+   */
+  async refreshDeclaration(claim: ClaimMatchInput): Promise<void> {
+    const block = compactResponsabilite(claim.responsabilite);
+    await withDegradedFallback(
+      'MatchingService.refreshDeclaration',
+      async () => {
+        const rows = await this.repo.find({ $or: [{ declAId: claim.id }, { declBId: claim.id }] });
+        for (const r of rows) {
+          if (r.declAId === claim.id) r.responsabiliteA = block;
+          if (r.declBId === claim.id) r.responsabiliteB = block;
+        }
+        await this.repo.getEntityManager().flush();
+      },
+      () => {
+        for (const r of this.memory) {
+          if (r.declAId === claim.id) r.responsabiliteA = block;
+          if (r.declBId === claim.id) r.responsabiliteB = block;
+        }
+      },
+    );
   }
 
   /**
@@ -288,6 +336,7 @@ export class MatchingService {
     item.assureAIdentite = claim.assureIdentite;
     item.canalDeclarationA = claim.canalDeclaration;
     item.policeA = claim.policeA;
+    item.responsabiliteA = compactResponsabilite(claim.responsabilite);
     if (best) {
       item.declBId = best.candidate.id;
       item.refB = best.candidate.numEconstat ?? best.candidate.id;
@@ -302,6 +351,7 @@ export class MatchingService {
       item.assureBIdentite = best.candidate.assureIdentite;
       item.canalDeclarationB = best.candidate.canalDeclaration;
       item.policeB = best.candidate.policeA;
+      item.responsabiliteB = compactResponsabilite(best.candidate.responsabilite);
     } else {
       item.declBId = undefined;
       item.refB = undefined;
@@ -316,6 +366,7 @@ export class MatchingService {
       item.assureBIdentite = undefined;
       item.canalDeclarationB = undefined;
       item.policeB = undefined;
+      item.responsabiliteB = undefined;
     }
     if (!item.status || !isTerminal(item.status)) {
       item.status = item.level === MatchLevel.AUTO ? MatchStatus.AUTO_CONFIRME : MatchStatus.A_CONFIRMER;
@@ -337,6 +388,7 @@ export class MatchingService {
     item.assureAIdentite = claim.assureIdentite;
     item.canalDeclarationA = claim.canalDeclaration;
     item.policeA = claim.policeA;
+    item.responsabiliteA = compactResponsabilite(claim.responsabilite);
     if (best) {
       item.declBId = best.candidate.id;
       item.refB = best.candidate.numEconstat ?? best.candidate.id;
@@ -351,6 +403,7 @@ export class MatchingService {
       item.assureBIdentite = best.candidate.assureIdentite;
       item.canalDeclarationB = best.candidate.canalDeclaration;
       item.policeB = best.candidate.policeA;
+      item.responsabiliteB = compactResponsabilite(best.candidate.responsabilite);
     } else {
       item.declBId = undefined;
       item.refB = undefined;
@@ -365,6 +418,7 @@ export class MatchingService {
       item.assureBIdentite = undefined;
       item.canalDeclarationB = undefined;
       item.policeB = undefined;
+      item.responsabiliteB = undefined;
     }
     if (!item.status || !isTerminal(item.status)) {
       item.status = item.level === 'AUTO' ? 'AUTO_CONFIRME' : 'A_CONFIRMER';

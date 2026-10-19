@@ -120,4 +120,35 @@ export class Claim {
 
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();
+
+  // --- Barème Art. 14 (décision PO §5) : nullables, jamais remplis
+  // rétroactivement. Saisie par import (colonnes 48-53) ou
+  // `PATCH /claims/:id/responsabilite`.
+
+  /** Cases cochées du constat pour le véhicule A (1-17). */
+  @Property({ type: 'number[]', columnType: 'smallint[]', nullable: true })
+  circonstancesA?: number[];
+
+  @Property({ type: 'number[]', columnType: 'smallint[]', nullable: true })
+  circonstancesB?: number[];
+
+  /** Version `VALIDE_UAR` du barème dans laquelle `baremeCode` a été accepté. */
+  @Property({ type: 'uuid', nullable: true })
+  baremeVersionId?: string;
+
+  @Property({ nullable: true, length: 32 })
+  baremeCode?: string;
+
+  @Property({ nullable: true, length: 32 })
+  vehicleCategoryA?: string;
+
+  @Property({ nullable: true, length: 32 })
+  vehicleCategoryB?: string;
+
+  /** Copie de la valeur déclarée (colonnes 32-33, en %) à l'import — jamais une déduction. */
+  @Property({ type: 'float', nullable: true })
+  responsabiliteDeclareeA?: number;
+
+  @Property({ type: 'float', nullable: true })
+  responsabiliteDeclareeB?: number;
 }

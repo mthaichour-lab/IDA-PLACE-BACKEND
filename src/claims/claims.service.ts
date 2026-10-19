@@ -1,7 +1,9 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { AdherentsService } from '../adherents/adherents.service';
+import { normalizeCircumstances, normalizeReferenceCode, resolvePublishedBaremeCase } from '../adherents/bareme-rules';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -10,11 +12,14 @@ import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchingService } from '../matching/matching.service';
 import { ClaimMatchInput } from '../matching/matching.types';
 import { RealtimeGateway } from '../realtime/realtime.module';
+import { RecoursService } from '../recours/recours.service';
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
+import { ClaimArt14Fields, resolveImportedArt14 } from './claim-art14';
+import { CLAIM_IMPORT_COLUMNS_V2 } from './claim-extension-columns';
 import { parseClaimFile } from './claim-parser';
 import { Claim } from './entities/claim.entity';
-import { ClaimImportReportDto, ClaimImportRowResultDto } from './dto/claim-import.dto';
-import { ClaimViewDto, ListClaimsQueryDto } from './dto/claim.dto';
+import { ClaimImportReportDto, ClaimImportRowResultDto, ClaimImportWarningDto } from './dto/claim-import.dto';
+import { ClaimViewDto, ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from './dto/claim.dto';
 
 /** Repli mémoire — mode dégradé. Persistant pour la durée du process (voir README "Mode dégradé"). */
 const MEMORY_CLAIMS: ClaimViewDto[] = [];
@@ -46,7 +51,20 @@ function toClaimView(c: Claim): ClaimViewDto {
     // Additif (2026-10-18) — lu depuis `raw` (colonne 44, jamais promue en
     // colonne typée : voir `ClaimViewDto.assureIdentite`, aucune migration).
     assureIdentite: c.raw.assureAIdentite as string | undefined,
+    circonstancesA: c.circonstancesA ?? undefined,
+    circonstancesB: c.circonstancesB ?? undefined,
+    baremeVersionId: c.baremeVersionId ?? undefined,
+    baremeCode: c.baremeCode ?? undefined,
+    vehicleCategoryA: c.vehicleCategoryA ?? undefined,
+    vehicleCategoryB: c.vehicleCategoryB ?? undefined,
+    responsabiliteDeclareeA: c.responsabiliteDeclareeA ?? undefined,
+    responsabiliteDeclareeB: c.responsabiliteDeclareeB ?? undefined,
   };
+}
+
+/** `null` (effacement) devient une absence de valeur, comme pour un dossier jamais renseigné. */
+function art14View(f: ClaimArt14Fields): Partial<ClaimViewDto> {
+  return Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v ?? undefined])) as Partial<ClaimViewDto>;
 }
 
 function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
@@ -69,6 +87,16 @@ function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
     // uniquement, voir ClaimMatchInput.
     assureIdentite: c.assureIdentite,
     canalDeclaration: c.canalDeclaration,
+    responsabilite: {
+      circonstancesA: c.circonstancesA,
+      circonstancesB: c.circonstancesB,
+      baremeVersionId: c.baremeVersionId,
+      baremeCode: c.baremeCode,
+      vehicleCategoryA: c.vehicleCategoryA,
+      vehicleCategoryB: c.vehicleCategoryB,
+      responsabiliteDeclareeA: c.responsabiliteDeclareeA,
+      responsabiliteDeclareeB: c.responsabiliteDeclareeB,
+    },
   };
 }
 
@@ -90,6 +118,8 @@ export class ClaimsService {
     private readonly eligibility: EligibilityService,
     private readonly matching: MatchingService,
     private readonly realtime: RealtimeGateway,
+    private readonly recours: RecoursService,
+    private readonly adherents: AdherentsService,
   ) {}
 
   private async findAll(): Promise<ClaimViewDto[]> {
@@ -151,11 +181,18 @@ export class ClaimsService {
     return CLAIM_IMPORT_COLUMNS;
   }
 
+  /** Modèle v2 : les 47 colonnes du v1 puis les colonnes 48-53 du barème Art. 14. */
+  columnsV2() {
+    return CLAIM_IMPORT_COLUMNS_V2;
+  }
+
   private async persistClaim(
     values: Record<string, unknown>,
     verdict: 'ELIGIBLE_IDA' | 'HORS_IDA',
     reasons: string[],
     fileName: string,
+    art14: ClaimArt14Fields,
+    raw: Record<string, unknown>,
   ): Promise<ClaimViewDto> {
     // Pipeline des dossiers (B.3) : un dossier jugé HORS_IDA n'entre jamais
     // en file d'appariement ; un dossier ELIGIBLE_IDA passe en "A_APPARIER"
@@ -191,10 +228,11 @@ export class ClaimsService {
           constatAmiableSigneDeuxParties: values.constatAmiableSigneDeuxParties as boolean | undefined,
           dateDemandeRecours: values.dateDemandeRecours as string | undefined,
           canalDeclaration: values.canalDeclaration as string | undefined,
+          ...art14,
           state,
           eligibilityVerdict: verdict,
           eligibilityReasons: reasons,
-          raw: values,
+          raw,
           sourceFile: fileName,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
@@ -228,6 +266,7 @@ export class ClaimsService {
           // Additif (2026-10-18) — même donnée que `toClaimView` (colonne 44),
           // ici lue directement sur `values` (pas de `raw` dans ce repli mémoire).
           assureIdentite: values.assureAIdentite as string | undefined,
+          ...art14View(art14),
         };
         MEMORY_CLAIMS.push(view);
         return view;
@@ -245,6 +284,11 @@ export class ClaimsService {
     const parsedRows = await parseClaimFile(buffer, fileName);
     const rows: ClaimImportRowResultDto[] = [];
     const created: ClaimViewDto[] = [];
+    const warnings: ClaimImportWarningDto[] = [];
+    const needsReferential = parsedRows.some((r) => r.extension.baremeCode || r.extension.vehicleCategoryA || r.extension.vehicleCategoryB);
+    const [publishedCases, publishedCategories] = needsReferential
+      ? await Promise.all([this.adherents.publishedBaremeCases(), this.adherents.publishedVehicleCategories()])
+      : [[], []];
 
     for (const row of parsedRows) {
       const v = row.values;
@@ -274,7 +318,10 @@ export class ClaimsService {
         ? [...row.errors.map((e) => `Erreur de format : ${e}`), ...eligibility.reasons]
         : eligibility.reasons;
 
-      const view = await this.persistClaim(v, verdict, reasons, fileName);
+      const art14 = resolveImportedArt14(v, row.extension, publishedCases, publishedCategories);
+      warnings.push(...[...row.warnings, ...art14.warnings].map((w) => ({ rowNumber: row.rowNumber, ...w })));
+      // `raw` garde la ligne source entière, y compris une valeur d'extension ignorée.
+      const view = await this.persistClaim(v, verdict, reasons, fileName, art14.fields, { ...v, ...row.extension });
       created.push(view);
       rows.push({ rowNumber: row.rowNumber, verdict, reasons, data: v });
     }
@@ -297,6 +344,7 @@ export class ClaimsService {
       eligibleCount,
       ineligibleCount: rows.length - eligibleCount,
       rows,
+      warnings,
     };
 
     // B.12 — événement temps réel après tout import réussi.
@@ -309,5 +357,88 @@ export class ClaimsService {
     });
 
     return report;
+  }
+
+  /**
+   * Saisie Art. 14 (décision PO §5). CORRESPONDANT_IDA : dossier de SA
+   * compagnie et aucun recours ouvert. Ensuite, seuls les rôles `matchDecide`.
+   * Un code ou une catégorie hors référentiel `VALIDE_UAR` est refusé (400).
+   */
+  async updateResponsabilite(id: string, dto: UpdateClaimResponsabiliteDto, user: AuthenticatedUser): Promise<ClaimViewDto> {
+    const current = await this.get(id, user);
+    const tenant = resolveTenantFilter(user);
+    if (tenant) {
+      if (!user.privileges.includes('insert')) {
+        throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Privilège requis manquant (insert).' });
+      }
+      if (current.company !== tenant) {
+        throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Seule la compagnie déclarante renseigne le barème Art. 14 de ce dossier.' });
+      }
+      // Contrôle d'intégrité, pas une lecture : il doit voir tous les recours du dossier, y compris hors périmètre de l'appelant.
+      if ((await this.recours.listAll()).some((r) => r.claimId === id)) {
+        throw new ForbiddenException({ code: 'RECOURS_OUVERT', message: 'Un recours est ouvert sur ce dossier : seul l’opérateur de la place peut encore modifier le barème Art. 14.' });
+      }
+    } else if (!user.privileges.includes('matchDecide')) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Privilège requis manquant (matchDecide).' });
+    }
+
+    const patch = await this.art14Patch(dto);
+    const updated = await withDegradedFallback(
+      'ClaimsService.updateResponsabilite',
+      async () => {
+        const c = await this.repo.findOneOrFail({ id });
+        this.repo.assign(c, patch as never);
+        await this.repo.getEntityManager().flush();
+        return toClaimView(c);
+      },
+      () => {
+        const c = MEMORY_CLAIMS.find((m) => m.id === id);
+        if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Dossier introuvable (mode dégradé).' });
+        Object.assign(c, art14View(patch));
+        return c;
+      },
+    );
+    await this.matching.refreshDeclaration(toMatchInput(updated));
+    return updated;
+  }
+
+  private async art14Patch(dto: UpdateClaimResponsabiliteDto): Promise<ClaimArt14Fields> {
+    const patch: ClaimArt14Fields = {};
+    for (const key of ['circonstancesA', 'circonstancesB'] as const) {
+      const value = dto[key];
+      if (value !== undefined) patch[key] = value === null ? null : normalizeCircumstances(value);
+    }
+    if (dto.baremeCode === null) {
+      patch.baremeCode = null;
+      patch.baremeVersionId = null;
+    } else if (dto.baremeCode !== undefined) {
+      const found = resolvePublishedBaremeCase(await this.adherents.publishedBaremeCases(), dto.baremeCode, dto.baremeVersionId);
+      if (!found) {
+        const scope = dto.baremeVersionId ? ` dans la version « ${dto.baremeVersionId} »` : '';
+        throw new BadRequestException({ code: 'BAREME_NON_PUBLIE', message: `Barème non publié : code « ${dto.baremeCode} » absent de toute version VALIDE_UAR${scope}.` });
+      }
+      patch.baremeCode = found.code;
+      patch.baremeVersionId = found.versionId;
+    } else if (dto.baremeVersionId !== undefined) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'baremeVersionId ne se renseigne qu’avec baremeCode.' });
+    }
+    const categoryKeys = (['vehicleCategoryA', 'vehicleCategoryB'] as const).filter((k) => dto[k] !== undefined);
+    const published = categoryKeys.some((k) => dto[k] !== null) ? new Set((await this.adherents.publishedVehicleCategories()).map((c) => c.code)) : new Set<string>();
+    for (const key of categoryKeys) {
+      const raw = dto[key];
+      if (raw === null || raw === undefined) {
+        patch[key] = null;
+        continue;
+      }
+      const code = normalizeReferenceCode(raw);
+      if (!published.has(code)) {
+        throw new BadRequestException({ code: 'BAREME_NON_PUBLIE', message: `Barème non publié : catégorie de véhicule « ${raw} » non validée UAR.` });
+      }
+      patch[key] = code;
+    }
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Aucun champ du barème Art. 14 à modifier.' });
+    }
+    return patch;
   }
 }

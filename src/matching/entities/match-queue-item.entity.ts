@@ -1,6 +1,7 @@
 import { Entity, Enum, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
 import { MatchCriteriaResult } from '../matching.scoring';
+import { DeclarationResponsabilite } from '../matching.types';
 
 export enum MatchLevel {
   AUTO = 'AUTO',
@@ -125,4 +126,11 @@ export class MatchQueueItem {
 
   @Property({ nullable: true })
   policeB?: string;
+
+  /** Saisie Art. 14 de chaque déclaration (décision PO §5), rafraîchie à chaque `PATCH /claims/:id/responsabilite`. */
+  @Property({ type: 'json', nullable: true })
+  responsabiliteA?: DeclarationResponsabilite;
+
+  @Property({ type: 'json', nullable: true })
+  responsabiliteB?: DeclarationResponsabilite;
 }

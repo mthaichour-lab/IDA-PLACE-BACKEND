@@ -1,5 +1,7 @@
 import * as ExcelJS from 'exceljs';
+import { isValidCircumstance } from '../adherents/bareme-rules';
 import { CLAIM_IMPORT_COLUMNS, ClaimColumnDef } from './claim-47-columns';
+import { CLAIM_IMPORT_EXTENSION_COLUMNS, ClaimExtensionColumnDef } from './claim-extension-columns';
 
 /**
  * Parsing du fichier d'import (47 colonnes, B.4) — Excel (.xlsx/.xls) ou
@@ -26,6 +28,26 @@ export interface ParsedClaimRow {
   values: Record<string, unknown>;
   /** Erreurs de format/type rencontrées sur cette ligne (vide si aucune). */
   errors: string[];
+  /** Colonnes d'extension 48-53 renseignées (vide pour un fichier à 47 colonnes). */
+  extension: ClaimExtensionValues;
+  /** Valeurs d'extension ignorées : avertissement, jamais un motif d'inéligibilité. */
+  warnings: ClaimImportWarning[];
+}
+
+export interface ClaimExtensionValues {
+  circonstancesA?: number[];
+  circonstancesB?: number[];
+  baremeVersion?: string;
+  baremeCode?: string;
+  vehicleCategoryA?: string;
+  vehicleCategoryB?: string;
+}
+
+export interface ClaimImportWarning {
+  column: number;
+  columnKey: string;
+  code: 'CIRCONSTANCE_INVALIDE' | 'BAREME_NON_PUBLIE';
+  message: string;
 }
 
 export type ParsedFileFormat = 'xlsx' | 'csv';
@@ -178,6 +200,35 @@ export function mapRow(cells: string[]): { values: Record<string, unknown>; erro
   return { values, errors };
 }
 
+function parseCircumstances(raw: string, col: ClaimExtensionColumnDef): { value?: number[]; warning?: ClaimImportWarning } {
+  const tokens = raw.split(/[;,|\s]+/).filter((t) => t.length > 0);
+  const numbers = tokens.map((t) => (/^\d+$/.test(t) ? Number(t) : NaN));
+  if (numbers.some((n) => !isValidCircumstance(n))) {
+    return {
+      warning: { column: col.index, columnKey: col.key, code: 'CIRCONSTANCE_INVALIDE', message: `${col.label} : cases 1 à 17 attendues (reçu "${raw}") — valeur ignorée.` },
+    };
+  }
+  return { value: [...new Set(numbers)].sort((a, b) => a - b) };
+}
+
+/** Colonnes 48-53 : toujours facultatives, une valeur illisible est ignorée avec un avertissement. */
+export function mapExtensionRow(cells: string[]): { extension: ClaimExtensionValues; warnings: ClaimImportWarning[] } {
+  const extension: Record<string, unknown> = {};
+  const warnings: ClaimImportWarning[] = [];
+  for (const col of CLAIM_IMPORT_EXTENSION_COLUMNS) {
+    const raw = String(cells[col.index - 1] ?? '').trim();
+    if (raw === '') continue;
+    if (col.type === 'circonstances') {
+      const { value, warning } = parseCircumstances(raw, col);
+      if (warning) warnings.push(warning);
+      else extension[col.key] = value;
+    } else {
+      extension[col.key] = raw;
+    }
+  }
+  return { extension: extension as ClaimExtensionValues, warnings };
+}
+
 /**
  * Parse un fichier d'import (buffer) et renvoie les lignes typées
  * (en-tête ignoré). Format déduit de l'extension du nom de fichier.
@@ -189,6 +240,7 @@ export async function parseClaimFile(buffer: Buffer, fileName: string): Promise<
 
   return dataRows.map((cells, i) => {
     const { values, errors } = mapRow(cells);
-    return { rowNumber: i + 1, values, errors };
+    const { extension, warnings } = mapExtensionRow(cells);
+    return { rowNumber: i + 1, values, errors, extension, warnings };
   });
 }

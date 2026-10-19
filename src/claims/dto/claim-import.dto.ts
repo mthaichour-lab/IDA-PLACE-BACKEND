@@ -9,6 +9,15 @@ export class ClaimImportRowResultDto {
   data!: Record<string, unknown>;
 }
 
+/** Valeur d'une colonne d'extension 48-53 ignorée à l'import (décision PO §5). */
+export class ClaimImportWarningDto {
+  @ApiProperty() rowNumber!: number;
+  @ApiProperty({ description: 'N° de colonne dans le fichier (48 à 53)' }) column!: number;
+  @ApiProperty() columnKey!: string;
+  @ApiProperty({ enum: ['BAREME_NON_PUBLIE', 'CIRCONSTANCE_INVALIDE'] }) code!: 'BAREME_NON_PUBLIE' | 'CIRCONSTANCE_INVALIDE';
+  @ApiProperty() message!: string;
+}
+
 /** Réponse de `POST /claims/import` — forme STABLE (B.4, B.11). */
 export class ClaimImportReportDto {
   @ApiProperty() fileName!: string;
@@ -17,6 +26,8 @@ export class ClaimImportReportDto {
   @ApiProperty() eligibleCount!: number;
   @ApiProperty() ineligibleCount!: number;
   @ApiProperty({ type: [ClaimImportRowResultDto] }) rows!: ClaimImportRowResultDto[];
+  /** Additif (décision PO §5) : avertissements des colonnes 48-53, vide pour un fichier à 47 colonnes. */
+  @ApiProperty({ type: [ClaimImportWarningDto] }) warnings!: ClaimImportWarningDto[];
 }
 
 export class ClaimColumnDefDto {

@@ -2,12 +2,16 @@ import { getRepositoryToken } from '@mikro-orm/nestjs';
 import { ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { AdherentsService } from '../adherents/adherents.service';
+import { BaremeReferentialService } from '../adherents/bareme-referential.service';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchQueueItem } from '../matching/entities/match-queue-item.entity';
 import { MatchingService } from '../matching/matching.service';
 import { RealtimeGateway } from '../realtime/realtime.module';
+import { RecoursService } from '../recours/recours.service';
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
+import { CLAIM_IMPORT_EXTENSION_COLUMNS } from './claim-extension-columns';
 import { ClaimsService } from './claims.service';
 import { Claim } from './entities/claim.entity';
 
@@ -24,6 +28,20 @@ function throwingRepo() {
       flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     })),
   };
+}
+
+/** Référentiel barème en repli mémoire : toute opération base échoue. */
+function failingRepo() {
+  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  return {
+    findAll: fail,
+    find: fail,
+    findOne: fail,
+    findOneOrFail: fail,
+    create: jest.fn((d: unknown) => d),
+    assign: jest.fn(),
+    getEntityManager: jest.fn(() => ({ persist: jest.fn(), persistAndFlush: fail, flush: fail, removeAndFlush: fail })),
+  } as never;
 }
 
 function fakeConfigService() {
@@ -59,9 +77,13 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
   let service: ClaimsService;
   let matchingService: MatchingService;
   let emitEvent: jest.Mock;
+  let bareme: BaremeReferentialService;
+  let recoursRows: Array<{ claimId: string }>;
 
   beforeEach(async () => {
     emitEvent = jest.fn();
+    bareme = new BaremeReferentialService(failingRepo(), failingRepo(), failingRepo());
+    recoursRows = [];
     const moduleRef = await Test.createTestingModule({
       providers: [
         ClaimsService,
@@ -71,6 +93,11 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
         { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
         { provide: ConfigService, useFactory: fakeConfigService },
         { provide: RealtimeGateway, useValue: { emitEvent } },
+        { provide: RecoursService, useValue: { listAll: jest.fn(async () => recoursRows) } },
+        {
+          provide: AdherentsService,
+          useValue: { publishedBaremeCases: () => bareme.publishedCases(), publishedVehicleCategories: () => bareme.publishedCategories() },
+        },
       ],
     }).compile();
 
@@ -198,6 +225,117 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
 
       await expect(service.get(claim.id, correspondant('ZZCC'))).rejects.toThrow(ForbiddenException);
       await expect(service.get(claim.id, correspondant('XXAA'))).resolves.toBeDefined();
+    });
+  });
+
+  describe('barème Art. 14 (décision PO §5)', () => {
+    const operateur: AuthenticatedUser = { id: 'op-1', name: 'Opérateur', email: 'op@test.dz', role: 'OPERATEUR_PLACE', privileges: ['params', 'matchDecide'] };
+    const adminUar: AuthenticatedUser = { id: 'uar-1', name: 'Admin UAR', email: 'uar@test.dz', role: 'ADMIN_UAR', privileges: ['validateRef', 'matchDecide'] };
+    function correspondant(companyId: string): AuthenticatedUser {
+      return { id: `c-${companyId}`, name: 'Correspondant', email: 'c@test.dz', role: 'CORRESPONDANT_IDA', companyId, privileges: ['insert', 'matchDecide', 'import'] };
+    }
+
+    /** Ligne au modèle v2 : 47 colonnes puis les colonnes 48-53. */
+    function buildV2Row(overrides: Record<string, string>, extension: Record<string, string>): string {
+      return [buildCsvRow(overrides), ...CLAIM_IMPORT_EXTENSION_COLUMNS.map((c) => extension[c.key] ?? '')].join(',');
+    }
+    const headerV2 = [header, ...CLAIM_IMPORT_EXTENSION_COLUMNS.map((c) => c.label)].join(',');
+
+    async function publish(): Promise<string> {
+      const version = await bareme.createVersion({ label: 'Barème test' }, operateur);
+      await bareme.addCase(version.id, { code: 'B01', label: 'Cas 1', partA: 100, partB: 0 }, operateur);
+      await bareme.addCase(version.id, { code: 'B02', label: 'Cas 2', partA: 50, partB: 50 }, operateur);
+      await bareme.validateVersion(version.id, adminUar);
+      await bareme.createCategory({ code: 'VL', label: 'Véhicule léger' }, operateur);
+      await bareme.validateCategory('VL', adminUar);
+      return version.id;
+    }
+
+    async function importOne(numEconstat: string, company = 'CAAT', counterparty = 'SAA', extension: Record<string, string> = {}) {
+      const row = buildV2Row({ ...BASE_ROW, numEconstat, compagnieA: company, compagnieB: counterparty, responsabiliteDeclareeA: '100', responsabiliteDeclareeB: '0' }, extension);
+      const report = await service.importFile('v2.csv', Buffer.from(`${headerV2}\n${row}\n`, 'utf-8'));
+      const claim = (await service.list({ page: 1, pageSize: 1000 })).items.find((c) => c.numEconstat === numEconstat)!;
+      return { report, claim };
+    }
+
+    it('un fichier à 47 colonnes reste valide : aucun avertissement, aucun champ Art. 14 sauf la responsabilité déclarée (colonnes 32-33)', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'ECT-47', compagnieA: 'CAAT', compagnieB: 'SAA', responsabiliteDeclareeA: '25', responsabiliteDeclareeB: '75' });
+      const report = await service.importFile('v1.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      expect(report.rows[0].verdict).toBe('ELIGIBLE_IDA');
+      expect(report.warnings).toEqual([]);
+      const claim = (await service.list({ page: 1, pageSize: 1000 })).items.find((c) => c.numEconstat === 'ECT-47')!;
+      expect(claim).toMatchObject({ responsabiliteDeclareeA: 25, responsabiliteDeclareeB: 75 });
+      for (const key of ['circonstancesA', 'circonstancesB', 'baremeVersionId', 'baremeCode', 'vehicleCategoryA', 'vehicleCategoryB'] as const) {
+        expect(claim[key]).toBeUndefined();
+      }
+    });
+
+    it('import : un code ou une catégorie non publiés sont ignorés avec un avertissement « barème non publié » (ligne et colonne), les circonstances sont gardées', async () => {
+      const { report, claim } = await importOne('ECT-NP', 'CAAT', 'SAA', { circonstancesA: '8;1;8', baremeCode: 'B01', vehicleCategoryA: 'VL' });
+      expect(report.rows[0].verdict).toBe('ELIGIBLE_IDA');
+      expect(report.warnings).toEqual([
+        expect.objectContaining({ rowNumber: 1, column: 51, columnKey: 'baremeCode', code: 'BAREME_NON_PUBLIE', message: expect.stringContaining('Barème non publié') }),
+        expect.objectContaining({ rowNumber: 1, column: 52, columnKey: 'vehicleCategoryA', code: 'BAREME_NON_PUBLIE' }),
+      ]);
+      expect(claim.circonstancesA).toEqual([1, 8]);
+      expect(claim.baremeCode).toBeUndefined();
+      expect(claim.vehicleCategoryA).toBeUndefined();
+    });
+
+    it('import : un code et une catégorie publiés sont enregistrés avec la version validée', async () => {
+      const versionId = await publish();
+      const { report, claim } = await importOne('ECT-PUB', 'CAAT', 'SAA', { baremeCode: 'b01', vehicleCategoryA: 'vl', vehicleCategoryB: 'PL' });
+      expect(claim).toMatchObject({ baremeCode: 'B01', baremeVersionId: versionId, vehicleCategoryA: 'VL' });
+      expect(claim.vehicleCategoryB).toBeUndefined();
+      expect(report.warnings).toEqual([expect.objectContaining({ column: 53, code: 'BAREME_NON_PUBLIE' })]);
+    });
+
+    it('PATCH : code non publié refusé (400), code publié accepté avec sa version', async () => {
+      const { claim } = await importOne('ECT-PATCH-1');
+      await expect(service.updateResponsabilite(claim.id, { baremeCode: 'B01' }, correspondant('CAAT'))).rejects.toMatchObject({ status: 400, response: { code: 'BAREME_NON_PUBLIE' } });
+      const versionId = await publish();
+      const updated = await service.updateResponsabilite(claim.id, { baremeCode: 'B02', circonstancesA: [17, 3], vehicleCategoryB: 'VL' }, correspondant('CAAT'));
+      expect(updated).toMatchObject({ baremeCode: 'B02', baremeVersionId: versionId, circonstancesA: [3, 17], vehicleCategoryB: 'VL' });
+      await expect(service.updateResponsabilite(claim.id, { vehicleCategoryA: 'PL' }, correspondant('CAAT'))).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('PATCH cross-tenant : 403 hors périmètre, et 403 pour la compagnie adverse qui voit le dossier sans l’avoir déclaré', async () => {
+      const { claim } = await importOne('ECT-PATCH-2', 'CAAT', 'SAA');
+      await expect(service.updateResponsabilite(claim.id, { circonstancesA: [1] }, correspondant('ZZCC'))).rejects.toThrow(ForbiddenException);
+      await expect(service.updateResponsabilite(claim.id, { circonstancesA: [1] }, correspondant('SAA'))).rejects.toThrow(ForbiddenException);
+    });
+
+    it('PATCH refusé au CORRESPONDANT_IDA une fois un recours ouvert ; un rôle matchDecide de la place peut encore modifier', async () => {
+      const { claim } = await importOne('ECT-PATCH-3');
+      recoursRows.push({ claimId: claim.id });
+      await expect(service.updateResponsabilite(claim.id, { circonstancesA: [2] }, correspondant('CAAT'))).rejects.toMatchObject({ status: 403, response: { code: 'RECOURS_OUVERT' } });
+      await expect(service.updateResponsabilite(claim.id, { circonstancesA: [2] }, operateur)).resolves.toMatchObject({ circonstancesA: [2] });
+      const sansPrivilege: AuthenticatedUser = { ...operateur, privileges: ['params'] };
+      await expect(service.updateResponsabilite(claim.id, { circonstancesA: [4] }, sansPrivilege)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('confrontation : divergence et taux selon barème rafraîchis après le PATCH, sans déduction depuis les circonstances', async () => {
+      const shared = { ...BASE_ROW, numEconstat: 'ECT-DIV', immatriculationA: '16-1-16', immatriculationB: '31-2-31' };
+      const rowA = buildV2Row({ ...shared, compagnieA: 'CAAT', compagnieB: 'SAA' }, { circonstancesA: '8' });
+      const rowB = buildV2Row({ ...shared, compagnieA: 'SAA', compagnieB: 'CAAT', immatriculationA: '31-2-31', immatriculationB: '16-1-16' }, {});
+      await service.importFile('pair.csv', Buffer.from(`${headerV2}\n${rowA}\n${rowB}\n`, 'utf-8'));
+      const claims = (await service.list({ page: 1, pageSize: 1000 })).items.filter((c) => c.numEconstat === 'ECT-DIV');
+      const a = claims.find((c) => c.company === 'CAAT')!;
+      const b = claims.find((c) => c.company === 'SAA')!;
+      const rowOf = async () => (await matchingService.queue({ filter: 'TOUS', page: 1, pageSize: 1000 })).items.find((i) => i.refA === 'ECT-DIV' && i.companyA === 'CAAT')!;
+
+      const before = await rowOf();
+      expect(before.responsabiliteA).toMatchObject({ circonstancesA: [8] });
+      expect(before.responsabiliteA?.baremeCode).toBeUndefined();
+      expect(before.divergence).toBe(false);
+
+      await publish();
+      await service.updateResponsabilite(a.id, { baremeCode: 'B01' }, correspondant('CAAT'));
+      await service.updateResponsabilite(b.id, { baremeCode: 'B02' }, correspondant('SAA'));
+      const after = await rowOf();
+      expect(after.divergence).toBe(true);
+      expect(after.responsabiliteA).toMatchObject({ baremeCode: 'B01', tauxSelonBareme: { partA: 100, partB: 0 } });
+      expect(after.responsabiliteB).toMatchObject({ baremeCode: 'B02', tauxSelonBareme: { partA: 50, partB: 50 } });
     });
   });
 });

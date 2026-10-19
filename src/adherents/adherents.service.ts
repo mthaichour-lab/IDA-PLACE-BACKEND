@@ -20,6 +20,8 @@ import { WilayaSeed } from './wilayas.data';
 import { CalendarHolidayView, ConventionReferentialService, OppositionMotifView } from './convention-referential.service';
 import { IrsamReference, PlaceMetricsReferentialService, PopulationReference } from './place-metrics-referential.service';
 import { IrsamIndicator } from './place-referential.data';
+import { BaremeReferentialService } from './bareme-referential.service';
+import { PublishedBaremeCase, PublishedVehicleCategory } from './bareme-rules';
 
 function maskKey(hash?: string): string {
   if (!hash) return 'absente';
@@ -74,6 +76,7 @@ export class AdherentsService {
     private readonly configService: ConfigService,
     private readonly convention: ConventionReferentialService,
     private readonly metrics: PlaceMetricsReferentialService,
+    private readonly bareme: BaremeReferentialService,
   ) {}
 
   // ---- Paramètres de la convention / Calendrier ouvré / Barème & motifs
@@ -130,6 +133,16 @@ export class AdherentsService {
   /** Référence IRSAM : jamais de valeur tant qu'aucune référence n'est `VALIDE_UAR` (décision PO §4). */
   irsamReference(indicator: IrsamIndicator): Promise<IrsamReference> {
     return this.metrics.irsamReference(indicator);
+  }
+
+  /** Cas des versions du barème Art. 14 au statut `VALIDE_UAR` (décision PO §5). */
+  publishedBaremeCases(): Promise<PublishedBaremeCase[]> {
+    return this.bareme.publishedCases();
+  }
+
+  /** Catégories de véhicule au statut `VALIDE_UAR` (décision PO §5). */
+  publishedVehicleCategories(): Promise<PublishedVehicleCategory[]> {
+    return this.bareme.publishedCategories();
   }
 
   // ---- Companies -----------------------------------------------------

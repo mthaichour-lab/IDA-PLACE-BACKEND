@@ -24,6 +24,26 @@ export class MatchQueueQueryDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
 }
 
+export class TauxSelonBaremeDto {
+  @ApiProperty() baremeVersionId!: string;
+  @ApiProperty() versionLabel!: string;
+  @ApiProperty() partA!: number;
+  @ApiProperty() partB!: number;
+}
+
+/** Saisie Art. 14 d'une déclaration (A = son assuré, B = la partie adverse). */
+export class DeclarationResponsabiliteDto {
+  @ApiPropertyOptional({ type: [Number] }) circonstancesA?: number[];
+  @ApiPropertyOptional({ type: [Number] }) circonstancesB?: number[];
+  @ApiPropertyOptional() baremeVersionId?: string;
+  @ApiPropertyOptional() baremeCode?: string;
+  @ApiPropertyOptional() vehicleCategoryA?: string;
+  @ApiPropertyOptional() vehicleCategoryB?: string;
+  @ApiPropertyOptional({ description: 'Taux déclaré A (%)' }) responsabiliteDeclareeA?: number;
+  @ApiPropertyOptional({ description: 'Taux déclaré B (%)' }) responsabiliteDeclareeB?: number;
+  @ApiPropertyOptional({ type: TauxSelonBaremeDto, description: 'Présent seulement si une version VALIDE_UAR couvre le code' }) tauxSelonBareme?: TauxSelonBaremeDto;
+}
+
 /** Ligne de la file de confrontation — écran 2. */
 export class MatchQueueItemDto {
   @ApiProperty() id!: string;
@@ -60,6 +80,11 @@ export class MatchQueueItemDto {
   @ApiPropertyOptional() assureBIdentite?: string;
   @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclarationA?: string;
   @ApiPropertyOptional({ enum: ['ERP', 'ECONSTAT', 'IMPORT', 'API'] }) canalDeclarationB?: string;
+
+  // --- Barème Art. 14 (décision PO §5), additif : une saisie par déclaration.
+  @ApiPropertyOptional({ type: DeclarationResponsabiliteDto }) responsabiliteA?: DeclarationResponsabiliteDto;
+  @ApiPropertyOptional({ type: DeclarationResponsabiliteDto }) responsabiliteB?: DeclarationResponsabiliteDto;
+  @ApiProperty({ description: 'Vrai si A et B ont chacune un code de barème et que ces codes diffèrent' }) divergence!: boolean;
 }
 
 export class MatchDecisionDto {
