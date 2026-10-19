@@ -1,6 +1,7 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Module } from '@nestjs/common';
 import { AdherentsModule } from '../adherents/adherents.module';
+import { LedgerModule } from '../ledger/ledger.module';
 import { RecoursModule } from '../recours/recours.module';
 import { SettlementClosure } from './entities/settlement-closure.entity';
 import { SettlementPipelineStep } from './entities/settlement-pipeline-step.entity';
@@ -16,7 +17,7 @@ import { SettlementService } from './settlement.service';
  * jamais l'inverse (pas de cycle, voir ARCHITECTURE.md).
  */
 @Module({
-  imports: [MikroOrmModule.forFeature([SettlementClosure, SettlementPipelineStep]), RecoursModule, AdherentsModule],
+  imports: [MikroOrmModule.forFeature([SettlementClosure, SettlementPipelineStep]), RecoursModule, AdherentsModule, LedgerModule],
   controllers: [SettlementController],
   providers: [SettlementService, SettlementPipelineService],
   exports: [SettlementService],

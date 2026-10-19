@@ -1,10 +1,16 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
-import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { EntityManager, EntityRepository } from '@mikro-orm/postgresql';
+import { BadRequestException, ConflictException, Inject, Injectable, Optional } from '@nestjs/common';
+import { createHash } from 'crypto';
+import { CLOCK, Clock, systemClock } from '../common/clock';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { LedgerService } from '../ledger/ledger.service';
+import { RecoursViewDto } from '../recours/dto/recours.dto';
+import { sumAmounts } from '../recours/money';
+import { assertPlaceUser, isPlaceUser } from '../recours/place-role';
 import { RecoursService } from '../recours/recours.service';
+import { isUniqueViolation, withStrictFallback } from '../recours/strict-persistence';
 import {
   Annexe7Dto,
   CompanyMonthlySynthesisDto,
@@ -17,6 +23,8 @@ import {
 } from './dto/settlement.dto';
 import { SettlementClosure, SettlementScope } from './entities/settlement-closure.entity';
 import {
+  BilateralMatrix,
+  canonicalJson,
   computeBilateralMatrix,
   computeBilateralNetPositions,
   computeDirectionalPairs,
@@ -24,12 +32,38 @@ import {
   computeMultilateralNetPositions,
   isIsoDateInMonth,
   isIsoDateInQuarter,
+  isPeriodElapsed,
+  lastDayOfMonth,
+  lastDayOfQuarter,
   parsePeriodMonth,
   PeriodMonth,
   parsePeriodQuarter,
+  PeriodQuarter,
 } from './settlement.rules';
 
-const RESOLVED_STATES = new Set(['REGLE', 'REJETE', 'FORCLOS']);
+/** Ligne d'un instantané de clôture : le recours tel qu'il a été compensé. */
+interface SnapshotRecours {
+  id: string;
+  from: string;
+  to: string;
+  amount: number;
+  settledAt?: string;
+}
+
+interface QuarterlySnapshot {
+  quarter: string;
+  recours: SnapshotRecours[];
+  matrix: BilateralMatrix;
+}
+
+interface MonthlySnapshot {
+  period: string;
+  company: string;
+  recours: SnapshotRecours[];
+  claimsCount: number;
+  resolvedCount: number;
+  totalAmount: number;
+}
 
 interface ClosureRecord {
   scope: SettlementScope;
@@ -38,55 +72,70 @@ interface ClosureRecord {
   bordereauRef: string;
   closedAt: string;
   closedBy: string;
+  closedById?: string;
+  snapshot?: Record<string, unknown>;
+  snapshotHash?: string;
 }
+
+function closureOf(r: SettlementClosure): ClosureRecord {
+  return {
+    scope: r.scope,
+    period: r.period,
+    companyCode: r.companyCode,
+    bordereauRef: r.bordereauRef,
+    closedAt: r.closedAt.toISOString(),
+    closedBy: r.closedBy,
+    closedById: r.closedById,
+    snapshot: r.snapshot,
+    snapshotHash: r.snapshotHash,
+  };
+}
+
+function snapshotLine(r: RecoursViewDto): SnapshotRecours {
+  return { id: r.id, from: r.from, to: r.to, amount: r.amount, settledAt: r.settledAt };
+}
+
+function hashSnapshot(snapshot: unknown): string {
+  return createHash('sha256').update(canonicalJson(snapshot)).digest('hex');
+}
+
+const ALREADY_CLOSED = (message: string) => new ConflictException({ code: 'ALREADY_CLOSED', message });
 
 /**
  * SettlementModule — B.2/B.3, écrans 5 "Cycle mensuel" et 6 "Compensation
  * trimestrielle". Dépend de `RecoursModule` (lecture seule, interface
- * publique `RecoursService.listAll()` — jamais l'entité `Recours`) pour
- * calculer, à partir des recours réellement enregistrés :
- *  - la synthèse mensuelle par compagnie (écran 5) ;
- *  - la compensation multilatérale trimestrielle (écran 6, à partir des
- *    recours RÉGLÉS uniquement — voir `settlement.rules.ts`).
+ * publique `RecoursService.listAll()` — jamais l'entité `Recours`).
  *
- * ⚠️ CONVENTION DE REGROUPEMENT MENSUEL — CORRIGÉE (verdict Product Owner,
- * voir HANDOFF.md) : `monthly()` regroupait jusqu'ici les recours par mois
- * d'ENVOI (`requestSentAt`), ce qui NE correspondait PAS à la capture de
- * référence du guide illustré (colonnes "Réglé le"/"Inséré le", sous-titre
- * "Saisie des recours réglés au plus tard le 5e jour ouvré de M+1"). Le PO a
- * confirmé qu'il s'agissait d'un vrai bug de convention (pas juste une
- * hypothèse à trancher) : `monthly()` regroupe désormais par mois de
- * RÈGLEMENT (`settledAt`, repli `requestSentAt` si absent — même filet de
- * sécurité que `quarter()`/`settledAndMatrixFor()` ci-dessous), toujours par
- * compagnie DEMANDERESSE (`from`). C'est un changement de VALEUR (quels
- * recours entrent dans le mois), PAS de FORME — `MonthlySettlementDto`/
- * `CompanyMonthlySynthesisDto` ne changent pas (contrat figé intact).
- *
- * ⚠️ RG-06 — CORRIGÉE (même verdict PO) : `monthly()` exclut désormais du
- * calcul par compagnie (`claimsCount`/`resolvedCount`/`totalAmount`) tout
- * recours actuellement à l'état `OPPOSITION` — une opposition en cours sort
- * le dossier du circuit du lot mensuel (RG-06), ce n'était pas appliqué
- * avant (seul le nouvel endpoint `monthlySummary()` l'affichait en KPI
- * d'exclusion, sans que `monthly()` lui-même n'exclue réellement ces
- * dossiers de ses propres totaux).
- *
- * Les deux endpoints ADDITIFS `monthlySummary()`/`annexe7()` (`GET
- * /settlement/monthly/:period/summary` et `.../annexe7`, écran 5 du guide
- * illustré) suivent la MÊME convention de règlement que `monthly()`
- * ci-dessus (plus de divergence depuis la correction PO) ; la compensation
- * trimestrielle (`quarter()`/`matrix()`/`summary()`) utilise elle aussi la
- * date de règlement avec le même repli, de façon indépendante.
+ * Revue sécurité 2026-10-19 :
+ *  - SEC-34 : montants en centimes (voir `settlement.rules.ts`) ; la synthèse
+ *    mensuelle ne retient plus QUE les recours RÉGLÉS (`REGLE`), par mois de
+ *    règlement (`settledAt`) — avant, un recours non réglé y entrait au mois
+ *    de son envoi puis, une fois réglé, au mois de son règlement : compté
+ *    deux fois. `claimsCount`/`resolvedCount` dénombrent donc les recours
+ *    réglés du mois ;
+ *  - SEC-19 : une clôture est unique (index unique en base, 409), refusée
+ *    tant que la période n'est pas échue, et fige un INSTANTANÉ (recours
+ *    retenus, matrice) dont le hash est scellé au journal ; les lectures d'une
+ *    période close renvoient cet instantané, plus un recalcul ; plus aucun
+ *    repli mémoire en production (503) ;
+ *  - SEC-25 : clôture trimestrielle réservée aux rôles place, même avec un privilège obtenu par dérogation ;
+ *  - SEC-26 : auteurs (`closedBy`) jamais renvoyés aux rôles compagnie.
  */
 @Injectable()
 export class SettlementService {
   private readonly memoryClosures: ClosureRecord[] = [];
+  private readonly now: Clock;
 
   constructor(
     @InjectRepository(SettlementClosure) private readonly closureRepo: EntityRepository<SettlementClosure>,
     private readonly recours: RecoursService,
-  ) {}
+    @Optional() private readonly ledger?: LedgerService,
+    @Optional() @Inject(CLOCK) clock?: Clock,
+  ) {
+    this.now = clock ?? systemClock;
+  }
 
-  private parseMonthOrThrow(period: string) {
+  private parseMonthOrThrow(period: string): PeriodMonth {
     try {
       return parsePeriodMonth(period);
     } catch (err) {
@@ -94,7 +143,7 @@ export class SettlementService {
     }
   }
 
-  private parseQuarterOrThrow(q: string) {
+  private parseQuarterOrThrow(q: string): PeriodQuarter {
     try {
       return parsePeriodQuarter(q);
     } catch (err) {
@@ -102,83 +151,87 @@ export class SettlementService {
     }
   }
 
-  private async findClosures(scope: SettlementScope, period: string): Promise<ClosureRecord[]> {
-    return withDegradedFallback(
+  /** SEC-19 : aucune clôture « oubliée » sur panne — 503 en production, repli mémoire en développement seulement. */
+  private async findClosures(scope: SettlementScope, period?: string): Promise<ClosureRecord[]> {
+    return withStrictFallback(
       'SettlementService.findClosures',
-      async () => {
-        const rows = await this.closureRepo.find({ scope, period });
-        return rows.map((r) => ({
-          scope: r.scope,
-          period: r.period,
-          companyCode: r.companyCode,
-          bordereauRef: r.bordereauRef,
-          closedAt: r.closedAt.toISOString(),
-          closedBy: r.closedBy,
-        }));
-      },
-      () => this.memoryClosures.filter((c) => c.scope === scope && c.period === period),
+      async () => (await this.closureRepo.find(period ? { scope, period } : { scope })).map(closureOf),
+      () => this.memoryClosures.filter((c) => c.scope === scope && (!period || c.period === period)),
     );
   }
 
-  private async persistClosure(record: Omit<ClosureRecord, 'closedAt'>): Promise<ClosureRecord> {
-    const closedAt = new Date().toISOString();
-    return withDegradedFallback(
+  private async persistClosure(record: Omit<ClosureRecord, 'closedAt'>, ledgerType: string, actorId: string): Promise<ClosureRecord> {
+    const closedAt = this.now();
+    const summary = JSON.stringify({ scope: record.scope, period: record.period, company: record.companyCode, bordereau: record.bordereauRef, snapshotHash: record.snapshotHash });
+    const conflict = () => ALREADY_CLOSED(`Période ${record.period} déjà clôturée${record.companyCode ? ` pour ${record.companyCode}` : ''}.`);
+    return withStrictFallback(
       'SettlementService.persistClosure',
       async () => {
-        const entity = this.closureRepo.create({
-          scope: record.scope,
-          period: record.period,
-          companyCode: record.companyCode,
-          bordereauRef: record.bordereauRef,
-          closedBy: record.closedBy,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        await this.closureRepo.getEntityManager().persistAndFlush(entity);
-        return { ...record, closedAt: entity.closedAt.toISOString() };
+        try {
+          return await (this.closureRepo.getEntityManager() as EntityManager).fork({ clear: true }).transactional(async (tem) => {
+            const entity = tem.create(SettlementClosure, { ...record, closedAt } as never);
+            await tem.flush();
+            // Clôture et scellement dans la même transaction.
+            if (this.ledger) await this.ledger.append(ledgerType, record.bordereauRef, actorId, summary);
+            return closureOf(entity);
+          });
+        } catch (err) {
+          throw isUniqueViolation(err) ? conflict() : err;
+        }
       },
-      () => {
-        const row: ClosureRecord = { ...record, closedAt };
+      async () => {
+        if (this.memoryClosures.some((c) => c.scope === record.scope && c.period === record.period && (c.companyCode ?? '') === (record.companyCode ?? ''))) throw conflict();
+        const row: ClosureRecord = { ...record, closedAt: closedAt.toISOString() };
         this.memoryClosures.push(row);
+        if (this.ledger) await this.ledger.append(ledgerType, record.bordereauRef, actorId, summary);
         return row;
       },
     );
   }
 
+  private tenantOf(user?: AuthenticatedUser): string | undefined {
+    return user ? resolveTenantFilter(user) : undefined;
+  }
+
+  /** Recours RÉGLÉS dont le règlement tombe dans le mois (SEC-34 : une seule appartenance possible). */
+  private settledInMonth(all: RecoursViewDto[], parsed: PeriodMonth): RecoursViewDto[] {
+    return all.filter((r) => r.state === 'REGLE' && isIsoDateInMonth(r.settledAt ?? r.requestSentAt, parsed));
+  }
+
+  private monthlyLine(company: string, settled: RecoursViewDto[]): Omit<MonthlySnapshot, 'period' | 'company'> {
+    const mine = settled.filter((r) => r.from === company).sort((a, b) => a.id.localeCompare(b.id));
+    return {
+      recours: mine.map(snapshotLine),
+      claimsCount: mine.length,
+      resolvedCount: mine.length,
+      totalAmount: sumAmounts(mine.map((r) => r.amount)),
+    };
+  }
+
   /**
-   * B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que la ligne de SA
-   * compagnie, jamais le bordereau des concurrentes ; les rôles "place"
-   * voient tout. Comblé en revue Product Owner, sprint 3 — absent jusqu'ici.
-   *
-   * Regroupement par mois de RÈGLEMENT (`settledAt`, repli `requestSentAt`)
-   * et exclusion RG-06 des recours en `OPPOSITION` — corrections confirmées
-   * par le Product Owner, voir l'en-tête de cette classe.
+   * B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que la ligne de SA compagnie.
+   * SEC-34 : recours RÉGLÉS uniquement, par mois de règlement. SEC-19 : une
+   * ligne clôturée renvoie les montants figés à la clôture.
    */
   async monthly(period: string, user?: AuthenticatedUser): Promise<MonthlySettlementDto> {
     const parsed = this.parseMonthOrThrow(period);
     const [allRecours, closures] = await Promise.all([this.recours.listAll(), this.findClosures(SettlementScope.MONTHLY, period)]);
-    const inPeriod = allRecours.filter((r) => r.state !== 'OPPOSITION' && isIsoDateInMonth(r.settledAt ?? r.requestSentAt, parsed));
+    const settled = this.settledInMonth(allRecours, parsed);
+    const tenant = this.tenantOf(user);
 
-    const byCompany = new Map<string, { claimsCount: number; resolvedCount: number; totalAmount: number }>();
-    for (const r of inPeriod) {
-      const bucket = byCompany.get(r.from) ?? { claimsCount: 0, resolvedCount: 0, totalAmount: 0 };
-      bucket.claimsCount += 1;
-      bucket.totalAmount += r.amount;
-      if (RESOLVED_STATES.has(r.state)) bucket.resolvedCount += 1;
-      byCompany.set(r.from, bucket);
-    }
-
-    const tenant = user ? resolveTenantFilter(user) : undefined;
-
-    const companies: CompanyMonthlySynthesisDto[] = Array.from(byCompany.entries())
-      .filter(([code]) => !tenant || code === tenant)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([code, b]) => {
+    const codes = new Set<string>([...settled.map((r) => r.from), ...closures.map((c) => c.companyCode).filter((c): c is string => !!c)]);
+    const companies: CompanyMonthlySynthesisDto[] = Array.from(codes)
+      .filter((code) => !tenant || code === tenant)
+      .sort((a, b) => a.localeCompare(b))
+      .map((code) => {
         const closure = closures.find((c) => c.companyCode === code);
+        const frozen = closure?.snapshot as MonthlySnapshot | undefined;
+        const line = frozen ?? this.monthlyLine(code, settled);
         return {
           code,
-          claimsCount: b.claimsCount,
-          resolvedCount: b.resolvedCount,
-          totalAmount: b.totalAmount,
+          claimsCount: line.claimsCount,
+          resolvedCount: line.resolvedCount,
+          totalAmount: line.totalAmount,
           status: closure ? 'CLOTURE' : 'EN_COURS',
           closedAt: closure?.closedAt,
           bordereauRef: closure?.bordereauRef,
@@ -188,151 +241,98 @@ export class SettlementService {
     return { period, companies };
   }
 
-  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `companyCode` venait du corps de la requête sans vérification, donc un `TRESORIER`/`CORRESPONDANT_IDA` (tous deux porteurs du privilège `synth`) pouvait clôturer la synthèse mensuelle d'une AUTRE compagnie. */
+  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess`. SEC-19 : période échue, unicité en base, instantané scellé. */
   async closeMonthly(period: string, companyCode: string, closedBy: string, user: AuthenticatedUser): Promise<CompanyMonthlySynthesisDto> {
     assertCompanyAccess(user, companyCode);
-    this.parseMonthOrThrow(period);
-    const existing = await this.findClosures(SettlementScope.MONTHLY, period);
-    if (existing.some((c) => c.companyCode === companyCode)) {
-      throw new ConflictException({ code: 'ALREADY_CLOSED', message: `Synthèse mensuelle ${period} déjà clôturée pour ${companyCode}.` });
-    }
-    await this.persistClosure({
-      scope: SettlementScope.MONTHLY,
-      period,
-      companyCode,
-      bordereauRef: `BORD-M-${period}-${companyCode}`,
-      closedBy,
-    });
-    const result = await this.monthly(period);
-    const company = result.companies.find((c) => c.code === companyCode);
-    return (
-      company ?? {
-        code: companyCode,
-        claimsCount: 0,
-        resolvedCount: 0,
-        totalAmount: 0,
-        status: 'CLOTURE',
-        bordereauRef: `BORD-M-${period}-${companyCode}`,
-      }
-    );
-  }
-
-  /**
-   * Recours RÉGLÉS du mois `period`, sur leur date de RÈGLEMENT si connue,
-   * sinon leur date d'envoi (repli — même convention que `monthly()`
-   * ci-dessus depuis la correction PO, voir l'en-tête de cette classe) —
-   * factorisé entre `monthlySummary()` et `annexe7()` pour ne calculer
-   * qu'une fois par appel.
-   */
-  private async settledForMonth(period: string): Promise<{ parsed: PeriodMonth; settled: Awaited<ReturnType<RecoursService['listAll']>> }> {
     const parsed = this.parseMonthOrThrow(period);
-    const allRecours = await this.recours.listAll();
-    const settled = allRecours.filter((r) => r.state === 'REGLE' && isIsoDateInMonth(r.settledAt ?? r.requestSentAt, parsed));
-    return { parsed, settled };
+    if (!isPeriodElapsed(lastDayOfMonth(parsed), this.now())) {
+      throw new ConflictException({ code: 'PERIODE_NON_ECHUE', message: `La période ${period} n'est pas échue : elle ne peut pas être clôturée.` });
+    }
+    const existing = await this.findClosures(SettlementScope.MONTHLY, period);
+    if (existing.some((c) => c.companyCode === companyCode)) throw ALREADY_CLOSED(`Synthèse mensuelle ${period} déjà clôturée pour ${companyCode}.`);
+
+    const settled = this.settledInMonth(await this.recours.listAll(), parsed);
+    const snapshot: MonthlySnapshot = { period, company: companyCode, ...this.monthlyLine(companyCode, settled) };
+    const bordereauRef = `BORD-M-${period}-${companyCode}`;
+    const closure = await this.persistClosure(
+      { scope: SettlementScope.MONTHLY, period, companyCode, bordereauRef, closedBy, closedById: user.id, snapshot: snapshot as unknown as Record<string, unknown>, snapshotHash: hashSnapshot(snapshot) },
+      'CLOTURE_MENSUELLE',
+      user.id,
+    );
+    return {
+      code: companyCode,
+      claimsCount: snapshot.claimsCount,
+      resolvedCount: snapshot.resolvedCount,
+      totalAmount: snapshot.totalAmount,
+      status: 'CLOTURE',
+      closedAt: closure.closedAt,
+      bordereauRef,
+    };
   }
 
-  /**
-   * KPI de synthèse du cycle mensuel (écran 5, guide illustré) — endpoint
-   * additif (`GET /settlement/monthly/:period/summary`),
-   * `MonthlySettlementDto` ne change pas de forme (contrat figé).
-   *
-   * B.7 — `settledCount`/`totalAmount` suivent la MÊME convention de
-   * scoping tenant que `monthly()` existant : un `CORRESPONDANT_IDA`/
-   * `TRESORIER` ne voit que les recours dont SA compagnie est la compagnie
-   * demanderesse (`from`), cohérente avec le regroupement de `monthly()`
-   * (voir son en-tête). `excludedOppositionCount`, en revanche, suit le
-   * même raisonnement que `opposedCount` de `summary()` (trimestre) : une
-   * opposition peut être levée par l'une ou l'autre partie (`from` OU
-   * `to`), et exclut le dossier du circuit quelle que soit la période —
-   * donc toutes périodes confondues, place entière filtrée par `from` OU
-   * `to`.
-   */
+  /** Recours RÉGLÉS du mois `period` (date de règlement) — factorisé entre `monthlySummary()` et `annexe7()`. */
+  private async settledForMonth(period: string): Promise<{ parsed: PeriodMonth; settled: RecoursViewDto[] }> {
+    const parsed = this.parseMonthOrThrow(period);
+    return { parsed, settled: this.settledInMonth(await this.recours.listAll(), parsed) };
+  }
+
+  /** KPI de synthèse du cycle mensuel (écran 5) — même périmètre tenant que `monthly()` ; montants en centimes (SEC-34). */
   async monthlySummary(period: string, user?: AuthenticatedUser): Promise<MonthlySummaryDto> {
     const [{ parsed, settled }, allRecours] = await Promise.all([this.settledForMonth(period), this.recours.listAll()]);
-    const tenant = user ? resolveTenantFilter(user) : undefined;
-
+    const tenant = this.tenantOf(user);
     const settledForTenant = tenant ? settled.filter((r) => r.from === tenant) : settled;
-    const totalAmount = settledForTenant.reduce((sum, r) => sum + r.amount, 0);
-
     const opposed = allRecours.filter((r) => r.state === 'OPPOSITION' && (!tenant || r.from === tenant || r.to === tenant));
-
     return {
       period,
       settledCount: settledForTenant.length,
-      totalAmount,
+      totalAmount: sumAmounts(settledForTenant.map((r) => r.amount)),
       excludedOppositionCount: opposed.length,
       insertionDeadline: computeInsertionDeadline(parsed),
     };
   }
 
-  /**
-   * Synthèse Annexe 7 — créanciers/débiteurs du cycle mensuel (écran 5,
-   * guide illustré) : endpoint additif (`GET
-   * /settlement/monthly/:period/annexe7`). Regroupe les recours réglés du
-   * mois par paire orientée (from, to) EXACTE, SANS netting (voir
-   * `computeDirectionalPairs` dans `settlement.rules.ts`) — une ligne
-   * CAAT→SAA et une ligne SAA→CAAT distinctes si les deux existent,
-   * contrairement au netting bilatéral de `/settlement/quarter`. Même
-   * scoping tenant que `monthlySummary()` (filtre par compagnie
-   * demanderesse `from`, cohérent avec `monthly()`).
-   */
+  /** Synthèse Annexe 7 — paires orientées (from, to) sans netting, montants en centimes (SEC-34). */
   async annexe7(period: string, user?: AuthenticatedUser): Promise<Annexe7Dto> {
     const { settled } = await this.settledForMonth(period);
-    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const tenant = this.tenantOf(user);
     const settledForTenant = tenant ? settled.filter((r) => r.from === tenant) : settled;
-
-    const pairs = computeDirectionalPairs(settledForTenant.map((r) => ({ from: r.from, to: r.to, amount: r.amount })));
-    return { period, pairs };
+    return { period, pairs: computeDirectionalPairs(settledForTenant.map((r) => ({ from: r.from, to: r.to, amount: r.amount }))) };
   }
 
   /**
-   * Recours RÉGLÉS de ce trimestre (B.2/B.3 : "à partir des Recours
-   * réglés"), sur leur date de règlement si connue, sinon leur date d'envoi
-   * (hypothèse documentée) + la matrice brute qui en découle — factorisé
-   * entre `quarter()`, `matrix()` et `summary()` pour ne calculer qu'une
-   * fois par appel.
+   * Recours RÉGLÉS du trimestre et matrice brute : depuis l'INSTANTANÉ figé si
+   * le trimestre est clôturé (SEC-19), sinon calculés à partir des recours.
    */
-  private async settledAndMatrixFor(q: string): Promise<{ parsed: ReturnType<typeof parsePeriodQuarter>; settled: Awaited<ReturnType<RecoursService['listAll']>>; matrix: ReturnType<typeof computeBilateralMatrix> }> {
+  private async settledAndMatrixFor(q: string): Promise<{ settled: SnapshotRecours[]; matrix: BilateralMatrix; closure?: ClosureRecord }> {
     const parsed = this.parseQuarterOrThrow(q);
-    const allRecours = await this.recours.listAll();
-    const settled = allRecours.filter((r) => r.state === 'REGLE' && isIsoDateInQuarter(r.settledAt ?? r.requestSentAt, parsed));
-    const matrix = computeBilateralMatrix(settled.map((r) => ({ from: r.from, to: r.to, amount: r.amount })));
-    return { parsed, settled, matrix };
+    const [closure] = await this.findClosures(SettlementScope.QUARTERLY, q);
+    const frozen = closure?.snapshot as QuarterlySnapshot | undefined;
+    if (frozen) return { settled: frozen.recours, matrix: frozen.matrix, closure };
+    const settled = (await this.recours.listAll()).filter((r) => r.state === 'REGLE' && isIsoDateInQuarter(r.settledAt ?? r.requestSentAt, parsed)).map(snapshotLine);
+    return { settled, matrix: computeBilateralMatrix(settled), closure };
   }
 
-  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les positions où sa compagnie est partie, et uniquement son propre net — jamais la matrice complète entre concurrentes. Le net global reste calculé sur l'ensemble des positions avant filtrage (sinon le net de la compagnie serait faux). Comblé en revue Product Owner, sprint 3. */
+  /** B.7 — un rôle compagnie ne voit que les positions où il est partie et son propre net ; SEC-26 : jamais l'auteur de la clôture. */
   async quarter(q: string, user?: AuthenticatedUser): Promise<QuarterlySettlementDto> {
-    const [{ matrix }, closures] = await Promise.all([this.settledAndMatrixFor(q), this.findClosures(SettlementScope.QUARTERLY, q)]);
+    const { matrix, closure } = await this.settledAndMatrixFor(q);
     const allPositions = computeBilateralNetPositions(matrix);
     const allNet = computeMultilateralNetPositions(matrix);
-    const closure = closures[0];
-
-    const tenant = user ? resolveTenantFilter(user) : undefined;
-    const positions = tenant ? allPositions.filter((p) => p.from === tenant || p.to === tenant) : allPositions;
-    const net = tenant ? allNet.filter((n) => n.code === tenant) : allNet;
-
+    const tenant = this.tenantOf(user);
+    const showAuthor = !user || isPlaceUser(user);
     return {
       quarter: q,
       bordereau: closure?.bordereauRef,
-      positions,
-      net,
+      positions: tenant ? allPositions.filter((p) => p.from === tenant || p.to === tenant) : allPositions,
+      net: tenant ? allNet.filter((n) => n.code === tenant) : allNet,
       closedAt: closure?.closedAt,
-      closedBy: closure?.closedBy,
+      closedBy: showAuthor ? closure?.closedBy : undefined,
     };
   }
 
-  /**
-   * Matrice BRUTE créancier×débiteur (avant tout netting) — pour la
-   * visualisation en carte thermique (écran 6, guide illustré). Endpoint
-   * additif (`GET /settlement/quarter/:q/matrix`), `QuarterlySettlementDto`
-   * ne change pas de forme (contrat figé). Même scoping tenant que
-   * `quarter()` : un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les
-   * cellules où sa compagnie est partie.
-   */
+  /** Matrice BRUTE créancier×débiteur (carte thermique, écran 6) — même scoping tenant que `quarter()`. */
   async matrix(q: string, user?: AuthenticatedUser): Promise<QuarterlyMatrixDto> {
     const { matrix } = await this.settledAndMatrixFor(q);
-    const tenant = user ? resolveTenantFilter(user) : undefined;
-
+    const tenant = this.tenantOf(user);
     const cells: { from: string; to: string; amount: number }[] = [];
     const companies = new Set<string>();
     for (const from of Object.keys(matrix)) {
@@ -343,108 +343,64 @@ export class SettlementService {
         companies.add(to);
       }
     }
-
     return { quarter: q, companies: Array.from(companies).sort(), cells };
   }
 
-  /**
-   * KPI de synthèse (écran 6, guide illustré) — endpoint additif
-   * (`GET /settlement/quarter/:q/summary`), `QuarterlySettlementDto` ne
-   * change pas de forme. `opposedCount` est volontairement hors période
-   * (toutes les oppositions EN COURS, place entière) : une opposition en
-   * cours exclut le recours du circuit de compensation quel que soit le
-   * trimestre où elle a été levée — ce n'est pas une mesure "de la
-   * période", mais l'état actuel du circuit.
-   */
+  /** KPI de synthèse du trimestre (écran 6) — sommes en centimes (SEC-34). */
   async summary(q: string, user?: AuthenticatedUser): Promise<QuarterlySummaryDto> {
     const [{ settled, matrix }, allRecours] = await Promise.all([this.settledAndMatrixFor(q), this.recours.listAll()]);
-    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const tenant = this.tenantOf(user);
 
     const settledForTenant = tenant ? settled.filter((r) => r.from === tenant || r.to === tenant) : settled;
-    const grossTotal = settledForTenant.reduce((sum, r) => sum + r.amount, 0);
+    const grossTotal = sumAmounts(settledForTenant.map((r) => r.amount));
 
     const allPositions = computeBilateralNetPositions(matrix);
     const positions = tenant ? allPositions.filter((p) => p.from === tenant || p.to === tenant) : allPositions;
-    const bilateralNetTotal = positions.reduce((sum, p) => sum + p.amount, 0);
+    const bilateralNetTotal = sumAmounts(positions.map((p) => p.amount));
 
     const allNet = computeMultilateralNetPositions(matrix);
     const net = tenant ? allNet.filter((n) => n.code === tenant) : allNet;
-    const multilateralNetTotal = net.filter((n) => n.net > 0).reduce((sum, n) => sum + n.net, 0);
+    const multilateralNetTotal = sumAmounts(net.filter((n) => n.net > 0).map((n) => n.net));
 
     const reductionPct = grossTotal === 0 ? 0 : Math.round((1 - multilateralNetTotal / grossTotal) * 1000) / 10;
-
     const opposed = allRecours.filter((r) => r.state === 'OPPOSITION' && (!tenant || r.from === tenant || r.to === tenant));
 
-    return {
-      quarter: q,
-      grossTotal,
-      bilateralNetTotal,
-      multilateralNetTotal,
-      reductionPct,
-      settledCount: settledForTenant.length,
-      opposedCount: opposed.length,
-    };
+    return { quarter: q, grossTotal, bilateralNetTotal, multilateralNetTotal, reductionPct, settledCount: settledForTenant.length, opposedCount: opposed.length };
   }
 
   /**
-   * TOUTES les clôtures trimestrielles enregistrées (scope QUARTERLY),
-   * toutes périodes confondues — contrairement à `findClosures()`
-   * ci-dessus, qui filtre sur UNE période précise déjà connue de l'appelant
-   * (`quarter()`/`closeQuarterly()`). Ici l'appelant (le frontend) ne
-   * connaît pas encore quelles périodes sont closes : c'est justement ce
-   * qu'il vient demander.
-   *
-   * Écran 4 "Échanges Annexes 2/3/4" du guide illustré, sous-onglets
-   * "Accepté/silence" vs "Réglé/compensé" : les deux issues (acceptation
-   * explicite, silence tacite Art.10, décision de commission favorable)
-   * amènent un recours au MÊME état final `REGLE` de `RECOURS_STATES` — le
-   * guide distingue pourtant deux sous-onglets. Verdict Product Owner
-   * 2026-10-18 : la distinction est purement TEMPORELLE, relative à la
-   * clôture trimestrielle, PAS un nouvel état de cycle de vie. Un recours
-   * réglé (`state === 'REGLE'`, `settledAt` connu) appartient au trimestre
-   * dérivé de `settledAt` (même logique que `isIsoDateInQuarter`/
-   * `parsePeriodQuarter`, voir `settledAndMatrixFor()` ci-dessus) :
-   *  - ce trimestre est DANS la liste retournée ici -> "Réglé/compensé" ;
-   *  - sinon -> "Accepté/silence" (en attente de la prochaine compensation).
-   * Ce rapprochement recours <-> trimestre clôturé est fait ENTIÈREMENT
-   * côté frontend à partir de cette liste — aucun champ n'est ajouté à
-   * `Recours` (décision volontaire du PO : pas de donnée dérivable à
-   * persister en double).
-   *
-   * Route PLACE ENTIÈRE, sans scoping tenant (voir le contrôleur) : une
-   * clôture trimestrielle est une action de place — `closeQuarterly()` ne
-   * prend aucun `companyCode` et `SettlementClosure.companyCode` n'est
-   * jamais renseigné pour le scope QUARTERLY (voir son entité) — les dates
-   * de clôture elles-mêmes ne sont donc pas une donnée par compagnie à
-   * restreindre, comme `GET /pricing/grid`.
+   * TOUTES les clôtures trimestrielles (écran 4, sous-onglets "Accepté/silence"
+   * vs "Réglé/compensé", décision PO 2026-10-18). SEC-26 : `closedBy` (nom
+   * de l'auteur) n'est renvoyé qu'aux rôles place.
    */
-  async quarterlyClosures(): Promise<QuarterlyClosureDto[]> {
-    const rows = await withDegradedFallback(
-      'SettlementService.quarterlyClosures',
-      async () => {
-        const found = await this.closureRepo.find({ scope: SettlementScope.QUARTERLY });
-        return found.map((r) => ({
-          period: r.period,
-          closedAt: r.closedAt.toISOString(),
-          closedBy: r.closedBy,
-          bordereauRef: r.bordereauRef,
-        }));
-      },
-      () =>
-        this.memoryClosures
-          .filter((c) => c.scope === SettlementScope.QUARTERLY)
-          .map((c) => ({ period: c.period, closedAt: c.closedAt, closedBy: c.closedBy, bordereauRef: c.bordereauRef })),
-    );
+  async quarterlyClosures(user?: AuthenticatedUser): Promise<QuarterlyClosureDto[]> {
+    const showAuthor = !user || isPlaceUser(user);
+    const rows = (await this.findClosures(SettlementScope.QUARTERLY)).map((c) => ({
+      period: c.period,
+      closedAt: c.closedAt,
+      bordereauRef: c.bordereauRef,
+      ...(showAuthor ? { closedBy: c.closedBy } : {}),
+    }));
     return rows.sort((a, b) => a.period.localeCompare(b.period));
   }
 
-  async closeQuarterly(q: string, closedBy: string): Promise<QuarterlySettlementDto> {
-    this.parseQuarterOrThrow(q);
-    const existing = await this.findClosures(SettlementScope.QUARTERLY, q);
-    if (existing.length > 0) {
-      throw new ConflictException({ code: 'ALREADY_CLOSED', message: `Compensation trimestrielle ${q} déjà clôturée.` });
+  /** SEC-19/SEC-25 : rôle place, trimestre échu, unicité en base, instantané (recours + matrice) haché et scellé au journal. */
+  async closeQuarterly(q: string, user: AuthenticatedUser): Promise<QuarterlySettlementDto> {
+    assertPlaceUser(user);
+    const parsed = this.parseQuarterOrThrow(q);
+    if (!isPeriodElapsed(lastDayOfQuarter(parsed), this.now())) {
+      throw new ConflictException({ code: 'PERIODE_NON_ECHUE', message: `Le trimestre ${q} n'est pas échu : il ne peut pas être clôturé.` });
     }
-    await this.persistClosure({ scope: SettlementScope.QUARTERLY, period: q, bordereauRef: `BORD-Q-${q}`, closedBy });
-    return this.quarter(q);
+    const existing = await this.findClosures(SettlementScope.QUARTERLY, q);
+    if (existing.length > 0) throw ALREADY_CLOSED(`Compensation trimestrielle ${q} déjà clôturée.`);
+
+    const { settled, matrix } = await this.settledAndMatrixFor(q);
+    const snapshot: QuarterlySnapshot = { quarter: q, recours: [...settled].sort((a, b) => a.id.localeCompare(b.id)), matrix };
+    await this.persistClosure(
+      { scope: SettlementScope.QUARTERLY, period: q, bordereauRef: `BORD-Q-${q}`, closedBy: user.name, closedById: user.id, snapshot: snapshot as unknown as Record<string, unknown>, snapshotHash: hashSnapshot(snapshot) },
+      'CLOTURE_TRIMESTRIELLE',
+      user.id,
+    );
+    return this.quarter(q, user);
   }
 }

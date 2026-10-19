@@ -5,6 +5,7 @@ import { Test } from '@nestjs/testing';
 import { AdherentsService } from '../adherents/adherents.service';
 import { ALGERIA_FIXED_HOLIDAYS, ALGERIA_WEEKEND_DAYS } from '../adherents/referential-reference-data';
 import { CLOCK } from '../common/clock';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { Recours } from '../recours/entities/recours.entity';
 import { RecoursService } from '../recours/recours.service';
 import { RealtimeGateway } from '../realtime/realtime.module';
@@ -13,6 +14,10 @@ import { SettlementPipelineStep } from './entities/settlement-pipeline-step.enti
 import { SettlementPipelineService } from './settlement-pipeline.service';
 import { SettlementService } from './settlement.service';
 
+const OP: AuthenticatedUser = { id: 'id-op', name: 'op', email: 'op@test.local', role: 'OPERATEUR_PLACE', privileges: ['closeQuarter'] };
+const OPERATEUR: AuthenticatedUser = { ...OP, id: 'id-operateur', name: 'operateur' };
+const CORRESPONDANT: AuthenticatedUser = { id: 'c', name: 'corr', email: 'c@test.local', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', privileges: ['closeQuarter'] };
+
 /** Repli mémoire forcé — voir settlement.service.spec.ts. */
 function throwingRepo() {
   return {
@@ -20,10 +25,16 @@ function throwingRepo() {
     find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    getEntityManager: jest.fn(() => ({
-      persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-      flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    })),
+    getEntityManager: jest.fn(() => {
+      const em: Record<string, jest.Mock> = {
+        persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+        flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+        find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+        transactional: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+      };
+      em.fork = jest.fn(() => em);
+      return em;
+    }),
   };
 }
 
@@ -78,21 +89,21 @@ describe('SettlementPipelineService (mode dégradé — avancement du lot trimes
 
   it('400 sur un trimestre ou une étape invalides', async () => {
     await expect(pipeline.pipeline('2026-Q5')).rejects.toMatchObject({ status: 400 });
-    await expect(pipeline.completeStep('2026-Q3', 'INCONNUE', 'op')).rejects.toMatchObject({ status: 400 });
+    await expect(pipeline.completeStep('2026-Q3', 'INCONNUE', OP)).rejects.toMatchObject({ status: 400 });
   });
 
   it('étapes réalisées dans l’ordre : 409 si l’étape précédente n’est pas faite ou si déjà faite', async () => {
-    await expect(pipeline.completeStep('2026-Q3', 'SYNTHESE_ANNEXE_7', 'op')).rejects.toMatchObject({ status: 409 });
-    const after1 = await pipeline.completeStep('2026-Q3', 'SAISIE', 'op', 'Saisie validée');
+    await expect(pipeline.completeStep('2026-Q3', 'SYNTHESE_ANNEXE_7', OP)).rejects.toMatchObject({ status: 409 });
+    const after1 = await pipeline.completeStep('2026-Q3', 'SAISIE', OP, 'Saisie validée');
     expect(after1.steps[0]).toMatchObject({ status: 'DONE', overdue: false, completedBy: 'op', note: 'Saisie validée', completedAt: '2026-10-12T09:00:00.000Z' });
     expect(after1.steps[1].status).toBe('EN_COURS');
-    await expect(pipeline.completeStep('2026-Q3', 'SAISIE', 'op')).rejects.toMatchObject({ status: 409 });
-    await expect(pipeline.completeStep('2026-Q3', 'SYNTHESE_ANNEXE_7', 'op')).resolves.toBeDefined();
+    await expect(pipeline.completeStep('2026-Q3', 'SAISIE', OP)).rejects.toMatchObject({ status: 409 });
+    await expect(pipeline.completeStep('2026-Q3', 'SYNTHESE_ANNEXE_7', OP)).resolves.toBeDefined();
   });
 
   it('l’étape 5 n’est jamais réalisée à la main (409) : elle suit la clôture trimestrielle', async () => {
-    await expect(pipeline.completeStep('2026-Q3', 'PV_REGLEMENT', 'op')).rejects.toMatchObject({ status: 409 });
-    await settlement.closeQuarterly('2026-Q3', 'operateur');
+    await expect(pipeline.completeStep('2026-Q3', 'PV_REGLEMENT', OP)).rejects.toMatchObject({ status: 409 });
+    await settlement.closeQuarterly('2026-Q3', OPERATEUR);
     const res = await pipeline.pipeline('2026-Q3');
     expect(res.steps[4]).toMatchObject({ status: 'DONE', completedBy: 'operateur', overdue: false });
     expect(res.steps[0].status).toBe('EN_COURS');
@@ -100,14 +111,14 @@ describe('SettlementPipelineService (mode dégradé — avancement du lot trimes
 
   it('assertReadyToClose : 409 PIPELINE_INCOMPLET tant qu’une étape 1-4 manque, puis passe', async () => {
     await expect(pipeline.assertReadyToClose('2026-Q3')).rejects.toMatchObject({ status: 409, response: { code: 'PIPELINE_INCOMPLET' } });
-    for (const step of ['SAISIE', 'SYNTHESE_ANNEXE_7', 'TRANSMISSION_ANNEXE_8']) await pipeline.completeStep('2026-Q3', step, 'op');
+    for (const step of ['SAISIE', 'SYNTHESE_ANNEXE_7', 'TRANSMISSION_ANNEXE_8']) await pipeline.completeStep('2026-Q3', step, OP);
     await expect(pipeline.assertReadyToClose('2026-Q3')).rejects.toMatchObject({ response: { message: expect.stringContaining('SYNTHESE_GLOBALE_REUNION') } });
-    await pipeline.completeStep('2026-Q3', 'SYNTHESE_GLOBALE_REUNION', 'op');
+    await pipeline.completeStep('2026-Q3', 'SYNTHESE_GLOBALE_REUNION', OP);
     await expect(pipeline.assertReadyToClose('2026-Q3')).resolves.toBeUndefined();
   });
 
   it('les trimestres sont indépendants', async () => {
-    await pipeline.completeStep('2026-Q3', 'SAISIE', 'op');
+    await pipeline.completeStep('2026-Q3', 'SAISIE', OP);
     expect((await pipeline.pipeline('2026-Q2')).steps[0].status).toBe('EN_COURS');
   });
 
@@ -116,10 +127,23 @@ describe('SettlementPipelineService (mode dégradé — avancement du lot trimes
       create: jest.fn((data: unknown) => data),
       find: jest.fn().mockResolvedValue([]),
       getEntityManager: jest.fn(() => ({
-        persistAndFlush: jest.fn().mockRejectedValue(new UniqueConstraintViolationException(new Error('duplicate key'))),
+        fork: () => ({ transactional: jest.fn().mockRejectedValue(new UniqueConstraintViolationException(new Error('duplicate key'))) }),
       })),
     };
     ({ pipeline } = await build(repo));
-    await expect(pipeline.completeStep('2026-Q3', 'SAISIE', 'op')).rejects.toMatchObject({ status: 409 });
+    await expect(pipeline.completeStep('2026-Q3', 'SAISIE', OP)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('SEC-25 : un utilisateur compagnie ne fait jamais avancer le lot, même avec le privilège closeQuarter (403)', async () => {
+    await expect(pipeline.completeStep('2026-Q3', 'SAISIE', CORRESPONDANT)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('SEC-26 : un rôle compagnie lit l’avancement sans l’auteur ni la note des étapes', async () => {
+    await pipeline.completeStep('2026-Q3', 'SAISIE', OP, 'Note interne');
+    const forCompany = await pipeline.pipeline('2026-Q3', CORRESPONDANT);
+    expect(forCompany.steps[0].status).toBe('DONE');
+    expect(forCompany.steps[0]).not.toHaveProperty('completedBy');
+    expect(forCompany.steps[0]).not.toHaveProperty('note');
+    expect((await pipeline.pipeline('2026-Q3', OP)).steps[0]).toMatchObject({ completedBy: 'op', note: 'Note interne' });
   });
 });

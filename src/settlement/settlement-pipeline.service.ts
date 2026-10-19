@@ -5,6 +5,10 @@ import { BadRequestException, ConflictException, Inject, Injectable, Optional } 
 import { AdherentsService } from '../adherents/adherents.service';
 import { CLOCK, Clock, systemClock } from '../common/clock';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { LedgerService } from '../ledger/ledger.service';
+import { assertPlaceUser, isPlaceUser } from '../recours/place-role';
+import { isUniqueViolation, withStrictFallback } from '../recours/strict-persistence';
 import { QuarterlyPipelineDto } from './dto/settlement-pipeline.dto';
 import { SettlementPipelineStep } from './entities/settlement-pipeline-step.entity';
 import { buildPipeline, canCompleteStep, MANUAL_PIPELINE_STEPS, monthFollowingQuarter, PIPELINE_STEPS, PipelineCompletion, PipelineStep } from './settlement-pipeline.rules';
@@ -31,6 +35,7 @@ export class SettlementPipelineService {
     private readonly settlement: SettlementService,
     private readonly adherents: AdherentsService,
     @Optional() @Inject(CLOCK) clock?: Clock,
+    @Optional() private readonly ledger?: LedgerService,
   ) {
     this.now = clock ?? systemClock;
   }
@@ -66,7 +71,8 @@ export class SettlementPipelineService {
     return completions;
   }
 
-  async pipeline(q: string): Promise<QuarterlyPipelineDto> {
+  /** SEC-26 : un rôle compagnie lit l'avancement, jamais l'auteur (`completedBy`) ni la note libre d'une étape. */
+  async pipeline(q: string, user?: AuthenticatedUser): Promise<QuarterlyPipelineDto> {
     const period = this.parseQuarterOrThrow(q);
     const completions = await this.completionsFor(q);
     const calendar = this.adherents.getCalendar();
@@ -74,7 +80,9 @@ export class SettlementPipelineService {
     const monthStart = `${m.year}-${String(m.month).padStart(2, '0')}-01`;
     const monthEnd = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10);
     const extraHolidays = await this.adherents.extraHolidays(monthStart, monthEnd);
-    return { quarter: q, steps: buildPipeline(period, completions, this.now(), calendar, extraHolidays) };
+    const steps = buildPipeline(period, completions, this.now(), calendar, extraHolidays);
+    const full = !user || isPlaceUser(user);
+    return { quarter: q, steps: full ? steps : steps.map(({ completedBy: _by, note: _note, ...rest }) => rest) };
   }
 
   /**
@@ -93,7 +101,10 @@ export class SettlementPipelineService {
     }
   }
 
-  async completeStep(q: string, step: string, completedBy: string, note?: string): Promise<QuarterlyPipelineDto> {
+  /** SEC-25 : rôle place uniquement, même avec le privilège `closeQuarter` obtenu par dérogation ; étape scellée au journal. */
+  async completeStep(q: string, step: string, user: AuthenticatedUser, note?: string): Promise<QuarterlyPipelineDto> {
+    assertPlaceUser(user);
+    const completedBy = user.name;
     this.parseQuarterOrThrow(q);
     if (!(PIPELINE_STEPS as readonly string[]).includes(step)) {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: `Étape inconnue : "${step}" (attendu ${PIPELINE_STEPS.join(', ')}).` });
@@ -111,35 +122,35 @@ export class SettlementPipelineService {
     }
 
     const record: StepRecord = { period: q, step: target, completedAt: this.now().toISOString(), completedBy, note: note?.trim() || undefined };
-    const result = await withDegradedFallback<'ok' | 'duplicate'>(
+    const duplicate = () => new ConflictException({ code: 'INVALID_TRANSITION', message: `L'étape ${target} est déjà réalisée pour ${q}.` });
+    const summary = JSON.stringify({ period: q, step: target });
+    await withStrictFallback(
       'SettlementPipelineService.completeStep',
       async () => {
-        const entity = this.repo.create({
-          period: record.period,
-          step: record.step,
-          completedAt: new Date(record.completedAt),
-          completedBy: record.completedBy,
-          note: record.note,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
         try {
-          await this.repo.getEntityManager().persistAndFlush(entity);
+          await this.repo.getEntityManager().fork({ clear: true }).transactional(async (tem) => {
+            tem.create(SettlementPipelineStep, {
+              period: record.period,
+              step: record.step,
+              completedAt: new Date(record.completedAt),
+              completedBy: record.completedBy,
+              note: record.note,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any);
+            await tem.flush();
+            if (this.ledger) await this.ledger.append('ETAPE_LOT_TRIMESTRIEL', `${q}/${target}`, user.id, summary);
+          });
         } catch (err) {
-          // Requête concurrente sur la même étape : renvoyé comme résultat,
-          // pas levé, pour ne pas être pris pour une panne DB.
-          if (err instanceof UniqueConstraintViolationException) return 'duplicate';
-          throw err;
+          // Requête concurrente sur la même étape : contrainte UNIQUE(period, step) → 409.
+          throw isUniqueViolation(err) || err instanceof UniqueConstraintViolationException ? duplicate() : err;
         }
-        return 'ok';
       },
-      () => {
+      async () => {
+        if (this.memory.some((r) => r.period === q && r.step === target)) throw duplicate();
         this.memory.push(record);
-        return 'ok';
+        if (this.ledger) await this.ledger.append('ETAPE_LOT_TRIMESTRIEL', `${q}/${target}`, user.id, summary);
       },
     );
-    if (result === 'duplicate') {
-      throw new ConflictException({ code: 'INVALID_TRANSITION', message: `L'étape ${target} est déjà réalisée pour ${q}.` });
-    }
-    return this.pipeline(q);
+    return this.pipeline(q, user);
   }
 }

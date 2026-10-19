@@ -45,7 +45,7 @@ export class SettlementController {
 
   @Post('monthly/:period/close')
   @Privileges('synth')
-  @ApiOperation({ summary: 'Clôture de la synthèse mensuelle d’une compagnie et génération du bordereau (idempotent : 409 si déjà clôturée)' })
+  @ApiOperation({ summary: 'Clôture de la synthèse mensuelle d’une compagnie et génération du bordereau (409 si déjà clôturée ou si le mois n’est pas échu) ; instantané figé et scellé au journal' })
   closeMonthly(@Param('period') period: string, @Body() dto: CloseMonthlyDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.closeMonthly(period, dto.company, user.name, user);
   }
@@ -60,8 +60,8 @@ export class SettlementController {
     summary:
       'Liste de TOUTES les clôtures trimestrielles enregistrées (place entière, toutes périodes) — écran 4 "Échanges Annexes 2/3/4", pour distinguer côté frontend "Accepté/silence" (trimestre du recours réglé pas encore clôturé) de "Réglé/compensé" (trimestre déjà clôturé)',
   })
-  quarterlyClosures() {
-    return this.service.quarterlyClosures();
+  quarterlyClosures(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.quarterlyClosures(user);
   }
 
   @Get('quarter/:q')
@@ -83,9 +83,9 @@ export class SettlementController {
   }
 
   @Get('quarter/:q/pipeline')
-  @ApiOperation({ summary: 'Avancement du lot trimestriel (Diagramme 2, Art. 16-18) : 5 étapes, échéances, retards — mêmes droits de lecture que GET /settlement/quarter/:q' })
-  pipeline(@Param('q') q: string) {
-    return this.pipelineService.pipeline(q);
+  @ApiOperation({ summary: 'Avancement du lot trimestriel (Diagramme 2, Art. 16-18) : 5 étapes, échéances, retards — mêmes droits de lecture que GET /settlement/quarter/:q (SEC-26 : sans auteur ni note pour les rôles compagnie)' })
+  pipeline(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.pipelineService.pipeline(q, user);
   }
 
   // Pipeline place-entière, comme la clôture trimestrielle : mêmes rôles (§11).
@@ -93,7 +93,7 @@ export class SettlementController {
   @Privileges('closeQuarter')
   @ApiOperation({ summary: "Réalisation d'une étape 1 à 4 du lot trimestriel, dans l'ordre (409 si déjà faite ou si l'étape précédente ne l'est pas) — l'étape 5 découle de la clôture trimestrielle" })
   completePipelineStep(@Param('q') q: string, @Param('step') step: string, @Body() dto: CompletePipelineStepDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.pipelineService.completeStep(q, step, user.name, dto.note);
+    return this.pipelineService.completeStep(q, step, user, dto.note);
   }
 
   // QUESTIONS_UAR.md §11, décision Product Owner 2026-10-18 : action
@@ -106,10 +106,10 @@ export class SettlementController {
   @Privileges('closeQuarter')
   @ApiOperation({
     summary:
-      "Clôture de la compensation trimestrielle et génération du bordereau (409 si déjà clôturée ou si les étapes 1 à 4 de l'avancement du lot ne sont pas réalisées) — réservé aux rôles « place » (QUESTIONS_UAR.md §11)",
+      "Clôture de la compensation trimestrielle et génération du bordereau (409 si déjà clôturée, si le trimestre n'est pas échu ou si les étapes 1 à 4 de l'avancement du lot ne sont pas réalisées) — réservé aux rôles « place » (QUESTIONS_UAR.md §11) ; instantané figé et scellé au journal",
   })
   async closeQuarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     await this.pipelineService.assertReadyToClose(q);
-    return this.service.closeQuarterly(q, user.name);
+    return this.service.closeQuarterly(q, user);
   }
 }

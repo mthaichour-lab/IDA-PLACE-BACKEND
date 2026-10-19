@@ -1,10 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsString, Matches } from 'class-validator';
+import { COMPANY_CODE_MESSAGE, COMPANY_CODE_PATTERN } from '../../recours/dto/recours.dto';
 
 export class CompanyMonthlySynthesisDto {
   @ApiProperty() code!: string;
-  @ApiProperty() claimsCount!: number;
-  @ApiProperty({ description: 'Nombre de recours résolus (REGLE/REJETE/FORCLOS) sur la période — état d’avancement' })
+  @ApiProperty({ description: 'SEC-34 : nombre de recours RÉGLÉS dont le règlement tombe dans le mois' }) claimsCount!: number;
+  @ApiProperty({ description: 'SEC-34 : nombre de recours RÉGLÉS du mois (identique à claimsCount — la synthèse ne retient que les recours réglés, par mois de règlement)' })
   resolvedCount!: number;
   @ApiProperty() totalAmount!: number;
   @ApiProperty({ enum: ['EN_COURS', 'CLOTURE'] }) status!: 'EN_COURS' | 'CLOTURE';
@@ -20,7 +21,7 @@ export class MonthlySettlementDto {
 export class CloseMonthlyDto {
   @ApiProperty({ description: 'Code de la compagnie dont on clôture la synthèse mensuelle' })
   @IsString()
-  @IsNotEmpty()
+  @Matches(COMPANY_CODE_PATTERN, { message: COMPANY_CODE_MESSAGE })
   company!: string;
 }
 

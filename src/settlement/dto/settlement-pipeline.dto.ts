@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { PIPELINE_STEPS } from '../settlement-pipeline.rules';
 
 export class PipelineStepViewDto {
@@ -20,8 +20,9 @@ export class QuarterlyPipelineDto {
 }
 
 export class CompletePipelineStepDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ maxLength: 500 })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   note?: string;
 }
