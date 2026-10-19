@@ -750,17 +750,29 @@ les classe "à considérer", non tranchés) :
   d'une compagnie jetable, retrait réellement constaté via l'API HTTP,
   recours refusé — `test/security-tenant-scope.e2e-spec.ts`).
 
-**Laissé ouvert, documenté plutôt que deviné** (sévérité basse, l'audit
-les classe "worth considering") :
-- `MembershipService.accept` lie une ADHESION à n'importe quelle compagnie
-  existante sans vérifier qu'elle n'est pas déjà `EN_RETRAIT`/`EXCLU` —
-  pas un contournement de privilège, une incohérence métier possible
-  (réadhésion d'une compagnie exclue sans contrôle dédié).
-- Le même contrôle de statut n'a pas été étendu à `MatchingService.decide`
-  (trancher une confrontation impliquant une compagnie non active) ni à
-  l'import de dossiers — hors du scope de la décision prise ce jour.
+**Extension décidée le jour même (2026-10-19, après relecture du rapport)** :
+les deux points ci-dessus, classés "worth considering" par l'audit, ont en
+fait été tranchés plutôt que laissés ouverts :
+- `AdherentsService.assertCompanyActiveFor`/`companyInactiveReason`
+  centralisent désormais la règle (un seul point, plus de logique dupliquée
+  dans `ClaimsService.openRecours`) ; `MatchingService.decide` refuse
+  (403 `COMPAGNIE_NON_ACTIVE`) de trancher une confrontation dont une des
+  deux compagnies (A ou B) n'est plus active ; `ClaimsService.importFile`
+  marque une ligne `HORS_IDA` avec ce motif si la compagnie déclarante
+  n'est plus active — jamais le fichier entier en échec, cohérent avec le
+  contrat existant du rapport ligne par ligne ; `MembershipService.accept`
+  refuse (400) de lier une ADHESION à une compagnie déjà
+  `EXCLU`/`EN_RETRAIT`/`SUSPENDU` (une réadhésion passe par une nouvelle
+  demande). Front (`/matching`) aligné : `decide()` affichait encore un
+  toast générique, seul écran à ne pas utiliser `apiErrorMessage` — corrigé,
+  le nouveau refus `COMPAGNIE_NON_ACTIVE` s'affiche donc avec son vrai motif.
+- **Bug latent trouvé en écrivant les tests** : `AdherentsService.createCompany`,
+  en mode dégradé, écrivait `status: undefined` quand il n'était pas fourni
+  au lieu du défaut `ACTIF` de l'entité réelle — resté invisible tant que
+  rien ne lisait vraiment ce champ. Corrigé au même endroit.
 
-**Vérifié** : `npm run lint` OK, `npm test` 439/439, e2e 130/130 (le flake
+**Vérifié** : `npm run lint` OK, `npm test` 443/443 (back), 177/177 (front),
+e2e 130/130 (le flake
 `claims-import` ECONNRESET passe ou échoue selon les exécutions, sans
 rapport), build OK.
 
