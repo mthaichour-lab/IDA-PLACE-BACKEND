@@ -88,3 +88,30 @@ export function isDataException(err: unknown): boolean {
   const code = (err as ErrorLike | undefined)?.code;
   return typeof code === 'string' && code.startsWith('22');
 }
+
+/** Méthodes synchrones d'un EntityManager (aucun accès base) : neutres dans le double ci-dessous. */
+const SYNC_EM_METHODS = new Set(['persist', 'remove', 'create', 'assign', 'getReference', 'clear', 'merge']);
+
+/**
+ * Pour les tests : EntityManager (ou repository) dont la base est injoignable
+ * — toute méthode d'accès à la base rejette avec `simulatedDatabaseOutage()`,
+ * `fork()` / `getEntityManager()` renvoient le même double, les méthodes
+ * synchrones (`persist`, `create`…) sont neutres. `overrides` fixe des
+ * méthodes précises (ex. `jest.fn()` à observer). Remplace les doubles
+ * incomplets dont l'appel d'une méthode absente (`TypeError … is not a
+ * function`) était assimilé à une panne sous Jest avant la phase 2 (SEC-08).
+ */
+export function simulatedOutageEntityManager<T extends object = Record<string, unknown>>(overrides: Record<string, unknown> = {}): T {
+  const target: Record<string | symbol, unknown> = { ...overrides };
+  const double: T = new Proxy(target, {
+    get(t, prop) {
+      if (prop in t) return t[prop];
+      if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON' || prop === 'asymmetricMatch' || prop === 'nodeType') return undefined;
+      if (prop === 'fork' || prop === 'getEntityManager') return () => double;
+      // `em.create(Entité, données)` / `repo.create(données)` : renvoient les données ; `persist(e)`, `assign(e, …)` : renvoient `e`.
+      if (SYNC_EM_METHODS.has(prop)) return (...args: unknown[]) => (prop === 'create' && args.length > 1 ? args[1] : args[0]);
+      return () => Promise.reject(simulatedDatabaseOutage());
+    },
+  }) as T;
+  return double;
+}

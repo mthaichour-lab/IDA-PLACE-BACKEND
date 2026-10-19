@@ -14,27 +14,29 @@ import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
 import { CLAIM_IMPORT_EXTENSION_COLUMNS } from './claim-extension-columns';
 import { ClaimsService } from './claims.service';
 import { Claim } from './entities/claim.entity';
+import { simulatedDatabaseOutage, simulatedOutageEntityManager } from '../common/database/db-errors';
 
 /** Repli mémoire forcé : toute opération dépendant de la base échoue (voir adherents.service.spec.ts). */
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    findAndCount: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    count: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    getEntityManager: jest.fn(() => ({
+    findAndCount: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findOneOrFail: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    find: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    count: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    getEntityManager: jest.fn(() => simulatedOutageEntityManager({
       persist: jest.fn(),
-      persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-      flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+      persistAndFlush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+      flush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     })),
   };
 }
 
 /** Référentiel barème en repli mémoire : toute opération base échoue. */
 function failingRepo() {
-  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  const fail = jest.fn().mockRejectedValue(simulatedDatabaseOutage());
   return {
     findAll: fail,
     find: fail,
@@ -42,7 +44,7 @@ function failingRepo() {
     findOneOrFail: fail,
     create: jest.fn((d: unknown) => d),
     assign: jest.fn(),
-    getEntityManager: jest.fn(() => ({ persist: jest.fn(), persistAndFlush: fail, flush: fail, removeAndFlush: fail })),
+    getEntityManager: jest.fn(() => simulatedOutageEntityManager({ persist: jest.fn(), persistAndFlush: fail, flush: fail, removeAndFlush: fail })),
   } as never;
 }
 

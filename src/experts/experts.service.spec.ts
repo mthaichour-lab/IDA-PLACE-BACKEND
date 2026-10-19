@@ -7,12 +7,13 @@ import { LedgerService } from '../ledger/ledger.service';
 import { Expert } from './entities/expert.entity';
 import { ExpertsService } from './experts.service';
 import { decryptRib, encryptRib, parseRibKey } from './rib-cipher';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 const EXPERT_CAAT_SAA = '3b6f2c1e-0c1a-4a7e-8e01-0000000000e1';
 const EXPERT_CASH = '3b6f2c1e-0c1a-4a7e-8e01-0000000000e2';
 
 function throwingRepo() {
-  const fail = () => Promise.reject(new Error('DB injoignable (test)'));
+  const fail = () => Promise.reject(simulatedDatabaseOutage());
   return {
     findAndCount: jest.fn(fail),
     findOne: jest.fn(fail),

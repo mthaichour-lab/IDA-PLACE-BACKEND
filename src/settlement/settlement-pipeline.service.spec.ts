@@ -13,6 +13,7 @@ import { SettlementClosure } from './entities/settlement-closure.entity';
 import { SettlementPipelineStep } from './entities/settlement-pipeline-step.entity';
 import { SettlementPipelineService } from './settlement-pipeline.service';
 import { SettlementService } from './settlement.service';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 const OP: AuthenticatedUser = { id: 'id-op', name: 'op', email: 'op@test.local', role: 'OPERATEUR_PLACE', privileges: ['closeQuarter'] };
 const OPERATEUR: AuthenticatedUser = { ...OP, id: 'id-operateur', name: 'operateur' };
@@ -22,15 +23,15 @@ const CORRESPONDANT: AuthenticatedUser = { id: 'c', name: 'corr', email: 'c@test
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    find: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     getEntityManager: jest.fn(() => {
       const em: Record<string, jest.Mock> = {
-        persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-        flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-        find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-        transactional: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+        persistAndFlush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+        flush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+        find: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+        transactional: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
       };
       em.fork = jest.fn(() => em);
       return em;

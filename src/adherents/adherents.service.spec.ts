@@ -20,6 +20,7 @@ import { BaremeReferentialService } from './bareme-referential.service';
 import { BaremeCase } from './entities/bareme-case.entity';
 import { BaremeVersion } from './entities/bareme-version.entity';
 import { VehicleCategory } from './entities/vehicle-category.entity';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 /** Acteur scopé compagnie — voir claims.service.spec.ts `correspondant()`. */
 function correspondant(companyId: string): AuthenticatedUser {
@@ -33,15 +34,15 @@ function adminUar(id: string): AuthenticatedUser {
 }
 
 function throwingRepo() {
-  const fail = () => Promise.reject(new Error('DB injoignable (test)'));
+  const fail = () => Promise.reject(simulatedDatabaseOutage());
   const em: Record<string, jest.Mock> = { find: jest.fn(fail), findOne: jest.fn(fail), transactional: jest.fn(fail), persistAndFlush: jest.fn(fail), flush: jest.fn(fail) };
   em.fork = jest.fn(() => em);
   return {
-    findAndCount: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findOneOrFail: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    findAndCount: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findOneOrFail: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    find: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     create: jest.fn((d: unknown) => d),
     getEntityManager: jest.fn(() => em),
   };

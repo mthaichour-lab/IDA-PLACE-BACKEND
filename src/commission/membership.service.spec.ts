@@ -7,6 +7,7 @@ import { CLOCK } from '../common/clock';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { MembershipRequest } from './entities/membership-request.entity';
 import { MembershipService } from './membership.service';
+import { simulatedDatabaseOutage, simulatedOutageEntityManager } from '../common/database/db-errors';
 
 const OPERATEUR: AuthenticatedUser = { id: 'op', name: 'operateur', email: 'op@test.local', role: 'OPERATEUR_PLACE', privileges: [] };
 
@@ -18,11 +19,11 @@ function correspondant(companyId: string): AuthenticatedUser {
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    getEntityManager: jest.fn(() => ({
-      persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-      flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    getEntityManager: jest.fn(() => simulatedOutageEntityManager({
+      persistAndFlush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+      flush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     })),
   };
 }

@@ -64,12 +64,16 @@ describe('withDegradedFallback (SEC-08)', () => {
     await expect(withDegradedFallback('t', () => Promise.reject(new ConflictException()), fallback)).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('Jest (NODE_ENV=test) : compatibilité des doubles existants — Error générique assimilée à une panne, contraintes toujours relancées', async () => {
+  it('Jest (NODE_ENV=test) : aucune tolérance particulière — Error générique et double incomplet relancés', async () => {
     process.env.NODE_ENV = 'test';
-    await expect(withDegradedFallback('t', () => Promise.reject(new Error('DB injoignable (test)')), fallback)).resolves.toBe('repli');
+    await expect(withDegradedFallback('t', () => Promise.reject(simulatedDatabaseOutage()), fallback)).resolves.toBe('repli');
+    const generic = new Error('DB injoignable (test)');
+    await expect(withDegradedFallback('t', () => Promise.reject(generic), fallback)).rejects.toBe(generic);
+    const incomplete = new TypeError('this.repo.findOneOrFail is not a function');
+    await expect(withDegradedFallback('t', () => Promise.reject(incomplete), fallback)).rejects.toBe(incomplete);
     const err = new UniqueConstraintViolationException(new Error('duplicate key'));
     await expect(withDegradedFallback('t', () => Promise.reject(err), fallback)).rejects.toBe(err);
-    await expect(withDegradedFallback('t', () => Promise.reject(new ConflictException()), fallback)).rejects.toBeInstanceOf(ConflictException);
+    expect(fallback).toHaveBeenCalledTimes(1);
   });
 });
 

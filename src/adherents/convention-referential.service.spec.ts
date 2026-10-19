@@ -5,10 +5,11 @@ import { ConstatCircumstance } from './entities/constat-circumstance.entity';
 import { MobileHoliday } from './entities/mobile-holiday.entity';
 import { OppositionMotif } from './entities/opposition-motif.entity';
 import { NON_DECLARATION_MOTIF_CODE } from './place-referential.data';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 /** Repli mémoire forcé : toute opération base échoue (voir adherents.service.spec.ts). */
 function throwingRepo<T extends object>(): EntityRepository<T> {
-  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  const fail = jest.fn().mockRejectedValue(simulatedDatabaseOutage());
   return {
     findAll: fail,
     find: fail,

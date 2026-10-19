@@ -1,5 +1,5 @@
 import { HttpException, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { currentNodeEnv, isProductionEnv } from '../config/env.validation';
+import { isProductionEnv } from '../config/env.validation';
 import { isDatabaseUnavailableError } from '../database/db-errors';
 import { sanitizeForLog } from '../logging/sanitize-log';
 
@@ -43,23 +43,6 @@ export function databaseUnavailable(scope: string): ServiceUnavailableException 
   });
 }
 
-/**
- * Exception de COMPATIBILITÉ limitée à Jest (`NODE_ENV=test`), jamais active
- * en développement ni en production, et volontairement ÉTROITE : elle ne
- * reconnaît que les deux formes de « panne simulée » des doubles de
- * repository des tests unitaires existants des autres modules :
- *  - `new Error('DB injoignable (test)')` (message contenant « injoignable ») ;
- *  - un double incomplet (`TypeError: this.repo.findOneOrFail is not a function`).
- * Toute autre erreur (HttpException, contrainte, erreur d'usage de l'ORM…)
- * est relancée, sous Jest aussi. À retirer une fois ces tests migrés vers
- * `simulatedDatabaseOutage()` (common/database/db-errors.ts).
- */
-function isSimulatedOutageUnderJest(err: unknown): boolean {
-  if (currentNodeEnv() !== 'test' || !(err instanceof Error)) return false;
-  if (err.constructor === Error && /injoignable/i.test(err.message)) return true;
-  return err instanceof TypeError && /is not a function/.test(err.message);
-}
-
 export async function withDegradedFallback<T>(
   scope: string,
   operation: () => Promise<T>,
@@ -69,7 +52,8 @@ export async function withDegradedFallback<T>(
     return await operation();
   } catch (err) {
     if (err instanceof HttpException) throw err;
-    if (!isDatabaseUnavailableError(err) && !isSimulatedOutageUnderJest(err)) throw err;
+    // Aucune tolérance propre à Jest (retirée en phase 2) : les tests simulent une panne avec `simulatedDatabaseOutage()`.
+    if (!isDatabaseUnavailableError(err)) throw err;
     if (isProductionEnv()) {
       new Logger('DEGRADED_MODE').error(`[${scope}] base de données injoignable en production — 503, aucun repli (${sanitizeForLog(err)})`);
       throw databaseUnavailable(scope);

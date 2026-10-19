@@ -3,10 +3,11 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { Migration20261019010000_BaremeArt14 } from '../migrations/Migration20261019010000_BaremeArt14';
 import { BaremeReferentialService } from './bareme-referential.service';
 import { resolvePublishedBaremeCase } from './bareme-rules';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 /** Repli mémoire forcé : toute opération base échoue (voir convention-referential.service.spec.ts). */
 function throwingRepo<T extends object>(): EntityRepository<T> {
-  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  const fail = jest.fn().mockRejectedValue(simulatedDatabaseOutage());
   return {
     findAll: fail,
     find: fail,

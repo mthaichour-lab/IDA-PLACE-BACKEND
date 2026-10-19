@@ -8,6 +8,7 @@ import { LedgerService } from '../ledger/ledger.service';
 import { PLACE_ROOM, RealtimeGateway, tenantRoom } from '../realtime/realtime.module';
 import { Recours } from './entities/recours.entity';
 import { CommissionDecisionForRecours, RecoursService } from './recours.service';
+import { simulatedDatabaseOutage, simulatedOutageEntityManager } from '../common/database/db-errors';
 
 /** Acteur "place" (OPERATEUR_PLACE). */
 function placeUser(name = 'operateur'): AuthenticatedUser {
@@ -21,7 +22,7 @@ function correspondant(companyId: string, name = `corr.${companyId}`): Authentic
 
 /** Repli mémoire forcé : toute opération dépendant de la base échoue (voir claims.service.spec.ts). */
 function failingEm(): Record<string, jest.Mock> {
-  const fail = () => Promise.reject(new Error('DB injoignable (test)'));
+  const fail = () => Promise.reject(simulatedDatabaseOutage());
   const em: Record<string, jest.Mock> = {
     find: jest.fn(fail),
     findOne: jest.fn(fail),
@@ -37,8 +38,8 @@ function failingEm(): Record<string, jest.Mock> {
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     getEntityManager: jest.fn(() => failingEm()),
   };
 }
@@ -326,11 +327,8 @@ describe('RecoursService — motif d’opposition (reasonCode, décision PO §1)
   let service: RecoursService;
 
   beforeEach(async () => {
-    const failing = () => ({
-      findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-      getEntityManager: jest.fn(() => ({ persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')) })),
-      create: jest.fn((d: unknown) => d),
-    });
+    // Repositories du référentiel : base injoignable pour toute méthode (findAll, findOneOrFail, persistAndFlush…).
+    const failing = () => simulatedOutageEntityManager();
     const convention = new ConventionReferentialService(failing() as never, failing() as never, failing() as never);
     await convention.createMotif({ code: 'MONTANT_CONTESTE', label: 'Montant contesté' }, placeUser('op'));
     await convention.createMotif({ code: 'EN_ATTENTE_UAR', label: 'Motif non encore validé' }, placeUser('op'));

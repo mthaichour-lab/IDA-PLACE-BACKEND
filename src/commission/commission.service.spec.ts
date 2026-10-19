@@ -9,6 +9,7 @@ import { RealtimeGateway } from '../realtime/realtime.module';
 import { CommissionService } from './commission.service';
 import { CommissionCase } from './entities/commission-case.entity';
 import { Sanction } from './entities/sanction.entity';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 /** Membre de la place (ex. MEMBRE_COMMISSION). */
 function member(name: string): AuthenticatedUser {
@@ -21,7 +22,7 @@ function correspondant(companyId: string): AuthenticatedUser {
 
 /** Repli mémoire forcé — voir recours.service.spec.ts. */
 function failingEm(): Record<string, jest.Mock> {
-  const fail = () => Promise.reject(new Error('DB injoignable (test)'));
+  const fail = () => Promise.reject(simulatedDatabaseOutage());
   const em: Record<string, jest.Mock> = { find: jest.fn(fail), findOne: jest.fn(fail), transactional: jest.fn(fail), persistAndFlush: jest.fn(fail), flush: jest.fn(fail) };
   em.fork = jest.fn(() => em);
   return em;
@@ -30,8 +31,8 @@ function failingEm(): Record<string, jest.Mock> {
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     getEntityManager: jest.fn(() => failingEm()),
   };
 }

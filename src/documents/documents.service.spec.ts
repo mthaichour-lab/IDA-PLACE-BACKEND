@@ -13,6 +13,7 @@ import { DocumentsService } from './documents.module';
 import { Document } from './entities/document.entity';
 import { STORAGE_PROVIDER } from './documents.tokens';
 import { StorageProvider } from './providers/storage-provider.interface';
+import { simulatedDatabaseOutage, simulatedOutageEntityManager } from '../common/database/db-errors';
 
 /** Acteur scopé compagnie — voir recours.service.spec.ts/commission.service.spec.ts. */
 function correspondant(name: string, companyId: string): AuthenticatedUser {
@@ -26,13 +27,13 @@ function placeUser(name = 'operateur.place'): AuthenticatedUser {
 function throwingRepo() {
   return {
     create: jest.fn((data: unknown) => data),
-    findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-    getEntityManager: jest.fn(() => ({
+    findOne: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    findAll: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    find: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+    getEntityManager: jest.fn(() => simulatedOutageEntityManager({
       persist: jest.fn(),
-      persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
-      flush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+      persistAndFlush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
+      flush: jest.fn().mockRejectedValue(simulatedDatabaseOutage()),
     })),
   };
 }

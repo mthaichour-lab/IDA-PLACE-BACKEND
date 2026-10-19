@@ -8,10 +8,11 @@ import { RealtimeGateway } from '../realtime/realtime.module';
 import { MatchQueueItem } from './entities/match-queue-item.entity';
 import { MatchingService } from './matching.service';
 import { ClaimMatchInput } from './matching.types';
+import { simulatedDatabaseOutage, simulatedOutageEntityManager } from '../common/database/db-errors';
 
 /** Repli mémoire forcé : toute opération dépendant de la base échoue. */
 function throwingRepo() {
-  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  const fail = jest.fn().mockRejectedValue(simulatedDatabaseOutage());
   return {
     create: jest.fn((d: unknown) => d),
     find: fail,
@@ -19,7 +20,7 @@ function throwingRepo() {
     findAll: fail,
     findAndCount: fail,
     count: fail,
-    getEntityManager: jest.fn(() => ({ persist: jest.fn(), flush: fail, persistAndFlush: fail })),
+    getEntityManager: jest.fn(() => simulatedOutageEntityManager({ persist: jest.fn(), flush: fail, persistAndFlush: fail })),
   };
 }
 

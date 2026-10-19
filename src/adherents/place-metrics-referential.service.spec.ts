@@ -5,10 +5,11 @@ import { Wilaya } from './entities/wilaya.entity';
 import { WilayaPopulation } from './entities/wilaya-population.entity';
 import { PlaceMetricsReferentialService } from './place-metrics-referential.service';
 import { populationInvalidReason } from './referential-rules';
+import { simulatedDatabaseOutage } from '../common/database/db-errors';
 
 /** Repli mémoire forcé : toute opération base échoue (voir adherents.service.spec.ts). */
 function throwingRepo<T extends object>(): EntityRepository<T> {
-  const fail = jest.fn().mockRejectedValue(new Error('DB injoignable (test)'));
+  const fail = jest.fn().mockRejectedValue(simulatedDatabaseOutage());
   return {
     findAll: fail,
     find: fail,
