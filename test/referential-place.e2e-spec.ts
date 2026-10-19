@@ -115,10 +115,11 @@ describe('Référentiels de place — points 1 à 4 (e2e)', () => {
         { date: '2027-01-12', label: 'Awal Moharram', type: 'MOBILE', kind: 'AWAL_MOHARRAM', status: 'PREVISIONNEL' },
       ]);
 
-      await http().post(`/api/v1/referential/mobile-holidays/${created.body.id}/confirm`).set('x-dev-user', 'OPERATEUR_PLACE').send({}).expect(400);
+      await http().post(`/api/v1/referential/mobile-holidays/${created.body.id}/confirm`).set('x-dev-user', 'ADMIN_UAR').send({}).expect(400);
+      // SEC-30 : confirmée par une autre personne que l'auteur de la saisie (quatre yeux).
       const confirmed = await http()
         .post(`/api/v1/referential/mobile-holidays/${created.body.id}/confirm`)
-        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .set('x-dev-user', 'ADMIN_UAR')
         .send({ sourceRef: 'Communiqué e2e' })
         .expect(201);
       expect(confirmed.body).toMatchObject({ status: 'CONFIRME', sourceRef: 'Communiqué e2e' });

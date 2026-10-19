@@ -155,11 +155,12 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .send({ claimId, from: 'SAA', to: 'CASH', amount: 50_000 })
         .expect(201);
 
+      // SEC-46 : hors périmètre, réponse identique à un recours inexistant (404, plus 403).
       await request(app.getHttpServer())
         .post('/api/v1/commission/cases')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
         .send({ recoursId: recours.body.id, motif: 'Tentative illégitime' })
-        .expect(403);
+        .expect(404);
     });
 
     it('autorise une compagnie partie au recours à ouvrir le dossier de commission', async () => {
@@ -169,6 +170,13 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .send({ claimId, from: 'CAAT', to: 'CASH', amount: 50_000 })
         .expect(201);
+
+      // SEC-32 : un dossier de commission ne s'ouvre que pour un recours transmis en commission.
+      const transition = (action: string, company: string) =>
+        request(app.getHttpServer()).post(`/api/v1/recours/${recours.body.id}/transition`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', company)).send({ action }).expect(201);
+      await transition('opposer', 'CASH');
+      await transition('contester', 'CAAT');
+      await transition('transmettre_commission', 'CAAT');
 
       await request(app.getHttpServer())
         .post('/api/v1/commission/cases')
@@ -338,14 +346,15 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
     });
 
     it('autorise un OPERATEUR_PLACE à clôturer la compensation trimestrielle une fois les étapes 1 à 4 réalisées', async () => {
+      // SEC-19 : seul un trimestre ÉCHU se clôture (un trimestre futur comme 2099-Q2 renvoie désormais 409 PERIODE_NON_ECHUE).
       for (const step of ['SAISIE', 'SYNTHESE_ANNEXE_7', 'TRANSMISSION_ANNEXE_8', 'SYNTHESE_GLOBALE_REUNION']) {
-        await request(app.getHttpServer()).post(`/api/v1/settlement/quarter/2099-Q2/pipeline/${step}/complete`).set('x-dev-user', 'OPERATEUR_PLACE').send({}).expect(201);
+        await request(app.getHttpServer()).post(`/api/v1/settlement/quarter/2020-Q2/pipeline/${step}/complete`).set('x-dev-user', 'OPERATEUR_PLACE').send({}).expect(201);
       }
       await request(app.getHttpServer())
-        .post('/api/v1/settlement/quarter/2099-Q2/close')
+        .post('/api/v1/settlement/quarter/2020-Q2/close')
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .expect(201);
-      const pipeline = await request(app.getHttpServer()).get('/api/v1/settlement/quarter/2099-Q2/pipeline').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      const pipeline = await request(app.getHttpServer()).get('/api/v1/settlement/quarter/2020-Q2/pipeline').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
       expect(pipeline.body.steps.every((s: { status: string }) => s.status === 'DONE')).toBe(true);
     });
   });
@@ -392,12 +401,15 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
       const saa = (companies.body.items as { id: string; code: string }[]).find((c) => c.code === 'SAA');
       expect(saa).toBeDefined();
 
+      // SEC-47 : courrier récent (antériorité plafonnée) et référencé.
+      const receivedAt = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+      const year = Number(receivedAt.slice(0, 4));
       const created = await request(app.getHttpServer())
         .post('/api/v1/commission/membership-requests')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ type: 'RETRAIT', receivedAt: '2026-01-15', companyId: saa!.id })
+        .send({ type: 'RETRAIT', receivedAt, companyId: saa!.id, letterRef: 'UAR/E2E/1' })
         .expect(201);
-      expect(created.body).toMatchObject({ state: 'RECUE', companyCode: 'SAA', effectiveDate: '2026-12-31' });
+      expect(created.body).toMatchObject({ state: 'RECUE', companyCode: 'SAA', effectiveDate: receivedAt <= `${year}-09-30` ? `${year}-12-31` : `${year + 1}-12-31` });
 
       try {
         await request(app.getHttpServer())
@@ -441,18 +453,17 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
       const wd1 = (companies.body.items as { id: string; code: string }[]).find((c) => c.code === 'WDR1');
       expect(wd1).toBeDefined();
 
-      // receivedAt largement passé : la date d'effet (31/12 de l'année de réception, préavis ≥ 3 mois) est déjà révolue.
-      const retrait = await request(app.getHttpServer())
-        .post('/api/v1/commission/membership-requests')
-        .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ type: 'RETRAIT', receivedAt: '2025-01-01', companyId: wd1!.id })
+      // SEC-47 : un retrait ne peut plus être antidaté d'un an pour être constaté aussitôt ; la compagnie
+      // passe EN_RETRAIT par un changement de gouvernance validé à quatre yeux (SEC-04).
+      const admin = (id: string) => JSON.stringify({ id, name: id, email: `${id}@uar.dz`, role: 'ADMIN_UAR' });
+      const change = await request(app.getHttpServer())
+        .post(`/api/v1/referential/companies/${wd1!.id}/governance-changes`)
+        .set('x-dev-user', admin('uar-e2e-1'))
+        .send({ status: 'EN_RETRAIT', reason: 'Retrait constaté (e2e)' })
         .expect(201);
-      expect(retrait.body.effectiveDate).toBe('2025-12-31');
-
       await request(app.getHttpServer())
-        .post(`/api/v1/commission/membership-requests/${retrait.body.id}/effective`)
-        .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({})
+        .post(`/api/v1/referential/companies/${wd1!.id}/governance-changes/${change.body.id}/validate`)
+        .set('x-dev-user', admin('uar-e2e-2'))
         .expect(201);
 
       const refused = await request(app.getHttpServer())

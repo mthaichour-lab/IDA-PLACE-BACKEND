@@ -90,7 +90,7 @@ describe('Revue sécurité générale (2026-10-18) — traversée de chemin, lim
   describe('NormalizedExceptionFilter — pas de fuite de message brut (cas HTTP réel)', () => {
     it('une ressource introuvable renvoie un message normalisé, jamais une trace interne', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/v1/recours/id-totalement-inconnu')
+        .get('/api/v1/recours/00000000-0000-4000-8000-000000000000') // SEC-44 : identifiant au format UUID (sinon 400 de validation)
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .expect(404);
       expect(res.body).toMatchObject({ code: 'NOT_FOUND' });
