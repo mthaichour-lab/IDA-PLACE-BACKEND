@@ -1,0 +1,24 @@
+# Contexte de build Docker minimal (SEC-23) : ni secrets, ni artefacts locaux.
+.git
+.github
+node_modules
+dist
+coverage
+.data
+*.log
+*.tsbuildinfo
+Dockerfile
+.dockerignore
+docker-compose.yml
+# Aucun fichier d'environnement réel dans l'image (injection au démarrage).
+.env
+.env.*
+!.env.example
+!.env.production.example
+# Tests et documentation non nécessaires à l'image
+test
+docs
+*.md
+.claude
+.vscode
+.idea

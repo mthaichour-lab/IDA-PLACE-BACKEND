@@ -1,9 +1,20 @@
-# IDA Place - services d'infrastructure pour le développement local.
-# Aucun de ces services n'est requis pour démarrer l'API (voir README.md
-# "Mode dégradé") : docker-compose up permet simplement de les avoir
-# disponibles pour retrouver le comportement "plein" (persistance réelle,
-# cache Redis, stockage objet).
-version: "3.9"
+# IDA Place - services d'infrastructure pour le DÉVELOPPEMENT LOCAL uniquement.
+#
+# ⚠️ Ce fichier n'est PAS une configuration de production (voir
+# docs/DEPLOIEMENT.md) : en production, PostgreSQL et Redis sont des
+# services managés ou durcis sur un réseau privé, avec TLS et des secrets
+# issus du coffre.
+#
+# SEC-23 :
+#  - ports publiés sur 127.0.0.1 seulement (jamais sur toutes les interfaces) ;
+#  - Redis protégé par mot de passe ;
+#  - aucun identifiant réel : les valeurs par défaut ci-dessous sont des
+#    valeurs de développement local (celle de PostgreSQL est alignée sur
+#    DB_PASSWORD de .env.example), surchargeables par un fichier `.env`
+#    non versionné (POSTGRES_PASSWORD, REDIS_PASSWORD).
+#
+# L'API correspondante en développement : DB_PASSWORD=$POSTGRES_PASSWORD et
+# REDIS_URL=redis://:$REDIS_PASSWORD@localhost:6379.
 
 services:
   postgres:
@@ -12,9 +23,9 @@ services:
     environment:
       POSTGRES_DB: ida_place
       POSTGRES_USER: ida_place
-      POSTGRES_PASSWORD: ida_place
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ida_place}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ida_place_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -26,27 +37,32 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # Mot de passe obligatoire ; mode protégé conservé.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-dev-local-redis-change-me}", "--protected-mode", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-local-redis-change-me}
 
   # MinIO (S3-compatible) - optionnel, nécessaire seulement pour tester
   # réellement DocumentsModule en mode "objet" plutôt qu'en mode dégradé
-  # fichier local. Décommenter pour l'activer.
+  # fichier local. Décommenter pour l'activer (identifiants à fournir par
+  # .env local, jamais de valeur réelle ici).
   # minio:
   #   image: minio/minio:latest
   #   restart: unless-stopped
   #   command: server /data --console-address ":9001"
   #   environment:
-  #     MINIO_ROOT_USER: minioadmin
-  #     MINIO_ROOT_PASSWORD: minioadmin
+  #     MINIO_ROOT_USER: ${MINIO_ROOT_USER:?définir MINIO_ROOT_USER dans .env}
+  #     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?définir MINIO_ROOT_PASSWORD dans .env}
   #   ports:
-  #     - "9000:9000"
-  #     - "9001:9001"
+  #     - "127.0.0.1:9000:9000"
+  #     - "127.0.0.1:9001:9001"
   #   volumes:
   #     - ida_place_minio:/data
 
