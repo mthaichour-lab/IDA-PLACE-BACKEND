@@ -29,9 +29,13 @@
 
 1. Créer `src/<domaine>/<domaine>.module.ts` (+ `.controller.ts`,
    `.service.ts`, `entities/`, `dto/` si le module a un état réel).
-2. Appliquer `@UseGuards(AuthGuard, PrivilegesGuard)` sur le contrôleur,
-   et `@Privileges('<privilege>')` sur chaque route d'écriture (voir la
-   liste des 17 privilèges dans `common/rbac/roles-privileges.ts`).
+2. `AuthGuard` et `PrivilegesGuard` sont des gardes GLOBALES fermées par
+   défaut (SEC-43) : CHAQUE route déclare `@Privileges('<privilege>')` (voir
+   `common/rbac/roles-privileges.ts`), `@Roles(...)`, `@Authenticated()`
+   (lecture cloisonnée par le service, justifiée en commentaire) ou
+   `@Public()` — sinon 403, et `test/access-declarations.e2e-spec.ts`
+   échoue. Les paramètres de requête passent par un DTO `@Query()` :
+   toute clé non déclarée est refusée (400, SEC-44).
 3. Si le module a des entités MikroORM : `MikroOrmModule.forFeature([...])`
    dans les imports, écrire la migration dans `src/migrations/` (voir
    `Migration20260101000000_Initial.ts` comme modèle), et prévoir un

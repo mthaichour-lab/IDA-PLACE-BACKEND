@@ -35,3 +35,20 @@ export function decryptRib(envelope: string, key: Buffer): string {
 export function ribLast4(rib: string): string {
   return rib.replace(/\s/g, '').slice(-4);
 }
+
+/** RIB stocké avant SEC-49 (en clair) : ni vide, ni enveloppe `v1:`. */
+export function isLegacyPlainRib(stored: string | null | undefined): stored is string {
+  return typeof stored === 'string' && stored.trim().length > 0 && !stored.startsWith(RIB_ENVELOPE_PREFIX);
+}
+
+/**
+ * Rechiffrement des RIB hérités (procédure docs/DEPLOIEMENT.md) : pour chaque
+ * ligne en clair, l'enveloppe chiffrée et les 4 derniers caractères à écrire.
+ * Les lignes déjà chiffrées ou vides sont ignorées (idempotent).
+ */
+export function planLegacyRibReencryption(rows: ReadonlyArray<{ id: string; rib: string | null }>, key: Buffer): Array<{ id: string; rib: string; ribLast4: string }> {
+  return rows.filter((r) => isLegacyPlainRib(r.rib)).map((r) => {
+    const plain = (r.rib as string).trim();
+    return { id: r.id, rib: encryptRib(plain, key), ribLast4: ribLast4(plain) };
+  });
+}

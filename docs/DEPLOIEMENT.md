@@ -4,7 +4,7 @@ Document de référence de la chaîne de déploiement (constat SEC-23 de la revu
 de sécurité du 2026-10-19). Il complète `.env.production.example` (API) et
 `.env.production.example` du frontend. **Le Tech Lead le complète après
 fusion des branches de sécurité** (section « À compléter » en fin de
-document).
+document). Mis à jour le 2026-10-20 après la phase 2 d'intégration.
 
 ## 1. Architecture cible
 
@@ -104,6 +104,15 @@ Règles :
   scellé), mots de passe PostgreSQL/Redis, clés S3 ; `KEYCLOAK` : rotation
   des clés de signature du realm (l'API recharge le JWKS sur `kid` inconnu).
 - `DEV_JWT_SECRET` n'est **pas** utilisé en production (`AUTH_PROVIDER=keycloak`).
+- `EXPERT_RIB_KEY` (32 octets, base64) chiffre les RIB des experts
+  (AES-256-GCM, enveloppe `v1:`). La perdre rend les RIB illisibles :
+  la conserver dans le coffre avec sauvegarde. Sa rotation impose de
+  déchiffrer avec l'ancienne clé puis rechiffrer avec la nouvelle (outil à
+  écrire, non fourni : prévoir l'opération avant toute rotation).
+- Il n'existe **aucun** secret de signature de documents : S3 signe ses
+  URL pré-signées avec ses propres identifiants ; en mode local
+  (développement), les pièces passent par la route authentifiée
+  `GET /api/v1/documents/:id/download`, contrôlée à chaque requête.
 
 ## 4. Base de données, Redis, stockage
 
@@ -144,24 +153,37 @@ Règles :
 | `DB_SSL_REJECT_UNAUTHORIZED` | `true` | oui |
 | `DB_DEBUG` | absent / `false` (journalisation SQL interdite en production) | non |
 | `LEDGER_HMAC_KEY` | `<secret>` ≥ 32 caractères, hors base | oui |
-| `DOCUMENT_SIGNING_SECRET` | `<secret>` (signature des liens de documents) — *à confirmer après fusion* | à confirmer |
+| `EXPERT_RIB_KEY` | `<secret>` 32 octets en base64 (ou 64 caractères hex) ; absente = saisie de RIB refusée | oui si des RIB sont saisis |
 | `REDIS_ENABLED` | `true` / `false` | non |
 | `REDIS_URL` | `rediss://:<secret>@<hôte>:6380` (mot de passe obligatoire en production) | si Redis |
 | `S3_ENABLED` | `true` | oui en production |
 | `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` | `https://…`, région, bucket privé | oui |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `<secret>` | oui |
+| `S3_SSE` | `AES256` (défaut) ou `aws:kms` ; `none` refusé en production | non |
+| `S3_SSE_KMS_KEY_ID` | identifiant de la clé KMS si `S3_SSE=aws:kms` | si KMS |
+| `ANTIVIRUS_MODE` | `clamd` (recommandé) ou `disabled` (défaut) | recommandé |
+| `CLAMD_HOST` / `CLAMD_PORT` / `CLAMD_TIMEOUT_MS` | démon ClamAV privé, `3310`, `15000` ; injoignable = dépôt refusé (503) | si `clamd` |
 | `LOCAL_STORAGE_DIR` | non utilisé en production (stockage S3) | non |
 | `CORS_ORIGIN` | `https://app.<domaine>` (jamais `*`) | oui |
 | `TRUST_PROXY_HOPS` | nombre de proxys de confiance (`1`) | oui |
 | `THROTTLE_ENABLED` | non désactivable en production | non |
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_SECONDS` | ex. `300` / `60` | non |
-| `IMPORT_MAX_ROWS` | plafond de lignes de données par import (défaut 5 000, branche `security/dossiers`) | non |
+| `THROTTLE_IMPORT_LIMIT` / `THROTTLE_IMPORT_TTL_SECONDS` | `POST /claims/import` : défaut `10` / `60` | non |
+| `THROTTLE_UPLOAD_LIMIT` / `THROTTLE_UPLOAD_TTL_SECONDS` | `POST /documents/upload` : défaut `30` / `60` | non |
+| `THROTTLE_LEDGER_VERIFY_LIMIT` / `THROTTLE_LEDGER_VERIFY_TTL_SECONDS` | `GET /ledger/verify` : défaut `6` / `60` | non |
+| `THROTTLE_ADMIN_LIMIT` / `THROTTLE_ADMIN_TTL_SECONDS` | `/admin/users*`, `/admin/roles/matrix`, `PUT /pricing/grid` : défaut `30` / `60` | non |
+| `IMPORT_MAX_ROWS` | plafond de lignes de données par import (défaut 5 000) | non |
+| `IMPORT_XLSX_MAX_UNCOMPRESSED_BYTES` / `IMPORT_XLSX_MAX_COMPRESSION_RATIO` / `IMPORT_XLSX_MAX_ENTRIES` | bornes anti-bombe zip des XLSX (défauts 50 Mo / 100 / 500) | non |
+| `ANALYSIS_MAX_CLAIMS` | dossiers chargés au plus pour les agrégats (défaut 100 000) | non |
 | `SWAGGER_ENABLED` | absent (Swagger désactivé ; `true` l'exposerait) | non |
 | `LOG_JSON` | `true` (journaux structurés vers la collecte centralisée) | recommandé |
 | `ALLOW_PRODUCTION_DESTRUCTIVE` | absent ; `true` seulement le temps d'un `migration:down`/seeder validé | non |
 | `ELIGIBILITY_GRID_VERSION`, `ELIGIBILITY_MAX_AMOUNT_DA`, `ELIGIBILITY_RECOURS_MAX_MONTHS` | paramètres conventionnels (valeurs validées UAR) | selon convention |
 | `MATCHING_AUTO_THRESHOLD`, `MATCHING_CONFIRM_THRESHOLD` | seuils d'appariement | selon convention |
 | `RECOURS_OPPOSITION_DAYS`, `RECOURS_SILENCE_DAYS` | délais conventionnels | selon convention |
+| `RECOURS_SWEEP_INTERVAL_MINUTES` | balayage des délais de recours (défaut `60`, `0` = désactivé) | non |
+| `COMMISSION_PENALTY_MAX_DA` | plafond des pénalités (défaut : `ELIGIBILITY_MAX_AMOUNT_DA`) | selon décision UAR |
+| `MEMBERSHIP_RECEIVED_MAX_AGE_DAYS` | antériorité maximale d'un courrier d'adhésion/retrait (défaut 30 j, décision UAR SEC-47 attendue) | selon décision UAR |
 | `FRAUD_RECURRENCE_WINDOW_DAYS`, `FRAUD_TRANSMISSION_LATE_DAYS`, `FRAUD_VELOCITY_SAME_DAY_THRESHOLD` | paramètres anti-fraude | selon convention |
 
 Variables de **développement uniquement**, refusées ou ignorées en
@@ -184,6 +206,28 @@ Job de migration : mêmes `DB_*` mais avec le **rôle de migration**, plus
 
 Exécution du frontend : `PORT` (défaut 3000), `HOSTNAME=0.0.0.0` (déjà
 fixés dans l'image).
+
+### 5.3 Rechiffrement des RIB hérités (SEC-49)
+
+Avant la remédiation, `expert.rib` était stocké en clair. L'API ne lit plus
+ces valeurs (elle n'affiche que `rib_last4`) mais elles restent en base tant
+qu'elles ne sont pas rechiffrées. Procédure, à exécuter une fois après la
+migration `Migration20261020204000_ReferentielGouvernanceTrace` (colonne
+`rib_last4`) et avant l'ouverture :
+
+1. Sauvegarde de la base ; `EXPERT_RIB_KEY` créée dans le coffre et
+   injectée à l'API **et** au job ci-dessous (même clé).
+2. Inventaire, sans écriture (job `migrator`, rôle de migration) :
+   `node dist/src/experts/rechiffrer-rib.cli.js`
+   (en développement : `npm run experts:rechiffrer-rib`). Le script affiche
+   le nombre et les identifiants des experts concernés, jamais les RIB.
+3. Rechiffrement, en une transaction (`SELECT … FOR UPDATE`) :
+   `node dist/src/experts/rechiffrer-rib.cli.js --apply`. Chaque RIB en
+   clair devient une enveloppe `v1:` AES-256-GCM et `rib_last4` est
+   renseigné ; idempotent (une enveloppe `v1:` n'est jamais retouchée).
+4. Contrôle : `select count(*) from expert where rib is not null and rib not like 'v1:%';`
+   doit renvoyer 0. Purger ensuite les sauvegardes antérieures contenant
+   les RIB en clair selon la politique de conservation.
 
 ## 6. Keycloak (realm `ida-place`)
 
@@ -211,12 +255,10 @@ fixés dans l'image).
 
 ## 8. À compléter par le Tech Lead après fusion
 
-- Confirmer `DOCUMENT_SIGNING_SECRET` (absent du code à la date de ce
-  document) et `IMPORT_MAX_ROWS` (branche `security/dossiers`) après fusion,
-  ainsi que toute variable ajoutée par les autres branches `security/*`.
-- Mettre à jour `.env.example` (développement) : `REDIS_URL` avec le mot de
-  passe du `docker-compose.yml` (`redis://:dev-local-redis-change-me@localhost:6379`).
-- Régénérer le `package-lock.json` avec npm 10 si l'on souhaite revenir à
-  Node 22 pour l'image et la CI de l'API.
+- Fait en phase 2 (2026-10-20) : `DOCUMENT_SIGNING_SECRET` retiré (il
+  n'existe pas, voir § 3) ; variables des branches `security/*` reportées
+  ci-dessus et dans `.env.example` / `.env.production.example` ;
+  `REDIS_URL` de développement aligné sur le `docker-compose.yml` ;
+  lockfile régénéré, image et CI revenues sur Node 22.
 - Choisir l'orchestrateur (Compose durci, Kubernetes…) et y reporter les
   options de la section 2 (lecture seule, `cap_drop`, réseaux).

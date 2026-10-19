@@ -22,7 +22,8 @@
     "migration:up": "mikro-orm migration:up",
     "migration:down": "ts-node -T src/common/config/destructive-command-guard.ts migration:down && mikro-orm migration:down",
     "migration:pending": "mikro-orm migration:pending",
-    "seed:wilayas": "ts-node -r tsconfig-paths/register src/seeders/wilaya.seeder.ts"
+    "seed:wilayas": "ts-node -r tsconfig-paths/register src/seeders/wilaya.seeder.ts",
+    "experts:rechiffrer-rib": "ts-node -r tsconfig-paths/register src/experts/rechiffrer-rib.cli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1152.0",

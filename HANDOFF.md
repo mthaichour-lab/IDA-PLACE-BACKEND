@@ -7,6 +7,101 @@ et depuis ce sprint `RecoursModule`, `SettlementModule`,
 `CommissionModule`, `LedgerModule`) — implémente la logique métier
 **derrière** ces contrats. Rupture de forme → `/api/v2`, jamais silencieuse.
 
+## Remédiation sécurité 2026-10-19/20 (revue du 2026-10-19, constats SEC-01 à SEC-52)
+
+Référence : `audit-securite-2026-10-19/IDA-Place-Plan-remediation-securite-2026-10-19.md`
+(hors dépôt). Historique : `git log --oneline 07cf0b5..HEAD`.
+
+### Phase 1 — trois branches backend (et une frontend), fusionnées dans `master`
+
+- **Socle** : configuration validée au démarrage et auth de dev interdite en
+  production (SEC-01, SEC-23) ; compte suspendu refusé, stratégie Keycloak
+  durcie, liaison par `sub` (SEC-09, SEC-24) ; journal scellé HMAC, sérialisé,
+  ancré, append-only en base, accès restreint (SEC-15, SEC-16) ; plancher de
+  privilèges place/compagnie et matrice journalisée (SEC-25) ; passerelle
+  temps réel (salons par rôle, Bearer, CORS fermé, SEC-07) ; mode dégradé
+  limité aux pannes de connexion, 503 en production, sondes `/health`
+  (SEC-08) ; throttler global, `trust proxy`, limite de corps, Swagger,
+  query parser `simple` (SEC-13, SEC-41, SEC-44) ; journaux neutralisés
+  (SEC-45) ; `migration:down`/seeder refusés en production (SEC-51) ;
+  overrides de dépendances (SEC-42) ; images non-root, CI de sécurité,
+  compose durci, `docs/DEPLOIEMENT.md` (SEC-23).
+- **Recours / compensation / commission / référentiel** : montants bornés et
+  compensation en centimes (SEC-06, SEC-34) ; recours tracés, verrouillés,
+  diffusés aux seules parties (SEC-07, SEC-17, SEC-20, SEC-33, SEC-35,
+  SEC-46, SEC-48) ; clôtures uniques, échues, figées (SEC-19, SEC-25,
+  SEC-26, SEC-34) ; commission collégiale et adhésions traçables (SEC-20,
+  SEC-25, SEC-32, SEC-33, SEC-47) ; référentiel durci, gouvernance à quatre
+  yeux (SEC-04, SEC-26, SEC-30, SEC-31, SEC-44) ; expert partagé protégé et
+  RIB chiffré (SEC-14, SEC-26, SEC-49) ; migrations d'unicité et de
+  contraintes (SEC-20, SEC-49).
+- **Dossiers** : import lié à la compagnie de l'appelant (SEC-02), imports
+  bornés (lignes, bombe zip, signature, SEC-12), formules neutralisées
+  (SEC-39) ; appariement borné, compagnie désignée, masquage (SEC-03,
+  SEC-12) ; cockpit réservé aux rôles place (SEC-05) ; événements temps
+  réel ciblés (SEC-07) ; pièces par identifiant, stockage chiffré, contenu
+  vérifié, antivirus (SEC-10, SEC-11, SEC-29) ; lectures bornées en base,
+  recalcul anti-fraude hors des GET (SEC-13, SEC-36) ; journal de place
+  réservé, lectures minimisées (SEC-21, SEC-26) ; éligibilité sur le
+  référentiel (SEC-27) ; historique des décisions d'appariement (SEC-28) ;
+  responsabilité bornée (SEC-49) ; grille tarifaire versionnée (SEC-37,
+  SEC-38) ; identifiants UUID et requêtes typées (SEC-44).
+
+### Phase 2 — intégration backend (branche `security/integration`, 2026-10-20)
+
+- **SEC-43** : `AuthGuard` et `PrivilegesGuard` deviennent GLOBAUX et fermés
+  par défaut ; chaque handler déclare `@Privileges`, `@Roles`,
+  `@Authenticated()` (cloisonnement fait par le service, justifié en
+  commentaire) ou `@Public()` (sondes `/health` seulement). Le 403 ne
+  renvoie plus `held`. `test/access-declarations.e2e-spec.ts` découvre
+  toutes les routes et fige la liste revue des routes `@Authenticated()`
+  seules (58 GET, aucune écriture) : toute nouvelle route ouverte impose de
+  mettre à jour ce test.
+- **SEC-13** : limites strictes par route (`@RouteThrottle`, profils IMPORT,
+  UPLOAD, LEDGER_VERIFY, ADMIN, variables `THROTTLE_<PROFIL>_*`).
+- **SEC-44** : intercepteur global `StrictQueryInterceptor`
+  (`src/common/validation/strict-query.ts`) — toute clé de query string non
+  déclarée par la route donne 400 `PARAMETRE_INCONNU` ; les clés envoyées
+  par le frontend sont vérifiées par le test de découverte.
+- **SEC-08** : tolérance Jest du mode dégradé supprimée ; les tests
+  simulent les pannes avec `simulatedDatabaseOutage()` /
+  `simulatedOutageEntityManager()`.
+- **Migrations** exécutées sur un PostgreSQL 16 vierge, chaque migration
+  `20261020*` en down puis up, tests `ledger-postgres` et `recours-postgres`
+  verts. Dérive schéma/entités antérieure corrigée (`match_queue_item.decl_a_id`…
+  via `fieldName`, `company.correspondent_*` et `commission_pv` par
+  `Migration20261020210000_AlignementSchemaEntites`).
+- **Chaîne** : lockfile régénéré avec npm 10, image et CI sur Node 22 LTS.
+- **Configuration** : `.env.example`, `.env.production.example` et
+  `docs/DEPLOIEMENT.md` complets (dont `EXPERT_RIB_KEY` et la procédure de
+  rechiffrement des RIB hérités, `npm run experts:rechiffrer-rib`).
+
+### Décisions UAR en attente (le code applique une valeur conservatrice)
+
+- **SEC-18** : qui peut lever une opposition (`QUESTIONS_UAR.md` §15).
+- **SEC-28** : qui décide un appariement (compagnie A, B, ou la place) et
+  si une re-décision d'une autre partie est admise.
+- **SEC-03** : un appariement `AUTO_CONFIRME` lève-t-il le masquage des
+  données de la contrepartie ?
+- **SEC-25** : redistribution des privilèges d'`OPERATEUR_PLACE` (aujourd'hui
+  tous sauf `validateRef`).
+- **SEC-30** : quatre yeux pour les populations et les périmètres de wilaya.
+- **SEC-32** : quorum de la commission.
+- **SEC-19** : sort d'un recours réglé après la clôture de sa période.
+- **SEC-35** : ordre de traitement des échéances concurrentes.
+- **SEC-47** : plafond d'antériorité des courriers d'adhésion/retrait
+  (30 jours provisoires, `MEMBERSHIP_RECEIVED_MAX_AGE_DAYS`).
+
+### Reste hors code
+
+- Ancrage externe du journal scellé (horodatage/dépôt de l'empreinte de tête
+  hors de la base).
+- Suspension d'un compte synchronisée dans Keycloak (aujourd'hui refusée par
+  l'API seulement).
+- File d'import asynchrone (les imports restent synchrones, bornés et
+  limités en débit).
+- Montées majeures : MikroORM 7, NestJS 12, Jest 30.
+
 ## ⚠️ 2026-10-17 — Le dossier technique de référence est maintenant disponible
 
 Le document cité partout dans ce code (`IDA_Place_Dossier_Technique.md`,

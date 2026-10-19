@@ -40,10 +40,15 @@ npm run seed:wilayas
 
 ## Authentification en développement
 
-Keycloak n'est pas disponible dans cet environnement. `AUTH_PROVIDER=dev`
-(valeur par défaut, voir `.env.example`) active `DevAuthProvider` :
-envoyer l'en-tête `x-dev-user` avec soit un nom de rôle, soit un JSON
-complet.
+`AUTH_PROVIDER` doit être posé explicitement (aucune valeur par défaut,
+démarrage refusé sinon) :
+
+- `keycloak` : `KeycloakStrategy`, intégration OIDC réelle (jeton Bearer
+  vérifié par la JWKS du realm, émetteur, audience/`azp`, compte suspendu
+  refusé, liaison par `sub`) — seule valeur acceptée en production ;
+- `dev` (développement local, refusé si `NODE_ENV=production`) :
+  `DevAuthProvider`, qui exige un `DEV_JWT_SECRET` propre au poste ; envoyer
+  l'en-tête `x-dev-user` avec soit un nom de rôle, soit un JSON complet.
 
 ```bash
 curl -H "x-dev-user: OPERATEUR_PLACE" http://localhost:3001/api/v1/me
@@ -57,9 +62,13 @@ Le bouton "Authorize" de Swagger accepte aussi un header `x-dev-user`
 (configuré via `@ApiHeader` sur `AuthController`, ou en utilisant l'onglet
 "Try it out" avec l'en-tête ajouté manuellement).
 
-⚠️ Ce mécanisme est strictement limité au développement. Voir
-`src/auth/strategies/dev-auth.provider.ts` et `keycloak.strategy.ts`
-(TODO d'intégration OIDC réelle).
+⚠️ `x-dev-user` est strictement limité au développement. Voir
+`src/auth/strategies/dev-auth.provider.ts` et `keycloak.strategy.ts` ;
+configuration Keycloak de production : `docs/DEPLOIEMENT.md` § 6.
+
+Toute route est authentifiée et doit déclarer son accès (`@Privileges`,
+`@Roles`, `@Authenticated` ou `@Public`, SEC-43) : les gardes sont globales
+et fermées par défaut.
 
 ## Mode dégradé (PostgreSQL / Redis / MinIO / Paperless / Keycloak absents)
 
@@ -71,11 +80,11 @@ environnement de développement :
 
 | Service | Comportement si absent | Où |
 |---|---|---|
-| PostgreSQL | `MikroORM` est initialisé avec `connect: false` (pas de connexion bloquante au boot). Chaque appel réel bascule sur un **repository mémoire déterministe** (`withDegradedFallback`), journalisé en `WARN [DEGRADED_MODE]`. | `mikro-orm.config.ts`, `common/interfaces/degraded-mode.ts`, `adherents.service.ts`, `experts.service.ts` |
+| PostgreSQL | `MikroORM` est initialisé avec `connect: false` (pas de connexion bloquante au boot). Hors production, une erreur de **connexion** identifiée bascule sur un **repository mémoire déterministe** (`withDegradedFallback`), journalisé en `WARN [DEGRADED_MODE]` ; toute autre erreur remonte, et en production la réponse est 503 (SEC-08). | `mikro-orm.config.ts`, `common/interfaces/degraded-mode.ts`, `adherents.service.ts`, `experts.service.ts` |
 | Redis | Non branché dans ce socle (pas de cache de lecture implémenté) — `REDIS_ENABLED=false` documente l'intention pour le futur agent Backend. | `.env.example` |
 | MinIO/S3 | `S3_ENABLED=false` → `LocalFsStorageProvider` écrit sur disque local (non chiffré, dev uniquement) au lieu de `S3StorageProvider` (non implémenté, lève une erreur explicite si activé sans configuration). | `src/documents/providers/*` |
 | Paperless | Non branché (TODO backend-agent). | `src/documents` (TODO dans le module) |
-| Keycloak | `AUTH_PROVIDER=dev` → `DevAuthProvider` (en-tête `x-dev-user`). `KeycloakStrategy` lève une erreur explicite si activé (`AUTH_PROVIDER=keycloak`) sans être implémenté — **jamais de faux admin de repli**. | `src/auth/strategies/*` |
+| Keycloak | `AUTH_PROVIDER=dev` → `DevAuthProvider` (en-tête `x-dev-user`, hors production). Avec `AUTH_PROVIDER=keycloak`, une configuration incomplète fait échouer le démarrage et un Keycloak injoignable donne 401 — **jamais de faux admin de repli**. | `src/auth/strategies/*` |
 
 Principe (voir `common/interfaces/degraded-mode.ts`) : l'app démarre
 toujours, le repli est explicite et journalisé, et on ne triche jamais sur
