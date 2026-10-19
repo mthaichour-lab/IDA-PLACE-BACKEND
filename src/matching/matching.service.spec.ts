@@ -116,3 +116,52 @@ describe('MatchingService — décision sur une paire (mode dégradé)', () => {
     expect(after.ba.status).not.toBe('CONFIRME_MANUEL');
   });
 });
+
+describe('MatchingService — SEC-03 (seuil, compagnie désignée, masquage)', () => {
+  let service: MatchingService;
+  const caat: AuthenticatedUser = { id: 'c', name: 'Correspondant CAAT', email: 'c@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', privileges: ['matchDecide'] };
+
+  // Pas d'e-constat partagé : plaques + polices + compagnies croisées = 60 (MANUEL, à confirmer).
+  const a: ClaimMatchInput = { id: 'clm-ma', numEconstat: 'EC-MA', company: 'CAAT', counterpartyCompany: 'SAA', plateA: '111', plateB: '222', policeA: 'PA', policeB: 'PB', assureIdentite: 'Assuré CAAT' };
+  const b: ClaimMatchInput = { id: 'clm-mb', numEconstat: 'EC-MB', company: 'SAA', counterpartyCompany: 'CAAT', plateA: '222', plateB: '111', policeA: 'PB', policeB: 'PA', assureIdentite: 'Assuré SAA' };
+  // Même e-constat que A mais compagnie non désignée par A.
+  const intrus: ClaimMatchInput = { id: 'clm-x', numEconstat: 'EC-MA', company: 'CASH', counterpartyCompany: 'CAAT', plateA: '999', assureIdentite: 'Assuré CASH' };
+
+  beforeEach(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MatchingService,
+        { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        { provide: RealtimeGateway, useValue: { emitEvent: jest.fn() } },
+        { provide: AdherentsService, useValue: { publishedBaremeCases: async () => [], assertCompanyActiveFor: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(MatchingService);
+    await service.ingestClaims([intrus, a, b], { byKeys: async () => [intrus, a, b], all: async () => [intrus, a, b] });
+  });
+
+  it('la ligne de A est appariée à SAA (désignée), jamais à CASH malgré l’e-constat commun', async () => {
+    const { items } = await service.queue({ page: 1, pageSize: 100 } as never);
+    expect(items.find((i) => i.refA === 'EC-MA')).toMatchObject({ companyB: 'SAA', level: 'MANUEL', status: 'A_CONFIRMER' });
+  });
+
+  it('CAAT lit la file : aucun champ nominatif de SAA tant que la paire n’est pas confirmée, ni l’id de son dossier', async () => {
+    const { items } = await service.queue({ page: 1, pageSize: 100 } as never, caat);
+    const row = items.find((i) => i.refA === 'EC-MA')!;
+    expect(row).toMatchObject({ masked: true, plateB: '••••', policeB: '••••', assureBIdentite: '••••', assureAIdentite: 'Assuré CAAT' });
+    expect(JSON.stringify(items)).not.toContain('Assuré SAA');
+    const detail = await service.getItem(row.id, caat);
+    expect(detail.claimAId).toBe('clm-ma');
+    expect(detail.claimBId).toBeUndefined();
+  });
+
+  it('après confirmation, les champs de la contrepartie sont publiés', async () => {
+    const { items } = await service.queue({ page: 1, pageSize: 100 } as never, caat);
+    const row = items.find((i) => i.refA === 'EC-MA')!;
+    await service.decide(row.id, { action: 'confirm' }, 'Correspondant CAAT', caat);
+    const detail = await service.getItem(row.id, caat);
+    expect(detail).toMatchObject({ assureBIdentite: 'Assuré SAA', claimBId: 'clm-mb' });
+    expect(detail.masked).toBeUndefined();
+  });
+});

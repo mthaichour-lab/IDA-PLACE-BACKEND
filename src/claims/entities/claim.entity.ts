@@ -151,4 +151,13 @@ export class Claim {
 
   @Property({ type: 'float', nullable: true })
   responsabiliteDeclareeB?: number;
+
+  /**
+   * SEC-12 — clés de rapprochement normalisées (`E:` e-constat, `P:` plaque,
+   * `N:` police/attestation, voir `matchKeysFor`, matching.selection.ts),
+   * index GIN : l'appariement charge les seules déclarations partageant une
+   * clé (`&&`) au lieu de toute la table. Écrites à la création du dossier.
+   */
+  @Property({ type: 'text[]', nullable: true })
+  matchKeys?: string[];
 }

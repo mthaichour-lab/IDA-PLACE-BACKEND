@@ -48,17 +48,18 @@ export const MATCH_WEIGHTS = {
   gps: 10,
 } as const;
 
-function normalize(value: string | undefined | null): string | undefined {
+/** Normalisation des clés de rapprochement (plaques, polices) — exportée pour l'index de candidats (SEC-12). */
+export function normalizeMatchValue(value: string | undefined | null): string | undefined {
   const v = value?.trim().toUpperCase().replace(/[\s-]+/g, '');
   return v ? v : undefined;
 }
 
 /** Compare deux paires {a1,a2} / {b1,b2} comme des ENSEMBLES non ordonnés. */
 function sameUnorderedPair(a1?: string, a2?: string, b1?: string, b2?: string): boolean {
-  const na1 = normalize(a1);
-  const na2 = normalize(a2);
-  const nb1 = normalize(b1);
-  const nb2 = normalize(b2);
+  const na1 = normalizeMatchValue(a1);
+  const na2 = normalizeMatchValue(a2);
+  const nb1 = normalizeMatchValue(b1);
+  const nb2 = normalizeMatchValue(b2);
   if (!na1 || !na2 || !nb1 || !nb2) return false;
   return (na1 === nb1 && na2 === nb2) || (na1 === nb2 && na2 === nb1);
 }
@@ -74,8 +75,8 @@ function hasPlaquesCroisees(a: ClaimMatchInput, b: ClaimMatchInput): boolean {
 }
 
 function hasPoliceCroisee(a: ClaimMatchInput, b: ClaimMatchInput): boolean {
-  const setA = [normalize(a.policeA), normalize(a.policeB)].filter((v): v is string => Boolean(v));
-  const setB = [normalize(b.policeA), normalize(b.policeB)].filter((v): v is string => Boolean(v));
+  const setA = [normalizeMatchValue(a.policeA), normalizeMatchValue(a.policeB)].filter((v): v is string => Boolean(v));
+  const setB = [normalizeMatchValue(b.policeA), normalizeMatchValue(b.policeB)].filter((v): v is string => Boolean(v));
   if (setA.length === 0 || setB.length === 0) return false;
   return setA.some((v) => setB.includes(v));
 }

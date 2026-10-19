@@ -1,6 +1,6 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
@@ -19,8 +19,10 @@ import {
 } from './dto/matching.dto';
 import { MatchLevel, MatchQueueItem, MatchStatus } from './entities/match-queue-item.entity';
 import { compactResponsabilite, computeDivergence, withTauxSelonBareme } from './matching.bareme';
-import { computeMatchScore, levelForScore, MatchLevelThresholds, MatchScoreResult } from './matching.scoring';
-import { ClaimMatchInput } from './matching.types';
+import { projectForViewer } from './matching.projection';
+import { levelForScore, MatchLevelThresholds, MatchScoreResult } from './matching.scoring';
+import { CandidateSelection, MatchCandidateIndex, matchKeysFor, NON_INDEXED_MAX_SCORE, selectBestCandidate } from './matching.selection';
+import { ClaimMatchInput, MatchCandidateSource } from './matching.types';
 
 /** Ligne de file en repli mémoire — forme `MatchQueueItemDto` + les id internes utiles au recalcul. */
 type MemoryMatchRow = MatchQueueItemDto & { declAId: string; declBId?: string };
@@ -113,6 +115,7 @@ function nextStatusForAction(action: MatchDecisionDto['action']): MatchStatus {
 export class MatchingService {
   /** Repli mémoire — mode dégradé (base injoignable). Persistant pour la durée du process. */
   private readonly memory: MemoryMatchRow[] = [];
+  private readonly logger = new Logger('MatchingService');
   private readonly thresholds: MatchLevelThresholds;
 
   constructor(
@@ -159,7 +162,10 @@ export class MatchingService {
     if (query.filter === 'A_CONFIRMER') rows = rows.filter((r) => r.status === 'A_CONFIRMER');
     if (query.filter === 'NON_APPARIES') rows = rows.filter((r) => !r.refB);
     const page = paginateArray(rows, query.page, query.pageSize);
-    return new PaginatedResult(await this.withBareme(page.items), page.total, page.page);
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    // SEC-03 : barème calculé sur les données complètes, PUIS masquage pour le lecteur.
+    const items = (await this.withBareme(page.items)).map((r) => projectForViewer(r, tenant));
+    return new PaginatedResult(items, page.total, page.page);
   }
 
   /** Détail d'un appariement (écran 2), avec les deux saisies Art. 14 côte à côte. */
@@ -197,7 +203,14 @@ export class MatchingService {
       },
     );
     const [withBareme] = await this.withBareme([row]);
-    return { ...withBareme, claimAId: ids.claimAId ?? '', claimBId: ids.claimBId };
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const projected = projectForViewer({ ...withBareme, claimAId: ids.claimAId ?? '', claimBId: ids.claimBId }, tenant);
+    // SEC-03 : l'id du dossier de l'autre compagnie n'est publié qu'après confirmation (il ouvrirait `GET /claims/:id`).
+    if (projected.masked) {
+      if (projected.companyA !== tenant) projected.claimAId = '';
+      if (projected.companyB !== tenant) projected.claimBId = undefined;
+    }
+    return projected;
   }
 
   /** Taux selon barème calculé à la lecture : une version archivée entre-temps n'est plus citée. */
@@ -339,19 +352,24 @@ export class MatchingService {
    * 14, validation humaine obligatoire) : seuls le score affiché par défaut
    * (AUTO/A_CONFIRMER) sont recalculés automatiquement.
    */
+  /**
+   * SEC-03 : meilleure contrepartie DÉSIGNÉE au-dessus du seuil MANUEL
+   * (`confirmThreshold`), départage déterministe journalisé — voir
+   * `matching.selection.ts`. `index` évite de rescorer toute la base (SEC-12).
+   */
+  private pickBest(claim: ClaimMatchInput, index: MatchCandidateIndex, useKeys: boolean): CandidateSelection | undefined {
+    const pool = useKeys ? index.candidatesFor(claim) : index.all();
+    const best = selectBestCandidate(claim, pool, this.thresholds.confirmThreshold);
+    if (best?.tieBroken) {
+      this.logger.log(`Égalité de score (${best.result.score}) pour la déclaration ${claim.id} : départage par date de réception puis id → ${best.candidate.id}.`);
+    }
+    return best;
+  }
+
   private async upsertRowForClaim(
     claim: ClaimMatchInput,
-    pool: ClaimMatchInput[],
-  ): Promise<{ candidate?: ClaimMatchInput; result?: MatchScoreResult }> {
-    let best: { candidate: ClaimMatchInput; result: MatchScoreResult } | undefined;
-    for (const candidate of pool) {
-      if (candidate.id === claim.id) continue;
-      const result = computeMatchScore(claim, candidate);
-      if (result.score > 0 && (!best || result.score > best.result.score)) {
-        best = { candidate, result };
-      }
-    }
-
+    best: { candidate: ClaimMatchInput; result: MatchScoreResult } | undefined,
+  ): Promise<void> {
     await withDegradedFallback(
       'MatchingService.upsertRowForClaim',
       async () => {
@@ -375,8 +393,6 @@ export class MatchingService {
         this.applyComputedDto(item, claim, best);
       },
     );
-
-    return best ?? {};
   }
 
   private applyComputed(
@@ -491,12 +507,46 @@ export class MatchingService {
    * uniquement si un appariement a réellement été (re)calculé.
    */
   async ingestClaim(newClaim: ClaimMatchInput, allExistingClaims: ClaimMatchInput[]): Promise<void> {
-    const pool = allExistingClaims.filter((c) => c.id !== newClaim.id);
-    const { candidate } = await this.upsertRowForClaim(newClaim, pool);
-    if (candidate) {
-      const poolForCandidate = allExistingClaims.filter((c) => c.id !== candidate.id);
-      await this.upsertRowForClaim(candidate, poolForCandidate);
+    await this.ingestClaims([newClaim], { byKeys: async () => allExistingClaims, all: async () => allExistingClaims });
+  }
+
+  /**
+   * Ingestion par lot (import) — SEC-12 : un seul index en mémoire des
+   * déclarations candidates (chargées par clé de rapprochement via
+   * `source.byKeys`, requête indexée côté ClaimsModule) au lieu d'un
+   * rescoring de toute la base pour chaque ligne (O(n²)). Tant que le seuil
+   * de rétention dépasse `NON_INDEXED_MAX_SCORE`, l'index est exact ; sinon
+   * repli sur `source.all()`.
+   */
+  async ingestClaims(newClaims: ClaimMatchInput[], source: MatchCandidateSource): Promise<void> {
+    if (newClaims.length === 0) return;
+    const useKeys = this.thresholds.confirmThreshold > NON_INDEXED_MAX_SCORE;
+    const load = (claims: ClaimMatchInput[]) => (useKeys ? source.byKeys([...new Set(claims.flatMap(matchKeysFor))]) : source.all());
+
+    const index = new MatchCandidateIndex(await load(newClaims));
+    for (const c of newClaims) index.add(c);
+
+    const counterparts = new Map<string, ClaimMatchInput>();
+    const newIds = new Set(newClaims.map((c) => c.id));
+    const outcomes: Array<{ claim: ClaimMatchInput; matchedWith?: ClaimMatchInput }> = [];
+    for (const claim of newClaims) {
+      const best = this.pickBest(claim, index, useKeys);
+      await this.upsertRowForClaim(claim, best);
+      outcomes.push({ claim, matchedWith: best?.candidate });
+      if (best && !newIds.has(best.candidate.id)) counterparts.set(best.candidate.id, best.candidate);
     }
-    this.realtime.emitEvent('match.updated', { claimId: newClaim.id, matchedWith: candidate?.id });
+
+    // La contrepartie trouvée est recalculée à son tour (appariement dans les deux sens).
+    if (counterparts.size > 0) {
+      const extra = await load([...counterparts.values()]);
+      for (const c of extra) if (!index.has(c.id)) index.add(c);
+      for (const cp of counterparts.values()) {
+        await this.upsertRowForClaim(cp, this.pickBest(cp, index, useKeys));
+      }
+    }
+
+    for (const { claim, matchedWith } of outcomes) {
+      this.realtime.emitEvent('match.updated', { claimId: claim.id, matchedWith: matchedWith?.id });
+    }
   }
 }

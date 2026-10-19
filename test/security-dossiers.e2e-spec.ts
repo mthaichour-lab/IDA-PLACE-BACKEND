@@ -99,6 +99,48 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-03 — file d’appariement : seuil, compagnie désignée, masquage', () => {
+    async function importAs(company: string, overrides: Record<string, string>): Promise<void> {
+      await http()
+        .post('/api/v1/claims/import')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', company))
+        .attach('file', csvFile(csvRow({ compagnieA: company, ...overrides })), `${company}.csv`)
+        .expect(201);
+    }
+
+    it('CAAT lit la file : appariée à SAA (désignée), jamais à CASH, et sans aucun champ nominatif de SAA avant confirmation', async () => {
+      // A (CAAT → SAA) et B (SAA → CAAT) : plaques et polices croisées, e-constat distincts → niveau MANUEL, à confirmer.
+      await importAs('CAAT', { numEconstat: 'E2E-SEC03-A', compagnieB: 'SAA', immatriculationA: '16777001', immatriculationB: '31777001', numPoliceA: 'POL-S03-A', numPoliceB: 'POL-S03-B', assureAIdentite: 'Nom CAAT S03' });
+      // Intrus : CASH reprend le n° e-constat de A, mais A a désigné SAA.
+      await importAs('CASH', { numEconstat: 'E2E-SEC03-A', compagnieB: 'CAAT', immatriculationA: '09777001', assureAIdentite: 'Nom CASH S03' });
+      await importAs('SAA', { numEconstat: 'E2E-SEC03-B', compagnieB: 'CAAT', immatriculationA: '31777001', immatriculationB: '16777001', numPoliceA: 'POL-S03-B', numPoliceB: 'POL-S03-A', assureAIdentite: 'Nom SAA S03' });
+
+      const queue = await http().get('/api/v1/matching/queue').query({ pageSize: 100 }).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      const row = queue.body.items.find((i: { refA: string; companyA: string }) => i.refA === 'E2E-SEC03-A' && i.companyA === 'CAAT');
+      expect(row).toMatchObject({ companyB: 'SAA', level: 'MANUEL', status: 'A_CONFIRMER', masked: true, plateB: '••••', assureBIdentite: '••••', policeB: '••••' });
+      expect(JSON.stringify(row)).not.toMatch(/Nom SAA S03|Nom CASH S03|POL-S03-B|31777001/);
+
+      const detail = await http().get(`/api/v1/matching/${row.id}`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      expect(detail.body.claimBId).toBeUndefined();
+      expect(JSON.stringify(detail.body)).not.toContain('Nom SAA S03');
+
+      // Après confirmation par CAAT, la contrepartie est publiée.
+      await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).send({ action: 'confirm' }).expect(201);
+      const confirmed = await http().get(`/api/v1/matching/${row.id}`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      expect(confirmed.body).toMatchObject({ assureBIdentite: 'Nom SAA S03', claimBId: expect.any(String) });
+    });
+
+    it('une seule coïncidence faible (même jour, compagnies croisées) ne rattache plus une déclaration tierce', async () => {
+      await importAs('CAAT', { numEconstat: 'E2E-SEC03-WEAK-A', compagnieB: 'SAA', immatriculationA: '16888001', immatriculationB: '31888001', assureAIdentite: 'Nom faible A' });
+      await importAs('SAA', { numEconstat: 'E2E-SEC03-WEAK-B', compagnieB: 'CAAT', immatriculationA: '31888999', immatriculationB: '16888999', assureAIdentite: 'Nom faible B' });
+      const queue = await http().get('/api/v1/matching/queue').query({ pageSize: 100 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      const row = queue.body.items.find((i: { refA: string }) => i.refA === 'E2E-SEC03-WEAK-A');
+      expect(row).toMatchObject({ level: 'NON' });
+      expect(row.refB).toBeUndefined();
+      expect(row.assureBIdentite).toBeUndefined();
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

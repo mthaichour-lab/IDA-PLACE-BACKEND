@@ -38,6 +38,19 @@ export interface ClaimMatchInput {
   canalDeclaration?: string;
   /** Barème Art. 14 tel que saisi sur CETTE déclaration (décision PO §5) — affichage écran 2, jamais dans le score. */
   responsabilite?: DeclarationResponsabilite;
+  /** Date de réception (ISO, `Claim.createdAt`) — départage déterministe des égalités de score (SEC-03). */
+  receivedAt?: string;
+}
+
+/**
+ * Source de déclarations candidates fournie par `ClaimsModule` (SEC-12) :
+ * `byKeys` = déclarations partageant au moins une clé de rapprochement
+ * (requête indexée), `all` = repli quand le seuil de rétention ne permet pas
+ * de se limiter aux clés (voir `NON_INDEXED_MAX_SCORE`).
+ */
+export interface MatchCandidateSource {
+  byKeys(keys: string[]): Promise<ClaimMatchInput[]>;
+  all(): Promise<ClaimMatchInput[]>;
 }
 
 /** Saisie Art. 14 d'une déclaration, du point de vue de sa compagnie (A = son assuré, B = l'adverse). */

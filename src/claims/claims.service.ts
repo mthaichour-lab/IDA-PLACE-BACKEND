@@ -10,6 +10,7 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchingService } from '../matching/matching.service';
+import { matchKeysFor } from '../matching/matching.selection';
 import { ClaimMatchInput } from '../matching/matching.types';
 import { RealtimeGateway } from '../realtime/realtime.module';
 import { CreateRecoursDto, RecoursViewDto } from '../recours/dto/recours.dto';
@@ -99,6 +100,8 @@ function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
       responsabiliteDeclareeA: c.responsabiliteDeclareeA,
       responsabiliteDeclareeB: c.responsabiliteDeclareeB,
     },
+    // SEC-03 : départage déterministe des égalités (date de réception, puis id).
+    receivedAt: c.createdAt,
   };
 }
 
@@ -136,6 +139,27 @@ export class ClaimsService {
         return rows.map(toClaimView);
       },
       () => [...MEMORY_CLAIMS].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+    );
+  }
+
+  /**
+   * SEC-12 — déclarations partageant au moins une clé de rapprochement
+   * (`claim.match_keys && keys`, index GIN), pour l'appariement par lot.
+   */
+  private async findMatchCandidates(keys: string[]): Promise<ClaimMatchInput[]> {
+    if (keys.length === 0) return [];
+    const wanted = new Set(keys);
+    return withDegradedFallback(
+      'ClaimsService.findMatchCandidates',
+      async () => {
+        const rows: Claim[] = [];
+        for (let i = 0; i < keys.length; i += 1000) {
+          rows.push(...(await this.repo.find({ matchKeys: { $overlap: keys.slice(i, i + 1000) } })));
+        }
+        const unique = new Map(rows.map((r) => [r.id, r]));
+        return [...unique.values()].map((r) => toMatchInput(toClaimView(r)));
+      },
+      () => MEMORY_CLAIMS.map(toMatchInput).filter((c) => matchKeysFor(c).some((k) => wanted.has(k))),
     );
   }
 
@@ -278,6 +302,14 @@ export class ClaimsService {
           dateDemandeRecours: values.dateDemandeRecours as string | undefined,
           canalDeclaration: values.canalDeclaration as string | undefined,
           ...art14,
+          // SEC-12 : clés de rapprochement indexées (voir `findMatchCandidates`).
+          matchKeys: matchKeysFor({
+            numEconstat: values.numEconstat as string | undefined,
+            plateA: values.immatriculationA as string | undefined,
+            plateB: values.immatriculationB as string | undefined,
+            policeA: (values.numPoliceA as string) ?? (values.numAttestationA as string | undefined),
+            policeB: (values.numPoliceB as string) ?? (values.numAttestationB as string | undefined),
+          }),
           state,
           eligibilityVerdict: verdict,
           eligibilityReasons: reasons,
@@ -423,13 +455,14 @@ export class ClaimsService {
     }
 
     // Appariement (B.5) — recalcule la file pour chaque dossier nouvellement
-    // ingéré, contre l'ensemble des dossiers existants (ClaimsModule dépend
-    // de MatchingModule, jamais l'inverse — voir matching.service.ts).
+    // ingéré (ClaimsModule dépend de MatchingModule, jamais l'inverse — voir
+    // matching.service.ts). SEC-12 : un seul lot, candidats chargés par clé
+    // de rapprochement (index GIN) au lieu de toute la base par ligne.
     if (created.length > 0) {
-      const allClaims = await this.findAll();
-      for (const claim of created) {
-        await this.matching.ingestClaim(toMatchInput(claim), allClaims.map(toMatchInput));
-      }
+      await this.matching.ingestClaims(created.map(toMatchInput), {
+        byKeys: (keys) => this.findMatchCandidates(keys),
+        all: async () => (await this.findAll()).map(toMatchInput),
+      });
     }
 
     const eligibleCount = rows.filter((r) => r.verdict === 'ELIGIBLE_IDA').length;

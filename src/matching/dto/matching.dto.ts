@@ -85,6 +85,8 @@ export class MatchQueueItemDto {
   @ApiPropertyOptional({ type: DeclarationResponsabiliteDto }) responsabiliteA?: DeclarationResponsabiliteDto;
   @ApiPropertyOptional({ type: DeclarationResponsabiliteDto }) responsabiliteB?: DeclarationResponsabiliteDto;
   @ApiProperty({ description: 'Vrai si A et B ont chacune un code de barème et que ces codes diffèrent' }) divergence!: boolean;
+  /** Additif (SEC-03) : vrai si les champs nominatifs de l'autre compagnie sont masqués (« •••• ») tant que l'appariement n'est pas confirmé. */
+  @ApiPropertyOptional({ description: 'Champs nominatifs de l’autre compagnie masqués (appariement non confirmé)' }) masked?: boolean;
 }
 
 /** `GET /matching/:id` : la ligne de file + les id des dossiers, cible de `PATCH /claims/:id/responsabilite`. */
