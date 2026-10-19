@@ -33,28 +33,35 @@ export interface PublicHoliday {
 }
 
 /**
- * Jours fériés algériens à date FIXE (grégorienne) pour 2026-2027 — faits
- * publics. ⚠️ Les jours fériés religieux à date MOBILE (calendrier
+ * Jours fériés algériens à date FIXE (grégorienne) — faits publics, valables
+ * chaque année. ⚠️ Les jours fériés religieux à date MOBILE (calendrier
  * hégirien : Aïd el-Fitr, Aïd el-Adha, Mawlid Ennabaoui, 1er Moharram,
- * Achoura) sont VOLONTAIREMENT ABSENTS de cette liste : leur date exacte
- * dépend de l'observation lunaire et n'est confirmée par arrêté officiel
- * qu'à l'approche de l'événement — lister une date estimée aujourd'hui
- * serait présenter comme un fait une donnée incertaine (règle d'or C.1).
+ * Achoura) sont VOLONTAIREMENT ABSENTS : leur date exacte dépend de
+ * l'observation lunaire et n'est confirmée par arrêté officiel qu'à
+ * l'approche de l'événement (saisie manuelle, `MobileHoliday`).
  */
-// Yennayer (12 janvier) : férié légal depuis 2018 (loi 63-278 modifiée) —
-// décision PO §2, origine (b) connaissance publique.
-export const ALGERIA_FIXED_HOLIDAYS: PublicHoliday[] = [
-  { date: '2026-01-01', label: "Jour de l'an" },
-  { date: '2026-01-12', label: 'Yennayer' },
-  { date: '2026-05-01', label: 'Fête du travail' },
-  { date: '2026-07-05', label: "Fête de l'indépendance" },
-  { date: '2026-11-01', label: 'Fête de la révolution' },
-  { date: '2027-01-01', label: "Jour de l'an" },
-  { date: '2027-01-12', label: 'Yennayer' },
-  { date: '2027-05-01', label: 'Fête du travail' },
-  { date: '2027-07-05', label: "Fête de l'indépendance" },
-  { date: '2027-11-01', label: 'Fête de la révolution' },
+const ALGERIA_FIXED_HOLIDAY_RULES: ReadonlyArray<{ monthDay: string; label: string; sinceYear?: number }> = [
+  { monthDay: '01-01', label: "Jour de l'an" },
+  // Yennayer : férié légal depuis 2018 (loi 63-278 modifiée) — décision PO §2, origine (b).
+  { monthDay: '01-12', label: 'Yennayer', sinceYear: 2018 },
+  { monthDay: '05-01', label: 'Fête du travail' },
+  { monthDay: '07-05', label: "Fête de l'indépendance" },
+  { monthDay: '11-01', label: 'Fête de la révolution' },
 ];
+
+/** Fériés fixes datés pour chaque année de `fromYear` à `toYear` inclus. */
+export function algeriaFixedHolidays(fromYear: number, toYear: number): PublicHoliday[] {
+  const out: PublicHoliday[] = [];
+  for (let year = fromYear; year <= toYear; year++) {
+    for (const rule of ALGERIA_FIXED_HOLIDAY_RULES) {
+      if (rule.sinceYear !== undefined && year < rule.sinceYear) continue;
+      out.push({ date: `${String(year).padStart(4, '0')}-${rule.monthDay}`, label: rule.label });
+    }
+  }
+  return out;
+}
+
+export const ALGERIA_FIXED_HOLIDAYS: PublicHoliday[] = algeriaFixedHolidays(2026, 2027);
 
 export interface EligibilityMotif {
   article: string;

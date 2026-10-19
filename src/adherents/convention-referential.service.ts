@@ -25,8 +25,10 @@ import {
   OppositionMotifStatus,
   SEED_AUTHOR,
 } from './place-referential.data';
-import { ALGERIA_FIXED_HOLIDAYS } from './referential-reference-data';
+import { algeriaFixedHolidays } from './referential-reference-data';
 import { assertFourEyes, assertIsoDate } from './referential-rules';
+
+const MAX_CALENDAR_SPAN_YEARS = 10;
 
 export interface MobileHolidayView {
   id: string;
@@ -274,7 +276,15 @@ export class ConventionReferentialService {
     if (to) assertIsoDate(to, 'to');
     if (from && to && from > to) throw new BadRequestException({ code: 'BAD_REQUEST', message: '"from" doit précéder ou égaler "to".' });
     const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
-    const fixed: CalendarHolidayView[] = ALGERIA_FIXED_HOLIDAYS.filter((h) => inRange(h.date)).map((h) => ({ date: h.date, label: h.label, type: 'FIXE', status: 'LEGAL' }));
+    const thisYear = new Date().getUTCFullYear();
+    const fromYear = from ? Number(from.slice(0, 4)) : to ? Number(to.slice(0, 4)) : thisYear - 1;
+    const toYear = to ? Number(to.slice(0, 4)) : from ? Number(from.slice(0, 4)) : thisYear + 1;
+    if (toYear - fromYear > MAX_CALENDAR_SPAN_YEARS) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: `Période trop longue : ${MAX_CALENDAR_SPAN_YEARS} ans au plus.` });
+    }
+    const fixed: CalendarHolidayView[] = algeriaFixedHolidays(fromYear, toYear)
+      .filter((h) => inRange(h.date))
+      .map((h) => ({ date: h.date, label: h.label, type: 'FIXE', status: 'LEGAL' }));
     const mobile: CalendarHolidayView[] = (await this.listHolidays())
       .filter((h) => inRange(h.date))
       .map((h) => ({ date: h.date, label: h.label, type: 'MOBILE', kind: h.kind, status: h.status, sourceRef: h.sourceRef }));
@@ -282,7 +292,9 @@ export class ConventionReferentialService {
   }
 
   async extraHolidays(from: string, to: string): Promise<string[]> {
-    const mobile = (await this.calendarHolidays(from, to)).filter((h) => h.type === 'MOBILE');
+    assertIsoDate(from, 'from');
+    assertIsoDate(to, 'to');
+    const mobile = (await this.listHolidays()).filter((h) => h.date >= from && h.date <= to);
     return [...new Set(mobile.map((h) => h.date))].sort();
   }
 

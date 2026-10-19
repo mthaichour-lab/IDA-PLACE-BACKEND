@@ -305,11 +305,21 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .expect(403);
     });
 
-    it('autorise un OPERATEUR_PLACE à clôturer la compensation trimestrielle', async () => {
+    it('refuse (409) la clôture tant que les étapes 1 à 4 de l’avancement du lot ne sont pas réalisées', async () => {
+      const res = await request(app.getHttpServer()).post('/api/v1/settlement/quarter/2099-Q4/close').set('x-dev-user', 'OPERATEUR_PLACE').expect(409);
+      expect(res.body).toMatchObject({ code: 'PIPELINE_INCOMPLET' });
+    });
+
+    it('autorise un OPERATEUR_PLACE à clôturer la compensation trimestrielle une fois les étapes 1 à 4 réalisées', async () => {
+      for (const step of ['SAISIE', 'SYNTHESE_ANNEXE_7', 'TRANSMISSION_ANNEXE_8', 'SYNTHESE_GLOBALE_REUNION']) {
+        await request(app.getHttpServer()).post(`/api/v1/settlement/quarter/2099-Q2/pipeline/${step}/complete`).set('x-dev-user', 'OPERATEUR_PLACE').send({}).expect(201);
+      }
       await request(app.getHttpServer())
         .post('/api/v1/settlement/quarter/2099-Q2/close')
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .expect(201);
+      const pipeline = await request(app.getHttpServer()).get('/api/v1/settlement/quarter/2099-Q2/pipeline').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(pipeline.body.steps.every((s: { status: string }) => s.status === 'DONE')).toBe(true);
     });
   });
 

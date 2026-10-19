@@ -135,6 +135,14 @@ describe('ConventionReferentialService (mode dégradé)', () => {
       await expect(service.calendarHolidays('2027-02-01', '2027-01-01')).rejects.toMatchObject({ response: { code: 'BAD_REQUEST' } });
     });
 
+    it('les fériés fixes valent pour toute année (2028, 2099) ; Yennayer seulement à partir de 2018', async () => {
+      const in2028 = await service.calendarHolidays('2028-01-01', '2028-12-31');
+      expect(in2028.filter((h) => h.type === 'FIXE').map((h) => h.date)).toEqual(['2028-01-01', '2028-01-12', '2028-05-01', '2028-07-05', '2028-11-01']);
+      expect((await service.calendarHolidays('2099-07-05', '2099-07-05')).map((h) => h.label)).toEqual(["Fête de l'indépendance"]);
+      expect((await service.calendarHolidays('2017-01-01', '2017-01-31')).map((h) => h.label)).toEqual(["Jour de l'an"]);
+      await expect(service.calendarHolidays('2000-01-01', '2099-12-31')).rejects.toMatchObject({ response: { code: 'BAD_REQUEST' } });
+    });
+
     it('un férié prévisionnel se supprime', async () => {
       const h = await service.createHoliday({ date: '2026-08-26', kind: 'MAWLID_ENNABAOUI' }, operateur);
       await service.removeHoliday(h.id);

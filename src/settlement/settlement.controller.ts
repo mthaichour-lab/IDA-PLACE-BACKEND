@@ -104,8 +104,12 @@ export class SettlementController {
   // ci-dessus (nécessaire à CORRESPONDANT_IDA/TRESORIER).
   @Post('quarter/:q/close')
   @Privileges('closeQuarter')
-  @ApiOperation({ summary: 'Clôture de la compensation trimestrielle et génération du bordereau (idempotent : 409 si déjà clôturée) — réservé aux rôles "place" (QUESTIONS_UAR.md §11)' })
-  closeQuarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
+  @ApiOperation({
+    summary:
+      "Clôture de la compensation trimestrielle et génération du bordereau (409 si déjà clôturée ou si les étapes 1 à 4 de l'avancement du lot ne sont pas réalisées) — réservé aux rôles « place » (QUESTIONS_UAR.md §11)",
+  })
+  async closeQuarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
+    await this.pipelineService.assertReadyToClose(q);
     return this.service.closeQuarterly(q, user.name);
   }
 }

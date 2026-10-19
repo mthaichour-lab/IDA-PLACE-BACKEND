@@ -15,7 +15,7 @@ import { Agency } from './entities/agency.entity';
 import { Company, CompanyStatus } from './entities/company.entity';
 import { Wilaya } from './entities/wilaya.entity';
 import { MEMORY_AGENCIES, MEMORY_COMPANIES } from './adherents.memory-seed';
-import { ALGERIA_FIXED_HOLIDAYS, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
+import { algeriaFixedHolidays, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
 import { WilayaSeed } from './wilayas.data';
 import { CalendarHolidayView, ConventionReferentialService, OppositionMotifView } from './convention-referential.service';
 import { IrsamReference, PlaceMetricsReferentialService, PopulationReference } from './place-metrics-referential.service';
@@ -99,8 +99,10 @@ export class AdherentsService {
     };
   }
 
+  /** Fériés fixes de l'année précédente à l'année suivante (cockpit, jours ouvrés) — la règle vaut pour toute année. */
   getCalendar() {
-    return { weekendDays: ALGERIA_WEEKEND_DAYS, fixedHolidays: ALGERIA_FIXED_HOLIDAYS };
+    const year = new Date().getUTCFullYear();
+    return { weekendDays: ALGERIA_WEEKEND_DAYS, fixedHolidays: algeriaFixedHolidays(year - 1, year + 1) };
   }
 
   getMotifs() {

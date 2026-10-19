@@ -7,7 +7,7 @@ import { CLOCK, Clock, systemClock } from '../common/clock';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { QuarterlyPipelineDto } from './dto/settlement-pipeline.dto';
 import { SettlementPipelineStep } from './entities/settlement-pipeline-step.entity';
-import { buildPipeline, canCompleteStep, monthFollowingQuarter, PIPELINE_STEPS, PipelineCompletion, PipelineStep } from './settlement-pipeline.rules';
+import { buildPipeline, canCompleteStep, MANUAL_PIPELINE_STEPS, monthFollowingQuarter, PIPELINE_STEPS, PipelineCompletion, PipelineStep } from './settlement-pipeline.rules';
 import { parsePeriodQuarter, PeriodQuarter } from './settlement.rules';
 import { SettlementService } from './settlement.service';
 
@@ -75,6 +75,22 @@ export class SettlementPipelineService {
     const monthEnd = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10);
     const extraHolidays = await this.adherents.extraHolidays(monthStart, monthEnd);
     return { quarter: q, steps: buildPipeline(period, completions, this.now(), calendar, extraHolidays) };
+  }
+
+  /**
+   * Art. 18 : le PV trimestriel n'est signé qu'après la synthèse globale et
+   * la réunion UAR — la clôture (étape 5) exige donc les étapes 1 à 4.
+   */
+  async assertReadyToClose(q: string): Promise<void> {
+    this.parseQuarterOrThrow(q);
+    const completions = await this.completionsFor(q);
+    const missing = MANUAL_PIPELINE_STEPS.find((s) => !completions[s]);
+    if (missing) {
+      throw new ConflictException({
+        code: 'PIPELINE_INCOMPLET',
+        message: `Clôture impossible : l'étape ${missing} de l'avancement du lot ${q} n'est pas réalisée (les étapes 1 à 4 précèdent la signature du PV, Art. 18).`,
+      });
+    }
   }
 
   async completeStep(q: string, step: string, completedBy: string, note?: string): Promise<QuarterlyPipelineDto> {

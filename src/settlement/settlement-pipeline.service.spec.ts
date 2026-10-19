@@ -98,6 +98,14 @@ describe('SettlementPipelineService (mode dégradé — avancement du lot trimes
     expect(res.steps[0].status).toBe('EN_COURS');
   });
 
+  it('assertReadyToClose : 409 PIPELINE_INCOMPLET tant qu’une étape 1-4 manque, puis passe', async () => {
+    await expect(pipeline.assertReadyToClose('2026-Q3')).rejects.toMatchObject({ status: 409, response: { code: 'PIPELINE_INCOMPLET' } });
+    for (const step of ['SAISIE', 'SYNTHESE_ANNEXE_7', 'TRANSMISSION_ANNEXE_8']) await pipeline.completeStep('2026-Q3', step, 'op');
+    await expect(pipeline.assertReadyToClose('2026-Q3')).rejects.toMatchObject({ response: { message: expect.stringContaining('SYNTHESE_GLOBALE_REUNION') } });
+    await pipeline.completeStep('2026-Q3', 'SYNTHESE_GLOBALE_REUNION', 'op');
+    await expect(pipeline.assertReadyToClose('2026-Q3')).resolves.toBeUndefined();
+  });
+
   it('les trimestres sont indépendants', async () => {
     await pipeline.completeStep('2026-Q3', 'SAISIE', 'op');
     expect((await pipeline.pipeline('2026-Q2')).steps[0].status).toBe('EN_COURS');
