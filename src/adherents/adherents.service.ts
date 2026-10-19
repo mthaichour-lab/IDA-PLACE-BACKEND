@@ -16,7 +16,10 @@ import { Company, CompanyStatus } from './entities/company.entity';
 import { Wilaya } from './entities/wilaya.entity';
 import { MEMORY_AGENCIES, MEMORY_COMPANIES } from './adherents.memory-seed';
 import { ALGERIA_FIXED_HOLIDAYS, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
-import { buildWilayaSeeds } from './wilayas.data';
+import { WilayaSeed } from './wilayas.data';
+import { CalendarHolidayView, ConventionReferentialService, OppositionMotifView } from './convention-referential.service';
+import { IrsamReference, PlaceMetricsReferentialService, PopulationReference } from './place-metrics-referential.service';
+import { IrsamIndicator } from './place-referential.data';
 
 function maskKey(hash?: string): string {
   if (!hash) return 'absente';
@@ -69,6 +72,8 @@ export class AdherentsService {
     @InjectRepository(Agency) private readonly agencies: EntityRepository<Agency>,
     @InjectRepository(Wilaya) private readonly wilayas: EntityRepository<Wilaya>,
     private readonly configService: ConfigService,
+    private readonly convention: ConventionReferentialService,
+    private readonly metrics: PlaceMetricsReferentialService,
   ) {}
 
   // ---- Paramètres de la convention / Calendrier ouvré / Barème & motifs
@@ -97,6 +102,34 @@ export class AdherentsService {
 
   getMotifs() {
     return ELIGIBILITY_MOTIF_CATALOG;
+  }
+
+  /** Union fériés fixes + mobiles (prévisionnels et confirmés) avec leur statut — `GET /referential/calendar?from&to`. */
+  calendarHolidays(from?: string, to?: string): Promise<CalendarHolidayView[]> {
+    return this.convention.calendarHolidays(from, to);
+  }
+
+  /**
+   * Dates ISO des fériés MOBILES (prévisionnels et confirmés) entre `from` et
+   * `to` inclus — paramètre « fériés supplémentaires » du calcul en jours ouvrés.
+   */
+  extraHolidays(from: string, to: string): Promise<string[]> {
+    return this.convention.extraHolidays(from, to);
+  }
+
+  /** 400 si le motif d'opposition est inconnu ou interdit (décision PO §1). */
+  assertOppositionMotifUsable(code: string): Promise<OppositionMotifView> {
+    return this.convention.assertOppositionMotifUsable(code);
+  }
+
+  /** Populations valides de référence par wilaya pour l'année étudiée (décision PO §3). */
+  populationReferences(year: number): Promise<Record<string, PopulationReference>> {
+    return this.metrics.populationReferences(year);
+  }
+
+  /** Référence IRSAM : jamais de valeur tant qu'aucune référence n'est `VALIDE_UAR` (décision PO §4). */
+  irsamReference(indicator: IrsamIndicator): Promise<IrsamReference> {
+    return this.metrics.irsamReference(indicator);
   }
 
   // ---- Companies -----------------------------------------------------
@@ -363,15 +396,8 @@ export class AdherentsService {
 
   // ---- Wilayas (référentiel partagé) -----------------------------------
 
-  async listWilayas(): Promise<ReturnType<typeof buildWilayaSeeds>> {
-    return withDegradedFallback(
-      'AdherentsService.listWilayas',
-      async () => {
-        const rows = await this.wilayas.findAll({ orderBy: { code: 'ASC' } });
-        if (rows.length === 0) throw new Error('table wilaya vide');
-        return rows.map((w) => ({ code: w.code, name: w.name, nameAr: w.nameAr, region: w.region, col: w.col, row: w.row, lat: w.lat, lng: w.lng }));
-      },
-      () => buildWilayaSeeds(),
-    );
+  /** Inclut désormais `effectiveFrom`/`parentCode` (décision PO §3), champs additifs. */
+  listWilayas(): Promise<WilayaSeed[]> {
+    return this.metrics.listWilayas();
   }
 }

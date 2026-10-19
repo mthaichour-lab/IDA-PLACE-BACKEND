@@ -1,6 +1,8 @@
 import { getRepositoryToken } from '@mikro-orm/nestjs';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { AdherentsService } from '../adherents/adherents.service';
+import { ConventionReferentialService } from '../adherents/convention-referential.service';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { RealtimeGateway } from '../realtime/realtime.module';
 import { Recours } from './entities/recours.entity';
@@ -150,5 +152,66 @@ describe('RecoursService (mode dégradé — timers Art.10/12/19, machine d’é
   it('utilise RECOURS_SILENCE_DAYS/RECOURS_OPPOSITION_DAYS/ELIGIBILITY_RECOURS_MAX_MONTHS si fournis (paramétrable)', async () => {
     const custom = await buildService({ RECOURS_SILENCE_DAYS: '5', RECOURS_OPPOSITION_DAYS: '3', ELIGIBILITY_RECOURS_MAX_MONTHS: '1' });
     expect(custom.getTimerConfig()).toEqual({ silenceDays: 5, oppositionDays: 3, forclusionMonths: 1 });
+  });
+});
+
+describe('RecoursService — motif d’opposition (reasonCode, décision PO §1)', () => {
+  let service: RecoursService;
+
+  beforeEach(async () => {
+    const failing = () => ({
+      findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+      getEntityManager: jest.fn(() => ({ persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')) })),
+      create: jest.fn((d: unknown) => d),
+    });
+    const convention = new ConventionReferentialService(failing() as never, failing() as never, failing() as never);
+    await convention.createMotif({ code: 'MONTANT_CONTESTE', label: 'Montant contesté' }, fakeUser('op'));
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        RecoursService,
+        { provide: getRepositoryToken(Recours), useFactory: throwingRepo },
+        { provide: ConfigService, useFactory: () => fakeConfigService() },
+        { provide: RealtimeGateway, useValue: { emitEvent: jest.fn() } },
+        { provide: AdherentsService, useValue: { assertOppositionMotifUsable: (code: string) => convention.assertOppositionMotifUsable(code) } },
+      ],
+    }).compile();
+    service = moduleRef.get(RecoursService);
+  });
+
+  it('stocke le reasonCode d’un motif admis dans l’opposition', async () => {
+    const created = await service.create({ claimId: 'clm-rc-1', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await service.transition(created.id, { action: 'opposer', reason: 'Montant excessif', reasonCode: 'MONTANT_CONTESTE' }, fakeUser('saa'));
+    const detail = await service.get(created.id);
+    expect(detail.opposition).toMatchObject({ reason: 'Montant excessif', reasonCode: 'MONTANT_CONTESTE', status: 'EN_COURS' });
+  });
+
+  it('refuse (400, Art. 10) le motif interdit « non-déclaration », sans changer l’état du recours', async () => {
+    const created = await service.create({ claimId: 'clm-rc-2', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    const err = await service.transition(created.id, { action: 'opposer', reasonCode: 'NON_DECLARATION' }, fakeUser('saa')).catch((e) => e);
+    expect(err.getStatus()).toBe(400);
+    expect(err.response).toMatchObject({ code: 'MOTIF_INTERDIT', message: expect.stringMatching(/Art\. 10/) });
+    expect((await service.get(created.id)).state).toBe('EN_ATTENTE');
+  });
+
+  it('refuse (400) un motif absent du catalogue', async () => {
+    const created = await service.create({ claimId: 'clm-rc-3', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await expect(service.transition(created.id, { action: 'opposer', reasonCode: 'INVENTE' }, fakeUser('saa'))).rejects.toMatchObject({
+      response: { code: 'MOTIF_INCONNU' },
+    });
+  });
+
+  it('refuse (400) un reasonCode sur une autre action qu’« opposer »', async () => {
+    const created = await service.create({ claimId: 'clm-rc-4', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await expect(service.transition(created.id, { action: 'accepter', reasonCode: 'MONTANT_CONTESTE' }, fakeUser('saa'))).rejects.toMatchObject({
+      response: { code: 'BAD_REQUEST' },
+    });
+  });
+
+  it('sans reasonCode, opposer se comporte comme avant (aucun champ ajouté)', async () => {
+    const created = await service.create({ claimId: 'clm-rc-5', from: 'CAAT', to: 'SAA', amount: 10_000 });
+    await service.transition(created.id, { action: 'opposer', reason: 'Libre' }, fakeUser('saa'));
+    const detail = await service.get(created.id);
+    expect(detail.opposition).not.toHaveProperty('reasonCode');
+    expect(detail.opposition?.reason).toBe('Libre');
   });
 });

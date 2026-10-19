@@ -55,6 +55,9 @@ export const PRIVILEGES = [
   // Adhésions et retraits (Chapitre VI, Art. 30-35) : demandes adressées à
   // l'UAR, instruites par les rôles "place" OPERATEUR_PLACE/ADMIN_UAR.
   'membership',
+  // Validation UAR des référentiels de place (motifs d'opposition,
+  // circonstances du constat, référence IRSAM) — décision PO points 1-4.
+  'validateRef',
 ] as const;
 export type Privilege = (typeof PRIVILEGES)[number];
 
@@ -68,7 +71,9 @@ function row(on: Privilege[]): Record<Privilege, boolean> {
 
 /** Matrice par défaut (éditable au runtime via AdminModule / écran 14). */
 export const DEFAULT_ROLE_MATRIX: RoleMatrix = {
-  OPERATEUR_PLACE: row([...PRIVILEGES]), // super admin opérateur (GIE FinLab)
+  // Tout sauf `validateRef` : les paramètres conventionnels sont confiés à
+  // l'Admin UAR (guide illustré, rôle « Admin UAR »).
+  OPERATEUR_PLACE: row(PRIVILEGES.filter((p) => p !== 'validateRef')), // super admin opérateur (GIE FinLab)
   ADMIN_UAR: row([...PRIVILEGES]), // super admin réglementaire
   // §11 : MEMBRE_COMMISSION tient explicitement 'closeQuarter' (rôle
   // "place" légitime pour la clôture trimestrielle place-entière).

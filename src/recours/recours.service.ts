@@ -1,12 +1,13 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { AdherentsService } from '../adherents/adherents.service';
 import { RealtimeGateway } from '../realtime/realtime.module';
 import {
   CreateRecoursDto,
@@ -89,6 +90,8 @@ export class RecoursService {
     @InjectRepository(Recours) private readonly repo: EntityRepository<Recours>,
     private readonly configService: ConfigService,
     private readonly realtime: RealtimeGateway,
+    // Optionnel : les specs d'autres modules instancient RecoursService sans référentiel ; un `reasonCode` exige alors sa présence.
+    @Optional() private readonly adherents?: AdherentsService,
   ) {
     // Art.10/Art.12 : hypothèses documentées (dossier technique silencieux
     // sur la durée exacte), paramétrables. Art.19 : réutilise la MÊME
@@ -280,18 +283,25 @@ export class RecoursService {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: `Action inconnue: ${dto.action}` });
     }
     const action = dto.action as RecoursAction;
+    if (dto.reasonCode !== undefined && action !== 'opposer') {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: '"reasonCode" n’est accepté que pour l’action "opposer".' });
+    }
     const decidedBy = user.name;
     const now = new Date();
 
     const loaded = await this.loadForTransition(id);
     const currentFromTo = loaded.mode === 'db' ? { from: loaded.entity.from, to: loaded.entity.to } : { from: loaded.row.from, to: loaded.row.to };
     this.assertActionAllowed(action, currentFromTo.from, currentFromTo.to, user);
+    if (dto.reasonCode !== undefined) {
+      if (!this.adherents) throw new Error('Référentiel des motifs d’opposition indisponible (AdherentsService non injecté).');
+      await this.adherents.assertOppositionMotifUsable(dto.reasonCode);
+    }
     const currentSnapshot = loaded.mode === 'db' ? snapshotOf(loaded.entity) : { ...loaded.row };
 
     // Évalue d'abord les transitions automatiques (le timer peut avoir
     // expiré entre deux requêtes) avant de tenter l'action manuelle.
     const { snapshot: autoSnapshot } = applyAutomaticTransitions(currentSnapshot, now, this.timerConfig);
-    const next = applyManualTransition(autoSnapshot, action, now, this.timerConfig, { reason: dto.reason });
+    const next = applyManualTransition(autoSnapshot, action, now, this.timerConfig, { reason: dto.reason, reasonCode: dto.reasonCode });
     if (!next) {
       throw new BadRequestException({
         code: 'INVALID_TRANSITION',

@@ -1,11 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import { buildWilayaSeeds, WilayaSeed } from '../adherents/wilayas.data';
+import { AdherentsService } from '../adherents/adherents.service';
+import { IrsamMeasureDefinition } from '../adherents/entities/irsam-benchmark.entity';
+import { PopulationReference } from '../adherents/place-metrics-referential.service';
+import { WilayaSeed } from '../adherents/wilayas.data';
 import { ClaimsService } from '../claims/claims.service';
 import { RecoursService } from '../recours/recours.service';
 
 export interface WilayaStatDto extends WilayaSeed {
   declarations: number;
   montants: number;
+  /** Déclarations pour 100 000 habitants — `null` sans population valide d'année ≤ année étudiée (décision PO §3). */
+  per100k: number | null;
+  /** Population utilisée pour `per100k` (source et année, infobulle écran 11), `null` si aucune. */
+  populationRef: PopulationReference | null;
+}
+
+export interface IrsamComparisonDto {
+  value: number;
+  periodFrom: string;
+  periodTo: string;
+  sourceRef: string;
+  measureDefinition: IrsamMeasureDefinition;
+  /** `avgSettlementDays` − valeur IRSAM (jours), `null` si aucun recours réglé. */
+  deltaDays: number | null;
 }
 
 export interface MonthlyStatDto {
@@ -30,6 +47,10 @@ export interface StatsSummaryDto {
   settledAmount: number;
   /** Délai moyen (jours) entre l'ouverture du recours (requestSentAt) et son règlement (settledAt), recours REGLE uniquement. */
   avgSettlementDays: number | null;
+  /** Comparatif IRSAM — `null` tant qu'aucune référence `VALIDE_UAR` ne couvre l'indicateur (décision PO §4). */
+  irsam: IrsamComparisonDto | null;
+  /** État de la référence IRSAM, pour distinguer « non renseignée » et « en attente de validation UAR ». */
+  irsamStatus: 'NON_RENSEIGNE' | 'EN_ATTENTE_VALIDATION' | 'VALIDE';
 }
 
 /**
@@ -51,10 +72,9 @@ export interface StatsSummaryDto {
  *
  * ⚠️ Métriques volontairement OMISES plutôt qu'inventées (voir consigne de
  * la mission : « documente l'hypothèse ou omets proprement ») :
- *  - `pour100k` ("Pour 100 000 hab.") : nécessite un référentiel de
- *    population par wilaya ABSENT du dossier technique et de ce worktree.
- *    Omis entièrement (l'ancien mock inventait une valeur) — à réintroduire
- *    si un référentiel démographique officiel est fourni.
+ *  - `per100k` ("Pour 100 000 hab.") : calculé seulement à partir d'une
+ *    population SAISIE et valide (`WilayaPopulation`, décision PO §3), sinon
+ *    `null` — jamais de valeur inventée ni interpolée.
  *  - "e-constat MOBILE vs AGENCE" (demandé par la mission) : le modèle de
  *    données réel (`Claim.canalDeclaration`, B.4 colonne 47) ne distingue
  *    qu'ERP/ECONSTAT/IMPORT/API — PAS mobile vs agence au sein du canal
@@ -63,9 +83,9 @@ export interface StatsSummaryDto {
  *    approximation honnête (canal ECONSTAT vs ERP+IMPORT+API), PAS un
  *    "mobile vs agence" — à ne jamais relabelliser comme tel côté front
  *    sans vraie donnée source.
- *  - Comparatif "vs IRSAM (74j)" (KPI du guide illustré) : nécessite une
- *    valeur de référence IRSAM externe, absente des deux documents — omis,
- *    `avgSettlementDays` (délai réel IDA) est exposé seul.
+ *  - Comparatif "vs IRSAM" : `irsam` reste `null` tant qu'aucune référence
+ *    saisie n'est validée UAR (décision PO §4) ; le « 74j » de la capture est
+ *    une valeur de maquette, jamais injectée.
  *  - Codes de barème Art.14 (B01-B11), catégories de véhicules, tableau
  *    "Délais de bout en bout" : nécessitent des champs qui n'existent pas
  *    sur `Claim` (code barème, catégorie véhicule) — hors périmètre de
@@ -76,21 +96,33 @@ export class StatsService {
   constructor(
     private readonly claims: ClaimsService,
     private readonly recours: RecoursService,
+    private readonly adherents: AdherentsService,
   ) {}
 
-  async wilayas(): Promise<WilayaStatDto[]> {
+  /**
+   * `year` : année étudiée (optionnelle). Fournie, seules les déclarations de
+   * cette année (date d'accident, à défaut de création) sont comptées ; sinon
+   * toutes, et la population de référence est cherchée jusqu'à l'année en cours.
+   */
+  async wilayas(year?: number): Promise<WilayaStatDto[]> {
     const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
+    const studiedYear = year ?? new Date().getUTCFullYear();
+    const [wilayas, populations] = await Promise.all([this.adherents.listWilayas(), this.adherents.populationReferences(studiedYear)]);
     const byWilaya = new Map<string, { count: number; amount: number }>();
     for (const c of allClaims) {
       if (!c.wilaya) continue;
+      if (year !== undefined && (c.accidentDate || c.createdAt || '').slice(0, 4) !== String(year)) continue;
       const entry = byWilaya.get(c.wilaya) ?? { count: 0, amount: 0 };
       entry.count += 1;
       entry.amount += c.expertAmount ?? c.estimatedAmount ?? 0;
       byWilaya.set(c.wilaya, entry);
     }
-    return buildWilayaSeeds().map((w) => {
+    return wilayas.map((w) => {
       const entry = byWilaya.get(w.code);
-      return { ...w, declarations: entry?.count ?? 0, montants: entry?.amount ?? 0 };
+      const declarations = entry?.count ?? 0;
+      const populationRef = populations[w.code] ?? null;
+      const per100k = populationRef ? Math.round((declarations / populationRef.population) * 100_000 * 100) / 100 : null;
+      return { ...w, declarations, montants: entry?.amount ?? 0, per100k, populationRef };
     });
   }
 
@@ -160,6 +192,19 @@ export class StatsService {
       avgSettlementDays = Math.round((totalDays / settled.length) * 10) / 10;
     }
 
-    return { declarations, oppositionRatePct, settledAmount, avgSettlementDays };
+    const reference = await this.adherents.irsamReference('DELAI_MOYEN_REGLEMENT_RECOURS_JOURS');
+    const b = reference.benchmark;
+    const irsam: IrsamComparisonDto | null = b
+      ? {
+          value: b.value,
+          periodFrom: b.periodFrom,
+          periodTo: b.periodTo,
+          sourceRef: b.sourceRef,
+          measureDefinition: b.measureDefinition,
+          deltaDays: avgSettlementDays === null ? null : Math.round((avgSettlementDays - b.value) * 10) / 10,
+        }
+      : null;
+
+    return { declarations, oppositionRatePct, settledAmount, avgSettlementDays, irsam, irsamStatus: reference.status };
   }
 }

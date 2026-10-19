@@ -26,6 +26,7 @@ export class ListRecoursQueryDto {
 export class RecoursOppositionDto {
   @ApiProperty() raisedAt!: string;
   @ApiPropertyOptional() reason?: string;
+  @ApiPropertyOptional({ description: "Code du motif d'opposition (GET /referential/opposition-motifs)" }) reasonCode?: string;
   @ApiProperty() status!: string;
   @ApiProperty() deadlineAt!: string;
   @ApiPropertyOptional() decidedAt?: string;
@@ -101,6 +102,12 @@ export class RecoursTransitionDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @ApiPropertyOptional({ description: "Action « opposer » uniquement : code du motif d'opposition (400 si inconnu ou interdit)" })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  reasonCode?: string;
 }
 
 export class RecoursTransitionResultDto {

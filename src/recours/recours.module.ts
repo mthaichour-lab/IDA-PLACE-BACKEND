@@ -1,5 +1,6 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Module } from '@nestjs/common';
+import { AdherentsModule } from '../adherents/adherents.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { Recours } from './entities/recours.entity';
 import { RecoursController } from './recours.controller';
@@ -14,7 +15,8 @@ import { RecoursService } from './recours.service';
  * (pas de cycle, voir ARCHITECTURE.md).
  */
 @Module({
-  imports: [MikroOrmModule.forFeature([Recours]), RealtimeModule],
+  // AdherentsModule : catalogue des motifs d'opposition (contrôle du `reasonCode`).
+  imports: [MikroOrmModule.forFeature([Recours]), RealtimeModule, AdherentsModule],
   controllers: [RecoursController],
   providers: [RecoursService],
   exports: [RecoursService],

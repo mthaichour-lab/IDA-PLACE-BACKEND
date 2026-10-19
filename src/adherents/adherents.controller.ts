@@ -9,6 +9,7 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { AdherentsService } from './adherents.service';
 import { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
 import { CreateCompanyDto, UpdateCompanyDto } from './dto/company.dto';
+import { CalendarQueryDto } from './dto/place-referential.dto';
 
 /**
  * Référentiel de place — écran 12. Routes exposées sous `/referential/*`
@@ -87,9 +88,12 @@ export class AdherentsController {
   }
 
   @Get('calendar')
-  @ApiOperation({ summary: 'Week-end légal algérien + jours fériés à date fixe 2026-2027 (jours fériés religieux à date mobile volontairement absents, voir referential-reference-data.ts)' })
-  getCalendar() {
-    return this.service.getCalendar();
+  @ApiOperation({
+    summary:
+      'Week-end légal algérien, fériés à date fixe et `holidays` : union fixes + mobiles (prévisionnels et confirmés) avec leur statut, bornée par from/to inclus (décision PO §2)',
+  })
+  async getCalendar(@Query() q: CalendarQueryDto) {
+    return { ...this.service.getCalendar(), holidays: await this.service.calendarHolidays(q.from, q.to) };
   }
 
   @Get('motifs')

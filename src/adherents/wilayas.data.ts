@@ -24,6 +24,8 @@ export interface WilayaSeed {
   row: number;
   lat?: number;
   lng?: number;
+  effectiveFrom?: string;
+  parentCode?: string;
 }
 
 const REAL_NAMES: Array<[string, string]> = [

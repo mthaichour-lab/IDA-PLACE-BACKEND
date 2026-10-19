@@ -6,6 +6,13 @@ import { AdherentsService } from './adherents.service';
 import { Company } from './entities/company.entity';
 import { Agency } from './entities/agency.entity';
 import { Wilaya } from './entities/wilaya.entity';
+import { ConstatCircumstance } from './entities/constat-circumstance.entity';
+import { IrsamBenchmark } from './entities/irsam-benchmark.entity';
+import { MobileHoliday } from './entities/mobile-holiday.entity';
+import { OppositionMotif } from './entities/opposition-motif.entity';
+import { WilayaPopulation } from './entities/wilaya-population.entity';
+import { ConventionReferentialService } from './convention-referential.service';
+import { PlaceMetricsReferentialService } from './place-metrics-referential.service';
 
 /** Acteur scopé compagnie — voir claims.service.spec.ts `correspondant()`. */
 function correspondant(companyId: string): AuthenticatedUser {
@@ -35,6 +42,9 @@ describe('AdherentsService (mode dégradé)', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdherentsService,
+        ConventionReferentialService,
+        PlaceMetricsReferentialService,
+        ...[MobileHoliday, ConstatCircumstance, OppositionMotif, WilayaPopulation, IrsamBenchmark].map((e) => ({ provide: getRepositoryToken(e), useFactory: throwingRepo })),
         { provide: getRepositoryToken(Company), useFactory: throwingRepo },
         { provide: getRepositoryToken(Agency), useFactory: throwingRepo },
         { provide: getRepositoryToken(Wilaya), useFactory: throwingRepo },

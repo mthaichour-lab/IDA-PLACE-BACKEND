@@ -41,12 +41,16 @@ export interface PublicHoliday {
  * qu'à l'approche de l'événement — lister une date estimée aujourd'hui
  * serait présenter comme un fait une donnée incertaine (règle d'or C.1).
  */
+// Yennayer (12 janvier) : férié légal depuis 2018 (loi 63-278 modifiée) —
+// décision PO §2, origine (b) connaissance publique.
 export const ALGERIA_FIXED_HOLIDAYS: PublicHoliday[] = [
   { date: '2026-01-01', label: "Jour de l'an" },
+  { date: '2026-01-12', label: 'Yennayer' },
   { date: '2026-05-01', label: 'Fête du travail' },
   { date: '2026-07-05', label: "Fête de l'indépendance" },
   { date: '2026-11-01', label: 'Fête de la révolution' },
   { date: '2027-01-01', label: "Jour de l'an" },
+  { date: '2027-01-12', label: 'Yennayer' },
   { date: '2027-05-01', label: 'Fête du travail' },
   { date: '2027-07-05', label: "Fête de l'indépendance" },
   { date: '2027-11-01', label: 'Fête de la révolution' },

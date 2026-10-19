@@ -35,4 +35,12 @@ export class Wilaya {
 
   @Property({ type: 'float', nullable: true })
   lng?: number;
+
+  /** Date d'entrée en vigueur du périmètre actuel (décision PO §3). */
+  @Property({ type: 'date', nullable: true })
+  effectiveFrom?: string;
+
+  /** Wilaya mère dont celle-ci a été détachée. */
+  @Property({ length: 2, nullable: true })
+  parentCode?: string;
 }

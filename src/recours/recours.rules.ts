@@ -44,6 +44,8 @@ export type ContestationStatus = 'EN_COURS' | 'TRANSMISE_COMMISSION';
 export interface OppositionInfo {
   raisedAt: string;
   reason?: string;
+  /** Code du motif d'opposition (référentiel `OppositionMotif`), optionnel. */
+  reasonCode?: string;
   status: OppositionStatus;
   /** Échéance Art.12 : au-delà, opposition réputée fondée si non traitée. */
   deadlineAt: string;
@@ -276,7 +278,7 @@ export function applyManualTransition(
   action: RecoursAction,
   now: Date,
   config: RecoursTimerConfig = DEFAULT_RECOURS_TIMER_CONFIG,
-  opts: { reason?: string } = {},
+  opts: { reason?: string; reasonCode?: string } = {},
 ): RecoursSnapshot | null {
   if (!isActionAllowed(snapshot.state, action)) return null;
   const nowIso = now.toISOString();
@@ -298,6 +300,7 @@ export function applyManualTransition(
         opposition: {
           raisedAt: nowIso,
           reason: opts.reason,
+          ...(opts.reasonCode ? { reasonCode: opts.reasonCode } : {}),
           status: 'EN_COURS',
           deadlineAt: addDaysUtc(now, config.oppositionDays).toISOString(),
         },
