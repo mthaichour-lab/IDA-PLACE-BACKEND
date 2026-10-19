@@ -672,17 +672,30 @@ recherche paginée).
 (2) fériés fixes figés sur 2026-2027. Remarques non bloquantes laissées en
 l'état : `fixedHolidays` de
 `GET /referential/calendar` sans bornes = année N-1 à N+1 ; import CSV des
-populations : une seule erreur par ligne ; préexistants hors périmètre :
-`POST /recours` accepte un `claimId` inexistant, file du matching en double
-(A↔B et B↔A), `createdAt` d'une compagnie recalculé à chaque lecture en
-mode dégradé.
+populations : une seule erreur par ligne.
+
+**Défauts préexistants relevés par le Testeur, corrigés le 2026-10-19** :
+- `POST /recours` (même route, désormais servie par
+  `src/claims/recours-opening.controller.ts` → `ClaimsService.openRecours`,
+  pour éviter le cycle Recours→Claims) contrôle le dossier : existant (404),
+  de l'assureur direct `from` (400 `RECOURS_HORS_ASSUREUR_DIRECT`), contre
+  la partie tierce déclarée `to` (400 `RECOURS_MAUVAISE_PARTIE`), éligible
+  IDA (400 `DOSSIER_HORS_IDA`), sans recours antérieur (409
+  `RECOURS_EXISTANT`). Avant, un recours fictif pouvait être réglé par
+  silence puis compensé. Les e2e créent de vrais dossiers éligibles
+  (`test/utils/claims.ts`).
+- Appariement : une ligne par déclaration (A↔B et B↔A) est conservée, mais
+  confirmer ou rejeter l'une s'applique à la ligne miroir non tranchée
+  (`link` et `complement` ne se propagent pas) ; `decide()` ne lève plus
+  son 403 dans la closure de repli.
+- `createdAt` d'une compagnie figé en mode dégradé.
 
 **Décisions PO du 2026-10-19 (après le Testeur)** : seul un motif
 d'opposition `VALIDE_UAR` est accepté (`MOTIF_NON_VALIDE`) ; une catégorie
 de véhicule validée est figée (`CATEGORIE_IMMUABLE`) ; échéance de l'étape 3
 = dernier jour du mois M, confirmée.
 
-**Vérifié** : `npm run lint` OK, `npm test` 425/425, e2e 128/128 (le flake
+**Vérifié** : `npm run lint` OK, `npm test` 433/433, e2e 129/129 (le flake
 `claims-import` ECONNRESET passe ou échoue selon les exécutions), build OK.
 
 **Environnement** : dans un worktree neuf, `AUTH_PROVIDER=dev` doit être
