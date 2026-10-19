@@ -288,6 +288,28 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-44 — entrées typées et bornées', () => {
+    it.each([
+      ['/api/v1/claims', { 'company[$ne]': 'CAAT' }],
+      ['/api/v1/claims', { 'companyId[$ne]': 'CAAT' }],
+      ['/api/v1/matching/queue', { 'companyId[$ne]': 'CAAT' }],
+      ['/api/v1/fraud/cases', { 'companyId[$ne]': 'CAAT' }],
+      ['/api/v1/claims', { company: 'caat; drop' }],
+      ['/api/v1/stats/wilayas', { year: '99999' }],
+    ])('%s ?%j : refusé (400)', async (url, query) => {
+      await http().get(url).query(query).set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
+    });
+
+    it.each(['/api/v1/claims/abc', '/api/v1/matching/abc', '/api/v1/documents/abc', '/api/v1/matching/abc/decisions'])('%s : id non UUID refusé (400)', async (url) => {
+      await http().get(url).set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
+    });
+
+    it.each(['/api/v1/fraud/adherents/../signals', '/api/v1/monitoring/companies/caat%20x/journeys'])('%s : code compagnie invalide refusé', async (url) => {
+      const res = await http().get(url).set('x-dev-user', 'OPERATEUR_PLACE');
+      expect([400, 404]).toContain(res.status);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

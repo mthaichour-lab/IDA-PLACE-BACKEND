@@ -1,7 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
+import { COMPANY_CODE_PATTERN } from './claim-import.dto';
 
 export const CLAIM_STATES = [
   'RECU',
@@ -18,7 +19,8 @@ export class ListClaimsQueryDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   // SEC-13 : borné à 100 (`?pageSize=100000` refusé, 400).
   @ApiPropertyOptional({ maximum: 100 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize: number = DEFAULT_PAGE_SIZE;
-  @ApiPropertyOptional() @IsOptional() @IsString() company?: string;
+  // SEC-44 : code compagnie typé (plus de valeur libre ni d'objet d'opérateurs).
+  @ApiPropertyOptional() @IsOptional() @IsString() @Matches(COMPANY_CODE_PATTERN, { message: 'company : code compagnie attendu.' }) company?: string;
   @ApiPropertyOptional({ enum: CLAIM_STATES }) @IsOptional() @IsIn(CLAIM_STATES as unknown as string[]) state?: string;
 }
 

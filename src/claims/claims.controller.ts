@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { StrictQuery } from './dto/strict-query.pipe';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -53,6 +54,7 @@ export class ClaimsController {
       },
     }),
   )
+  @StrictQuery(ImportClaimsQueryDto)
   async importFile(
     @Query() q: ImportClaimsQueryDto,
     @CurrentUser() user: AuthenticatedUser,
@@ -67,13 +69,14 @@ export class ClaimsController {
 
   @Get()
   @ApiOperation({ summary: 'Liste paginée des dossiers (6/p), filtrable par compagnie/état — scopée par compagnie (B.7)' })
+  @StrictQuery(ListClaimsQueryDto)
   list(@Query() q: ListClaimsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.list(q, user);
   }
 
   @Get(':id')
   @ApiOperation({ summary: "Détail d'un dossier — scopé par compagnie (B.7)" })
-  get(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+  get(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.get(id, user);
   }
 
@@ -83,7 +86,7 @@ export class ClaimsController {
     summary:
       'Barème Art. 14 du dossier : circonstances (1-17), code de barème et catégories (VALIDE_UAR, sinon 400). CORRESPONDANT_IDA (insert) : sa compagnie, avant tout recours ; ensuite, rôles matchDecide',
   })
-  updateResponsabilite(@Param('id') id: string, @Body() dto: UpdateClaimResponsabiliteDto, @CurrentUser() user: AuthenticatedUser) {
+  updateResponsabilite(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: UpdateClaimResponsabiliteDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.updateResponsabilite(id, dto, user);
   }
 }

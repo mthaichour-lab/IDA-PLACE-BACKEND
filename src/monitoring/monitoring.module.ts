@@ -10,6 +10,7 @@ import { CommissionModule } from '../commission/commission.module';
 import { MatchingModule } from '../matching/matching.module';
 import { RecoursModule } from '../recours/recours.module';
 import { MonitoringService } from './monitoring.service';
+import { CompanyCodeParamDto, StrictQuery } from '../claims/dto/strict-query.pipe';
 
 /**
  * MonitoringModule — écran 8 "Monitoring assureurs", B.2.
@@ -48,14 +49,16 @@ class MonitoringController {
 
   @Get('trajectories')
   @ApiOperation({ summary: 'Parcours inter-compagnies par dossier (réel, dérivé de la file de confrontation MatchingModule — B.7 : ne montre que les paires où la compagnie de l’appelant est partie)' })
+  @StrictQuery(PaginationQueryDto)
   trajectories(@Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.trajectories(q.page, q.pageSize, user);
   }
 
   @Get('companies/:code/journeys')
   @ApiOperation({ summary: 'Vue par dossier — parcours complet pour une compagnie (étapes réelles du recours, voir recours.rules.ts) — B.7 : scopée par compagnie' })
-  journeys(@Param('code') code: string, @Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.journeys(code, q.page, q.pageSize, user);
+  @StrictQuery(PaginationQueryDto)
+  journeys(@Param() p: CompanyCodeParamDto, @Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.journeys(p.code, q.page, q.pageSize, user);
   }
 }
 

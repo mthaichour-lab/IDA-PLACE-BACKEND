@@ -195,9 +195,14 @@ describe('Confrontation & matching — /api/v1/matching/* (e2e)', () => {
       expect(persisted.status).toBe('CONFIRME_MANUEL');
     });
 
+    it('SEC-44 : un id non UUID est refusé (400) avant toute lecture', async () => {
+      await request(app.getHttpServer()).post('/api/v1/matching/does-not-exist/decide').set('x-dev-user', 'OPERATEUR_PLACE').send({ action: 'confirm' }).expect(400);
+      await request(app.getHttpServer()).get('/api/v1/matching/does-not-exist').set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
+    });
+
     it('404 normalisé sur un id de confrontation inconnu', async () => {
       const res = await request(app.getHttpServer())
-        .post('/api/v1/matching/does-not-exist/decide')
+        .post('/api/v1/matching/00000000-0000-4000-8000-000000000000/decide')
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .send({ action: 'confirm' })
         .expect(404);

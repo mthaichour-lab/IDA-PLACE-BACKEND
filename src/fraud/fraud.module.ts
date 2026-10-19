@@ -12,6 +12,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { FraudAction } from './entities/fraud-action.entity';
 import { FraudCase } from './entities/fraud-case.entity';
 import { FraudService } from './fraud.service';
+import { CompanyParamDto, StrictQuery } from '../claims/dto/strict-query.pipe';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 
@@ -39,6 +40,7 @@ class FraudController {
 
   @Get('cases')
   @ApiOperation({ summary: 'File des cas suspects (réel : doublons, e-constat réutilisé, récurrence véhicule, montants calibrés, incohérences A/B), triée par score desc, paginée (6/p) — B.7 : scopée par compagnie partie au cas' })
+  @StrictQuery(PaginationQueryDto)
   cases(@Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.cases(q.page, q.pageSize, user);
   }
@@ -49,14 +51,15 @@ class FraudController {
   @Get('actions')
   @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({ summary: 'Journal des actions suspectes de place (appariement manuel/déliage/reliage, transmissions tardives), paginé (6/p) — réservé aux rôles place (SEC-21)' })
+  @StrictQuery(PaginationQueryDto)
   actions(@Query() q: PaginationQueryDto) {
     return this.service.actions(q.page, q.pageSize);
   }
 
   @Get('adherents/:company/signals')
   @ApiOperation({ summary: 'Signaux groupés par catégorie pour un adhérent (écran 9, panneau de détail) — Doublons & e-constat / Réseau-récurrence / Montants & plafond / Incohérences A/B / Vélocité — B.7 : scopée par compagnie' })
-  signalsByAdherent(@Param('company') company: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.signalsByAdherent(company, user);
+  signalsByAdherent(@Param() p: CompanyParamDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.signalsByAdherent(p.company, user);
   }
 }
 

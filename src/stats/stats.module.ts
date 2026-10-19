@@ -1,4 +1,4 @@
-import { Controller, Get, Module, ParseIntPipe, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AuthGuard } from '../common/guards/auth.guard';
@@ -6,6 +6,7 @@ import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { ClaimsModule } from '../claims/claims.module';
 import { RecoursModule } from '../recours/recours.module';
 import { StatsService } from './stats.service';
+import { StrictQuery, StatsWilayasQueryDto } from '../claims/dto/strict-query.pipe';
 
 /**
  * StatsModule — écran 11 "Statistiques de la place", B.2. Agrégation RÉELLE
@@ -25,8 +26,9 @@ class StatsController {
     summary:
       'Carte en tuiles des 69 wilayas (grille 13×8) — déclarations/montants réels, `per100k` seulement si une population valide est saisie (sinon null) ; `year` optionnel = année étudiée',
   })
-  wilayas(@Query('year', new ParseIntPipe({ optional: true })) year?: number) {
-    return this.service.wilayas(year);
+  @StrictQuery(StatsWilayasQueryDto)
+  wilayas(@Query() q: StatsWilayasQueryDto) {
+    return this.service.wilayas(q.year);
   }
 
   @Get('monthly')

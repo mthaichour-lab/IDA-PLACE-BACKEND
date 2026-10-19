@@ -93,7 +93,7 @@ describe('RBAC (B.7) — /api/v1/me et garde de privilèges', () => {
     // id inconnu => 404 normalisé (pas 403), preuve que la garde de privilège
     // a bien laissé passer avant d'atteindre la résolution de la ressource.
     const res = await request(app.getHttpServer())
-      .post('/api/v1/matching/unknown-id/decide')
+      .post('/api/v1/matching/00000000-0000-4000-8000-000000000000/decide')
       .set('x-dev-user', 'OPERATEUR_PLACE')
       .send({ action: 'confirm' });
     expect(res.status).toBe(404);
