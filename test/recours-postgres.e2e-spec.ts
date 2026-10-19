@@ -54,6 +54,21 @@ describeIfPg('Intégration PostgreSQL réelle — recours, clôtures, commission
     experts = app.get(ExpertsService);
     const orm = app.get(MikroORM);
     sql = (query, params = []) => orm.em.fork().getConnection().execute(query, params);
+    // Chaque appel s'exécute dans son propre contexte, comme une requête HTTP distincte.
+    const { RequestContext } = await import('@mikro-orm/core');
+    const inRequest = <T extends object>(service: T): T =>
+      new Proxy(service, {
+        get: (target, prop) => {
+          const value = (target as Record<string | symbol, unknown>)[prop];
+          return typeof value === 'function' ? (...args: unknown[]) => RequestContext.create(orm.em, () => (value as (...a: unknown[]) => unknown).apply(target, args)) : value;
+        },
+      });
+    recours = inRequest(recours);
+    settlement = inRequest(settlement);
+    commission = inRequest(commission);
+    membership = inRequest(membership);
+    adherents = inRequest(adherents);
+    experts = inRequest(experts);
   }, 180_000);
 
   afterAll(async () => {
@@ -90,10 +105,9 @@ describeIfPg('Intégration PostgreSQL réelle — recours, clôtures, commission
     expect(row.n).toBe(2);
     const [last] = await sql("select h->>'actorId' as actor, h->>'onBehalfOf' as company from recours, jsonb_array_elements(history) h where id = ? and h->>'action' <> 'creation'", [created.id]);
     expect(last).toEqual({ actor: 'corr-SAA', company: 'SAA' });
-    // NB : le scellement au journal est bien appelé dans la transaction, mais `LedgerService.append`
-    // (périmètre « socle ») retombe aujourd'hui en mémoire même base disponible (`findOne({})`
-    // refusé par MikroORM 6) — signalé au Tech Lead ; l'assertion sur `ledger_entry` sera ajoutée
-    // une fois l'implémentation durcie fusionnée.
+    // SEC-17 : création et transition scellées au journal, dans la transaction de l'écriture métier.
+    const sealed = await sql('select type from ledger_entry where ref = ? order by seq', [created.id]);
+    expect(sealed.map((e: { type: string }) => e.type)).toEqual(['RECOURS_OUVERT', 'RECOURS_TRANSITION']);
   });
 
   it('SEC-19 : deux clôtures concurrentes du même trimestre — une seule, instantané haché en base', async () => {

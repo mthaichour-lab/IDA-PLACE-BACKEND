@@ -1,7 +1,7 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { LedgerService } from '../ledger/ledger.service';
@@ -370,7 +370,9 @@ export class PlaceMetricsReferentialService {
     const written = rejectedCount === 0;
     if (written) {
       await this.persistPopulations(accepted, user, 'importPopulations');
-      await this.seal('REFERENTIEL_POPULATIONS_IMPORTEES', fileName, user, { count: accepted.length, rows: accepted.map((a) => ({ wilaya: a.wilayaCode, year: a.referenceYear, population: a.population })) });
+      // Résumé borné (journal : 4 000 caractères) : effectif + empreinte des lignes importées.
+      const digest = createHash('sha256').update(JSON.stringify(accepted.map((a) => [a.wilayaCode, a.referenceYear, a.population, a.sourceType, a.sourceRef]))).digest('hex');
+      await this.seal('REFERENTIEL_POPULATIONS_IMPORTEES', fileName.slice(0, 200) || 'populations.csv', user, { count: accepted.length, sha256: digest });
     }
     return {
       fileName,

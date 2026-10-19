@@ -211,6 +211,7 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
 
   describe('SEC-04 — gouvernance d’une compagnie', () => {
     it('un correspondant ne peut ni se réactiver ni allonger ses délais (403) ; le changement passe par deux Admin UAR', async () => {
+      const startedAt = new Date(Date.now() - 1000).toISOString();
       const created = await http().post('/api/v1/referential/companies').set('x-dev-user', 'OPERATEUR_PLACE').send({ code: 'GOVE', name: 'Gouvernance E2E', color: '#445566', kind: 'INSURER', feedMode: 'API' }).expect(201);
       const companyId = created.body.id;
       for (const body of [{ status: 'ACTIF' }, { delayOverrides: { recoursDays: 999 } }, { kind: 'MUTUAL' }, { feedMode: 'ERP' }]) {
@@ -228,8 +229,14 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
       await http().post(`/api/v1/referential/companies/${companyId}/governance-changes/${change.body.id}/validate`).set('x-dev-user', uar('uar-2')).expect(201);
       expect((await http().get(`/api/v1/referential/companies/${companyId}`).set('x-dev-user', 'OPERATEUR_PLACE')).body.status).toBe('SUSPENDU');
 
-      const ledger = await http().get('/api/v1/ledger').set('x-dev-user', 'ADMIN_UAR').expect(200);
-      const entries = (Array.isArray(ledger.body) ? ledger.body : ledger.body.items) as Array<{ type: string; ref: string; actor: string; summary: string }>;
+      // Journal paginé : on parcourt les pages des entrées écrites depuis le début du test.
+      const entries: Array<{ type: string; ref: string; actor: string; summary: string }> = [];
+      for (let page = 1; page <= 20; page++) {
+        const ledger = await http().get('/api/v1/ledger').query({ page, pageSize: 100, from: startedAt }).set('x-dev-user', 'ADMIN_UAR').expect(200);
+        const items = Array.isArray(ledger.body) ? ledger.body : ledger.body.items;
+        entries.push(...items);
+        if (items.length < 100) break;
+      }
       const sealed = entries.find((e) => e.type === 'COMPANY_GOUVERNANCE' && e.ref === 'GOVE');
       expect(sealed).toMatchObject({ actor: 'uar-2' });
       expect(sealed!.summary).toMatch(/"requestedBy":"uar-1"/);
