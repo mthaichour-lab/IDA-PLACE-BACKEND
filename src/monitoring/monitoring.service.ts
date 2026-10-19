@@ -143,7 +143,8 @@ export class MonitoringService {
     const silenceDays = this.recours.getTimerConfig().silenceDays;
 
     const sanctionCountByCompany = new Map<string, number>();
-    for (const s of allSanctions) {
+    // Seules les sanctions PRONONCÉES comptent (une sanction A_CONTRESIGNER n'est pas encore exécutoire, SEC-32).
+    for (const s of allSanctions.filter((x) => x.status === 'PRONONCEE')) {
       sanctionCountByCompany.set(s.companyCode, (sanctionCountByCompany.get(s.companyCode) ?? 0) + 1);
     }
 

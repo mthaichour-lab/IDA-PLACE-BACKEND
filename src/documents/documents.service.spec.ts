@@ -109,16 +109,16 @@ describe('DocumentsService (mode dégradé — QUESTIONS_UAR.md §9, attachement
     expect(list[0].url).toBe(`/api/v1/documents/${list[0].id}/download`);
   });
 
-  it("upload() refuse avec un 403 qu'une compagnie tierce attache un document à un recours auquel elle n'est pas partie", async () => {
+  it("upload() refuse (404 uniforme, SEC-46) qu'une compagnie tierce attache un document à un recours auquel elle n'est pas partie", async () => {
     const r = await recours.create({ claimId: 'clm-doc-2', from: 'CAAT', to: 'SAA', amount: 42_000 });
-    await expect(documents.upload(file, correspondant('c.caar', 'CAAR'), r.id, undefined)).rejects.toMatchObject({ status: 403 });
+    await expect(documents.upload(file, correspondant('c.caar', 'CAAR'), r.id, undefined)).rejects.toMatchObject({ status: 404 });
   });
 
-  it("listForDossier() refuse avec un 403 qu'une compagnie tierce liste les documents d'un recours auquel elle n'est pas partie", async () => {
+  it("listForDossier() refuse (404 uniforme, SEC-46) qu'une compagnie tierce liste les documents d'un recours auquel elle n'est pas partie", async () => {
     const r = await recours.create({ claimId: 'clm-doc-3', from: 'CAAT', to: 'SAA', amount: 42_000 });
     await documents.upload(file, correspondant('c.caat', 'CAAT'), r.id, undefined);
 
-    await expect(documents.listForDossier({ recoursId: r.id }, correspondant('c.caar', 'CAAR'))).rejects.toMatchObject({ status: 403 });
+    await expect(documents.listForDossier({ recoursId: r.id }, correspondant('c.caar', 'CAAR'))).rejects.toMatchObject({ status: 404 });
   });
 
   it('listForDossier() renvoie 404 si le recours cité est introuvable', async () => {

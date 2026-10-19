@@ -182,7 +182,8 @@ export class CockpitController {
     const adherentsActifs = allCompanies.filter((c) => c.status === 'ACTIF').length;
     const adherentsSuspendus = allCompanies.filter((c) => c.status === 'SUSPENDU').length;
     const penalitesDeRetard = (await this.commission.listSanctions({ page: 1, pageSize: 10_000 })).items
-      .filter((s) => s.type === 'PENALITE_FINANCIERE')
+      // Seules les sanctions PRONONCÉES (une A_CONTRESIGNER n'est pas exécutoire, SEC-32).
+      .filter((s) => s.type === 'PENALITE_FINANCIERE' && s.status === 'PRONONCEE')
       .reduce((sum, s) => sum + (s.amount ?? 0), 0);
 
     // Délai moyen d'appariement (jours) — UNIQUEMENT les appariements

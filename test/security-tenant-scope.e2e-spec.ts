@@ -258,7 +258,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
    * `DocumentsService.listForDossier`, documents.module.ts).
    */
   describe('DocumentsModule — GET /documents?recoursId=X (QUESTIONS_UAR.md §9)', () => {
-    it("refuse avec un 403 qu'un CORRESPONDANT_IDA liste les documents d'un recours auquel sa compagnie n'est PAS partie", async () => {
+    it("refuse (404 uniforme, SEC-46) qu'un CORRESPONDANT_IDA liste les documents d'un recours auquel sa compagnie n'est PAS partie", async () => {
       const claimId = await importEligibleClaim(app, 'E2E-SEC-DOCS-FOREIGN', 'SAA', 'CASH');
       const recours = await request(app.getHttpServer())
         .post('/api/v1/recours')
@@ -276,7 +276,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
       await request(app.getHttpServer())
         .get(`/api/v1/documents?recoursId=${recours.body.id}`)
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .expect(403);
+        .expect(404); // SEC-46 : 404 uniforme hors périmètre (RecoursService.getForUser)
     });
 
     it('autorise une compagnie partie au recours à lister les documents de SON dossier', async () => {

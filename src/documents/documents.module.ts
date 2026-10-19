@@ -109,8 +109,8 @@ export class DocumentsService {
         message: 'Un document ne peut être attaché qu’à un seul dossier (recoursId OU commissionCaseId, jamais les deux).',
       });
     }
-    if (recoursId) await this.recours.get(recoursId, user);
-    if (commissionCaseId) await this.commission.getCase(commissionCaseId, user);
+    if (recoursId) await this.recours.getForUser(recoursId, user);
+    if (commissionCaseId) await this.commission.getCaseForUser(commissionCaseId, user);
   }
 
   async upload(
@@ -193,8 +193,8 @@ export class DocumentsService {
     if ((recoursId && commissionCaseId) || (!recoursId && !commissionCaseId)) {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Fournir exactement un des deux paramètres : recoursId OU commissionCaseId.' });
     }
-    if (recoursId) await this.recours.get(recoursId, user);
-    if (commissionCaseId) await this.commission.getCase(commissionCaseId, user);
+    if (recoursId) await this.recours.getForUser(recoursId, user);
+    if (commissionCaseId) await this.commission.getCaseForUser(commissionCaseId, user);
 
     const rows = await withDegradedFallback(
       'DocumentsService.listForDossier',
@@ -235,8 +235,8 @@ export class DocumentsService {
     const row = await this.findById(id);
     if (!row) throw NOT_FOUND();
     try {
-      if (row.recoursId) await this.recours.get(row.recoursId, user);
-      else if (row.commissionCaseId) await this.commission.getCase(row.commissionCaseId, user);
+      if (row.recoursId) await this.recours.getForUser(row.recoursId, user);
+      else if (row.commissionCaseId) await this.commission.getCaseForUser(row.commissionCaseId, user);
       else {
         const tenant = resolveTenantFilter(user);
         if (tenant && row.ownerCompany && row.ownerCompany !== tenant) throw NOT_FOUND();
