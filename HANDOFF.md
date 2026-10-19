@@ -706,6 +706,64 @@ exporté pour les e2e (pas de `.env`). Le PostgreSQL du port 5432 sur cette
 machine appartient à un autre projet (`titra-postgres-1`) : ne pas y
 appliquer les migrations d'IDA Place.
 
+## Revue sécurité de la nouvelle surface — adhésions, pipeline, référentiels, barème (2026-10-19)
+
+Les 7 derniers points `QUESTIONS_UAR.md` (§1-5, §7, §8) ayant été traités
+en une seule session longue (plusieurs modules neufs : `MembershipRequest`,
+`SettlementPipelineStep`, les référentiels de place, le barème Art. 14),
+audit sécurité dédié de cette surface spécifique — même discipline que les
+deux revues précédentes (RBAC/scoping tenant, puis générale), mais ciblée
+sur ce qui vient d'être ajouté plutôt que sur l'ensemble du code.
+
+**Ce qui a été vérifié et jugé solide** : aucun contrôle d'autorisation/
+périmètre/métier levé dans une closure `withDegradedFallback` sur toute la
+nouvelle surface ; règle des quatre yeux appliquée sans chemin de
+contournement ; immuabilité correctement posée (version de barème/
+catégorie `VALIDE_UAR`) ; `GET /matching/:id` n'expose `claimAId`/
+`claimBId` qu'après le contrôle de périmètre, jamais `GET /matching/queue` ;
+`SettlementPipelineStep` protégé par une contrainte `UNIQUE(period, step)`
+en base, pas de rejeu possible sur un trimestre clôturé.
+
+**Trouvaille réelle corrigée** : rien ne vérifiait le statut RÉEL d'une
+compagnie (`Company.status`) avant d'ouvrir un recours — seul le statut
+AUTO-DÉCLARÉ dans le fichier importé comptait (`adversePartieAdherente`/
+`adversePartieActive`, colonnes 36-37, jamais une vraie lecture du
+référentiel). Une compagnie constatée `EN_RETRAIT` par `POST
+/commission/membership-requests/:id/effective` pouvait donc continuer à
+ouvrir des recours indéfiniment — rien dans l'application ne refermait
+cette fenêtre (seule la désactivation du compte IAM l'aurait fait, un
+contrôle externe, pas applicatif).
+
+**Décision du Product Owner** (scope volontairement limité à `POST
+/recours`, pas étendu à `MatchingService.decide` ni à l'import — l'audit
+les classe "à considérer", non tranchés) :
+- `Company.withdrawalEffectiveDate` (migration dédiée), posée par
+  `markCompanyWithdrawn` en même temps que `status = EN_RETRAIT`.
+- `POST /recours` refuse (403 `COMPAGNIE_NON_ACTIVE`) si la compagnie
+  `from` n'est pas `ACTIF`, SAUF `EN_RETRAIT` pour un sinistre dont la
+  date d'accident est antérieure à la date d'effet du retrait (Chapitre VI
+  Art. 30-35 : « les obligations restent dues pour tous les sinistres
+  antérieurs à la sortie ») — `EXCLU`/`SUSPENDU` n'ont pas cette exception,
+  aucun texte ne la justifie pour une sanction.
+- Testé unitairement (les 4 statuts, avant/après la date d'effet,
+  `src/claims/claims.service.spec.ts`) ET de bout en bout (onboarding
+  d'une compagnie jetable, retrait réellement constaté via l'API HTTP,
+  recours refusé — `test/security-tenant-scope.e2e-spec.ts`).
+
+**Laissé ouvert, documenté plutôt que deviné** (sévérité basse, l'audit
+les classe "worth considering") :
+- `MembershipService.accept` lie une ADHESION à n'importe quelle compagnie
+  existante sans vérifier qu'elle n'est pas déjà `EN_RETRAIT`/`EXCLU` —
+  pas un contournement de privilège, une incohérence métier possible
+  (réadhésion d'une compagnie exclue sans contrôle dédié).
+- Le même contrôle de statut n'a pas été étendu à `MatchingService.decide`
+  (trancher une confrontation impliquant une compagnie non active) ni à
+  l'import de dossiers — hors du scope de la décision prise ce jour.
+
+**Vérifié** : `npm run lint` OK, `npm test` 439/439, e2e 130/130 (le flake
+`claims-import` ECONNRESET passe ou échoue selon les exécutions, sans
+rapport), build OK.
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
