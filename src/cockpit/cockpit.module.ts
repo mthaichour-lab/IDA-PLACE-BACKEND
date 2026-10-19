@@ -1,4 +1,8 @@
 import { Controller, Get, Module, UseGuards } from '@nestjs/common';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { PlaceOnlyGuard } from './place-only.guard';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
@@ -23,6 +27,15 @@ import { StatsService } from '../stats/stats.service';
 const SUMMARY_CACHE_TTL_SECONDS = 10;
 
 const LATE_THRESHOLD_DAYS = 7;
+
+/**
+ * SEC-05 — clé de cache par périmètre : deux tenants ne partagent jamais la
+ * même entrée (aujourd'hui seule la vue place existe, la route étant
+ * réservée aux rôles place ; une future vue compagnie aura sa propre clé).
+ */
+export function cockpitSummaryCacheKey(user: AuthenticatedUser): string {
+  return `cockpit:summary:${resolveTenantFilter(user) ?? 'place'}`;
+}
 
 function currentMonthPeriod(): string {
   const now = new Date();
@@ -74,10 +87,15 @@ class CockpitController {
     private readonly cache: CacheService,
   ) {}
 
+  // SEC-05 : positions nettes, couples créancier/débiteur et pénalités de
+  // TOUTES les compagnies — réservé aux rôles place (403 pour un rôle
+  // compagnie). Les services sont appelés sans `user` (agrégat place-entière),
+  // ce qui n'est acceptable que derrière cette garde.
   @Get('summary')
-  @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (écran 1) — mis en cache (Redis si REDIS_ENABLED, sinon recalculé à chaque appel, voir cache.service.ts)' })
-  async summary() {
-    return this.cache.getOrSet('cockpit:summary', SUMMARY_CACHE_TTL_SECONDS, () => this.computeSummary());
+  @UseGuards(PlaceOnlyGuard)
+  @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (écran 1) — réservé aux rôles place (SEC-05) ; mis en cache (Redis si REDIS_ENABLED, voir cache.service.ts)' })
+  async summary(@CurrentUser() user: AuthenticatedUser) {
+    return this.cache.getOrSet(cockpitSummaryCacheKey(user), SUMMARY_CACHE_TTL_SECONDS, () => this.computeSummary());
   }
 
   private async computeSummary() {

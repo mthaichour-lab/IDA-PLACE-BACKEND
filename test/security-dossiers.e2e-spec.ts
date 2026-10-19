@@ -141,6 +141,16 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-05 — cockpit de place', () => {
+    it.each(['TRESORIER', 'CORRESPONDANT_IDA'] as const)('%s de CAAT : GET /cockpit/summary refusé (403)', async (role) => {
+      await http().get('/api/v1/cockpit/summary').set('x-dev-user', companyUser(role, 'CAAT')).expect(403);
+    });
+
+    it.each(['OPERATEUR_PLACE', 'AUDITEUR_CSA', 'MEMBRE_COMMISSION'])('%s (rôle place) : accès autorisé', async (role) => {
+      await http().get('/api/v1/cockpit/summary').set('x-dev-user', role).expect(200);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(
