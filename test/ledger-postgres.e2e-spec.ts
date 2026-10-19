@@ -47,7 +47,7 @@ describeIfDb('Journal scellé — PostgreSQL réel (SEC-15)', () => {
       user: process.env.LEDGER_IT_DB_USER ?? 'ida_place_it',
       password: process.env.LEDGER_IT_DB_PASSWORD ?? 'it-socle-pass',
       extensions: [Migrator],
-      migrations: { pathTs: 'src/migrations', path: 'src/migrations', glob: '!(*.d).{js,ts}', transactional: true },
+      migrations: { pathTs: 'src/migrations', path: 'src/migrations', glob: '!(*.d).{js,ts}', transactional: true, snapshot: false },
       pool: { min: 1, max: 20 },
     });
     await sql('drop schema public cascade');
