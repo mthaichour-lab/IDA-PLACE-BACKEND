@@ -6,6 +6,7 @@ import { MatchingModule } from '../matching/matching.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { RecoursModule } from '../recours/recours.module';
 import { ClaimsController } from './claims.controller';
+import { RecoursOpeningController } from './recours-opening.controller';
 import { ClaimsService } from './claims.service';
 import { Claim } from './entities/claim.entity';
 
@@ -20,7 +21,7 @@ import { Claim } from './entities/claim.entity';
   // RecoursModule (recours ouvert sur le dossier) et AdherentsModule (barème
   // publié) n'importent jamais ClaimsModule : pas de cycle.
   imports: [MikroOrmModule.forFeature([Claim]), EligibilityModule, MatchingModule, RealtimeModule, RecoursModule, AdherentsModule],
-  controllers: [ClaimsController],
+  controllers: [ClaimsController, RecoursOpeningController],
   providers: [ClaimsService],
   exports: [ClaimsService],
 })

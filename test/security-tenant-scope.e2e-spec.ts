@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { importEligibleClaim } from './utils/claims';
 import { createTestApp } from './utils/test-app';
 
 /**
@@ -114,21 +115,44 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .expect(403);
     });
 
+    it('refuse un dossier inexistant (404), un dossier d’une autre compagnie (400), une mauvaise partie tierce (400) et un second recours (409)', async () => {
+      const server = () => request(app.getHttpServer());
+      await server()
+        .post('/api/v1/recours')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .send({ claimId: 'clm-inexistant', from: 'CAAT', to: 'SAA', amount: 10_000 })
+        .expect(404);
+
+      const saaClaim = await importEligibleClaim(app, 'E2E-SEC-SAA-OWN', 'SAA', 'CAAT');
+      const notDirect = await server().post('/api/v1/recours').set('x-dev-user', 'OPERATEUR_PLACE').send({ claimId: saaClaim, from: 'CAAT', to: 'SAA', amount: 10_000 }).expect(400);
+      expect(notDirect.body.code).toBe('RECOURS_HORS_ASSUREUR_DIRECT');
+
+      const caatClaim = await importEligibleClaim(app, 'E2E-SEC-UNIQUE', 'CAAT', 'SAA');
+      const wrongParty = await server().post('/api/v1/recours').set('x-dev-user', 'OPERATEUR_PLACE').send({ claimId: caatClaim, from: 'CAAT', to: 'CASH', amount: 10_000 }).expect(400);
+      expect(wrongParty.body.code).toBe('RECOURS_MAUVAISE_PARTIE');
+
+      await server().post('/api/v1/recours').set('x-dev-user', 'OPERATEUR_PLACE').send({ claimId: caatClaim, from: 'CAAT', to: 'SAA', amount: 10_000 }).expect(201);
+      const duplicate = await server().post('/api/v1/recours').set('x-dev-user', 'OPERATEUR_PLACE').send({ claimId: caatClaim, from: 'CAAT', to: 'SAA', amount: 10_000 }).expect(409);
+      expect(duplicate.body.code).toBe('RECOURS_EXISTANT');
+    });
+
     it('autorise un CORRESPONDANT_IDA à créer un recours en son propre nom (dto.from = sa compagnie)', async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-LEGIT', 'CAAT', 'CASH');
       await request(app.getHttpServer())
         .post('/api/v1/recours')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .send({ claimId: 'clm-legit', from: 'CAAT', to: 'SAA', amount: 10_000 })
+        .send({ claimId, from: 'CAAT', to: 'CASH', amount: 10_000 })
         .expect(201);
     });
   });
 
   describe('CommissionModule — POST /commission/cases (B.7, fuite via recours tiers)', () => {
     it("refuse avec un 403 qu'une compagnie ouvre un dossier de commission à partir d'un recours auquel elle n'est PAS partie", async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-COM-FOREIGN', 'SAA', 'CASH');
       const recours = await request(app.getHttpServer())
         .post('/api/v1/recours')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ claimId: 'clm-commission-foreign', from: 'SAA', to: 'CAAR', amount: 50_000 })
+        .send({ claimId, from: 'SAA', to: 'CASH', amount: 50_000 })
         .expect(201);
 
       await request(app.getHttpServer())
@@ -139,10 +163,11 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
     });
 
     it('autorise une compagnie partie au recours à ouvrir le dossier de commission', async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-COM-LEGIT', 'CAAT', 'CASH');
       const recours = await request(app.getHttpServer())
         .post('/api/v1/recours')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ claimId: 'clm-commission-legit', from: 'CAAT', to: 'CAAR', amount: 50_000 })
+        .send({ claimId, from: 'CAAT', to: 'CASH', amount: 50_000 })
         .expect(201);
 
       await request(app.getHttpServer())
@@ -228,10 +253,11 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
    */
   describe('DocumentsModule — GET /documents?recoursId=X (QUESTIONS_UAR.md §9)', () => {
     it("refuse avec un 403 qu'un CORRESPONDANT_IDA liste les documents d'un recours auquel sa compagnie n'est PAS partie", async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-DOCS-FOREIGN', 'SAA', 'CASH');
       const recours = await request(app.getHttpServer())
         .post('/api/v1/recours')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ claimId: 'clm-docs-foreign', from: 'SAA', to: 'CAAR', amount: 25_000 })
+        .send({ claimId, from: 'SAA', to: 'CASH', amount: 25_000 })
         .expect(201);
 
       await request(app.getHttpServer())
@@ -248,10 +274,11 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
     });
 
     it('autorise une compagnie partie au recours à lister les documents de SON dossier', async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-DOCS-LEGIT', 'CAAT', 'CASH');
       const recours = await request(app.getHttpServer())
         .post('/api/v1/recours')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ claimId: 'clm-docs-legit', from: 'CAAT', to: 'CAAR', amount: 25_000 })
+        .send({ claimId, from: 'CAAT', to: 'CASH', amount: 25_000 })
         .expect(201);
 
       await request(app.getHttpServer())

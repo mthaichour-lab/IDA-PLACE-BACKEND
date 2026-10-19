@@ -1,17 +1,18 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
 import { normalizeCircumstances, normalizeReferenceCode, resolvePublishedBaremeCase } from '../adherents/bareme-rules';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { resolveTenantFilter } from '../common/rbac/tenant-scope';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchingService } from '../matching/matching.service';
 import { ClaimMatchInput } from '../matching/matching.types';
 import { RealtimeGateway } from '../realtime/realtime.module';
+import { CreateRecoursDto, RecoursViewDto } from '../recours/dto/recours.dto';
 import { RecoursService } from '../recours/recours.service';
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
 import { ClaimArt14Fields, resolveImportedArt14 } from './claim-art14';
@@ -155,6 +156,32 @@ export class ClaimsService {
     if (query.company) rows = rows.filter((c) => c.company === query.company);
     if (query.state) rows = rows.filter((c) => c.state === query.state);
     return paginateArray(rows, query.page, query.pageSize);
+  }
+
+  /**
+   * Ouverture d'un recours (Annexe 2) sur un dossier RÉEL : il doit exister,
+   * appartenir à l'assureur direct (`from`), viser la partie tierce déclarée
+   * (`to`), être éligible IDA (sinon « pas de recours conventionnel »,
+   * Diagramme 1), et ne pas avoir déjà de recours — un second recours
+   * conduirait à une double compensation. Vit ici et non dans RecoursModule :
+   * ClaimsModule dépend déjà de RecoursModule, l'inverse créerait un cycle.
+   */
+  async openRecours(dto: CreateRecoursDto, user: AuthenticatedUser): Promise<RecoursViewDto> {
+    assertCompanyAccess(user, dto.from);
+    const claim = await this.get(dto.claimId, user);
+    if (claim.company !== dto.from) {
+      throw new BadRequestException({ code: 'RECOURS_HORS_ASSUREUR_DIRECT', message: `Le recours est présenté par l'assureur direct du dossier (${claim.company}), pas par ${dto.from}.` });
+    }
+    if (claim.counterpartyCompany && claim.counterpartyCompany !== dto.to) {
+      throw new BadRequestException({ code: 'RECOURS_MAUVAISE_PARTIE', message: `Le dossier désigne ${claim.counterpartyCompany} comme partie tierce, pas ${dto.to}.` });
+    }
+    if (claim.eligibilityVerdict !== 'ELIGIBLE_IDA') {
+      throw new BadRequestException({ code: 'DOSSIER_HORS_IDA', message: 'Dossier hors IDA : pas de recours conventionnel dans le cadre de la convention.' });
+    }
+    if ((await this.recours.listAll()).some((r) => r.claimId === claim.id)) {
+      throw new ConflictException({ code: 'RECOURS_EXISTANT', message: 'Un recours existe déjà pour ce dossier.' });
+    }
+    return this.recours.create(dto, user);
   }
 
   async get(id: string, user?: AuthenticatedUser): Promise<ClaimViewDto> {

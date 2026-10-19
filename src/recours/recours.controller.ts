@@ -5,7 +5,7 @@ import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { CreateRecoursDto, ListRecoursQueryDto, RecoursTransitionDto } from './dto/recours.dto';
+import { ListRecoursQueryDto, RecoursTransitionDto } from './dto/recours.dto';
 import { RecoursService } from './recours.service';
 
 /**
@@ -36,13 +36,6 @@ export class RecoursController {
   @ApiOperation({ summary: "Fiche détail d'un recours (B.7 : scopé par compagnie)" })
   get(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.get(id, user);
-  }
-
-  @Post()
-  @Privileges('insert')
-  @ApiOperation({ summary: "Enregistrement d'un nouveau recours (Annexe 2) pour un dossier éligible IDA (B.7 : `from` doit être la compagnie de l'appelant, sauf rôle place)" })
-  create(@Body() dto: CreateRecoursDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.create(dto, user);
   }
 
   @Post(':id/transition')

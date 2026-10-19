@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { importEligibleClaim } from './utils/claims';
 import { createTestApp } from './utils/test-app';
 
 /**
@@ -130,10 +131,11 @@ describe('Référentiels de place — points 1 à 4 (e2e)', () => {
 
   describe('motif d’opposition sur un recours (§1)', () => {
     it('opposer avec le motif interdit « non-déclaration » → 400 citant l’Art. 10', async () => {
+      const claimId = await importEligibleClaim(app, 'E2E-REF-MOTIF', 'CAAT', 'SAA');
       const recours = await http()
         .post('/api/v1/recours')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ claimId: 'clm-e2e-motif', from: 'CAAT', to: 'SAA', amount: 10_000 })
+        .send({ claimId, from: 'CAAT', to: 'SAA', amount: 10_000 })
         .expect(201);
       const res = await http()
         .post(`/api/v1/recours/${recours.body.id}/transition`)
