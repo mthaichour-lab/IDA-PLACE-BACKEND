@@ -1,35 +1,38 @@
-import { createPublicKey, JsonWebKey } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
+import { JwksClient } from 'jwks-rsa';
 import { PlaceUserDirectory } from '../../common/directory/place-user-directory.service';
 import { AuthenticatedUser, AuthProvider } from '../../common/interfaces/authenticated-user.interface';
+import { sanitizeForLog } from '../../common/logging/sanitize-log';
 import { RbacService } from '../../common/rbac/rbac.service';
 import { ROLES, Role } from '../../common/rbac/roles-privileges';
 
-interface Jwk extends JsonWebKey {
-  kid: string;
-}
-
-interface Jwks {
-  keys: Jwk[];
-}
-
 interface KeycloakTokenPayload {
   sub: string;
+  typ?: string;
   email?: string;
+  email_verified?: boolean;
   preferred_username?: string;
   name?: string;
   azp?: string;
   aud?: string | string[];
   iss?: string;
+  exp?: number;
   realm_access?: { roles: string[] };
-  /** Claim custom explicite (mapper Keycloak) — priorité sur `realm_access.roles` si présente. */
+  /** Claim custom explicite (mapper Keycloak) — règle explicite si présente. */
   ida_place_role?: string;
   /** Claim custom (mapper Keycloak, attribut utilisateur) — B.7, rôles CORRESPONDANT_IDA/TRESORIER. */
   company_id?: string;
 }
 
-const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
+/** Cache des clés publiques (par `kid`). */
+export const JWKS_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+/** Nombre maximal d'appels au JWKS par minute (protège Keycloak d'un flot de `kid` inconnus — SEC-24). */
+export const JWKS_REQUESTS_PER_MINUTE = 10;
+/** Délai d'attente d'un appel JWKS. */
+export const JWKS_TIMEOUT_MS = 5000;
+/** Forme acceptée d'un `kid` avant tout appel réseau (les `kid` Keycloak sont courts, alphanumériques). */
+const KID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
 
 /**
  * KeycloakStrategy — intégration OIDC Keycloak réelle (B.7, C.3.4).
@@ -38,48 +41,35 @@ const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
  * vers l'un des 6 rôles RBAC internes et calcule les privilèges effectifs
  * via `RbacService` — EXACTEMENT comme `DevAuthProvider`, pour que
  * `AuthGuard`/`PrivilegesGuard` et la forme de `AuthenticatedUser`/`GET /me`
- * restent inchangés (contrat stable, voir HANDOFF.md).
+ * restent inchangés.
  *
- * Hypothèses de mapping documentées (le dossier technique ne fixe pas le
- * détail des claims Keycloak — à valider avec la configuration réelle du
- * realm "ida-place") :
- *  - rôle applicatif : claim custom `ida_place_role` si présente (mapper
- *    Keycloak dédié), sinon la première correspondance trouvée dans
- *    `realm_access.roles` parmi les 6 rôles internes (`ROLES`) — suppose
- *    donc que les rôles de realm Keycloak portent EXACTEMENT les mêmes noms
- *    (`OPERATEUR_PLACE`, `ADMIN_UAR`, ...).
- *  - `companyId` (CORRESPONDANT_IDA/TRESORIER) : claim custom
- *    `company_id` (attribut utilisateur mappé en claim côté Keycloak).
- *  - client autorisé : le jeton doit avoir été émis pour `ida-place-web`
- *    ou `ida-place-api` (`azp`, sinon premier élément de `aud`) — rejeté
- *    sinon.
- *  - dérogations grant/revoke par utilisateur : lues dans le miroir
- *    applicatif `PlaceUser` (`PlaceUserDirectory.findActiveDerogationsByEmail`,
- *    `common/directory`) par email du token — PAS par `sub` Keycloak, ce
- *    miroir n'ayant pas vocation à connaître les identifiants internes
- *    Keycloak. Si aucun `PlaceUser` ne correspond (miroir pas forcément
- *    synchronisé pour tous les utilisateurs) ou si le compte est suspendu,
- *    aucune dérogation n'est appliquée (comportement par rôle seul,
- *    inchangé) — un compte suspendu continue néanmoins à authentifier avec
- *    les seuls privilèges de son rôle (pas de rejet total : la suspension
- *    du miroir applicatif ne doit pas se substituer à la révocation réelle
- *    côté Keycloak, qui reste la source de vérité pour l'authentification).
+ * Contrôles (SEC-24, revue sécurité 2026-10-19) :
+ *  - signature RS256, émetteur, expiration (`jsonwebtoken.verify`) ;
+ *  - `typ === 'Bearer'` (refuse les ID tokens et refresh tokens) ;
+ *  - client OBLIGATOIRE : `azp` présent et dans la liste autorisée, ou à
+ *    défaut `aud` contenant un client autorisé — liste issue de la
+ *    configuration (`KEYCLOAK_ALLOWED_CLIENTS`, défaut `KEYCLOAK_CLIENT_ID`),
+ *    plus aucun client codé en dur ;
+ *  - rôle applicatif UNIQUE : claim `ida_place_role` si présente (règle
+ *    explicite, doit être un rôle connu), sinon EXACTEMENT un rôle applicatif
+ *    dans `realm_access.roles` — un jeton portant plusieurs rôles applicatifs
+ *    est refusé (plus de `ROLES.find` arbitraire) ;
+ *  - `email_verified === true` exigé ;
+ *  - JWKS via `jwks-rsa` : cache (10 min), limite de débit (10 appels/min),
+ *    délai d'attente (5 s) ; `kid` et `alg` contrôlés avant tout appel.
  *
- * Testable SANS serveur Keycloak réel : `getJwks()` appelle `fetch` (Node
- * ≥18, déjà la version minimale du projet — voir package.json "engines"),
- * mockable dans les tests (voir `keycloak.strategy.spec.ts`, qui construit
- * un vrai jeu de clés RSA et un JWT signé localement).
+ * Compte applicatif (SEC-09) : `PlaceUserDirectory.lookupAccount` à chaque
+ * requête — compte SUSPENDU → 401 ; compte lié à un autre `sub` → 401 ;
+ * compte actif → dérogations grant/revoke appliquées ; compte inconnu (miroir
+ * non synchronisé) → rôle du jeton seul.
  *
- * Zero-trust (voir README "Mode dégradé") : si `AUTH_PROVIDER=keycloak` est
- * sélectionné sans configuration minimale valide, `assertConfigured()` (
- * appelée par `auth.module.ts` AU DÉMARRAGE, uniquement quand ce provider
- * est effectivement choisi) lève une erreur explicite — JAMAIS de repli
- * "admin" silencieux.
+ * Testable SANS serveur Keycloak réel : le `fetcher` de `jwks-rsa` utilise
+ * le `fetch` global (mockable, voir `keycloak.strategy.spec.ts`).
  */
 @Injectable()
 export class KeycloakStrategy implements AuthProvider {
   private readonly logger = new Logger('KeycloakStrategy');
-  private jwksCache?: { fetchedAt: number; keys: Jwk[] };
+  private jwks?: { uri: string; client: JwksClient };
 
   constructor(
     private readonly rbac: RbacService,
@@ -94,10 +84,6 @@ export class KeycloakStrategy implements AuthProvider {
     return process.env.KEYCLOAK_REALM;
   }
 
-  private get clientId(): string | undefined {
-    return process.env.KEYCLOAK_CLIENT_ID;
-  }
-
   private get issuer(): string | undefined {
     return this.baseUrl && this.realm ? `${this.baseUrl.replace(/\/$/, '')}/realms/${this.realm}` : undefined;
   }
@@ -106,14 +92,20 @@ export class KeycloakStrategy implements AuthProvider {
     return this.issuer ? `${this.issuer}/protocol/openid-connect/certs` : undefined;
   }
 
+  /** Clients OIDC autorisés (`azp`/`aud`) — configuration uniquement. */
+  allowedClients(): string[] {
+    const raw = process.env.KEYCLOAK_ALLOWED_CLIENTS ?? process.env.KEYCLOAK_CLIENT_ID ?? '';
+    return raw
+      .split(',')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+  }
+
   /**
    * Configuration minimale requise pour vérifier un JWT Keycloak. Appelée
    * par `auth.module.ts` UNIQUEMENT quand `AUTH_PROVIDER=keycloak` est
-   * effectivement sélectionné (jamais au simple chargement de la classe,
-   * qui reste toujours instanciée par le conteneur Nest aux côtés de
-   * `DevAuthProvider` — même principe que `S3StorageProvider`, voir
-   * documents/providers/s3.provider.ts) : ne doit jamais casser le mode dev
-   * (`AUTH_PROVIDER=dev`) par un throw de constructeur.
+   * effectivement sélectionné : ne doit jamais casser le mode dev par un
+   * throw de constructeur.
    */
   assertConfigured(): void {
     const missing = ['KEYCLOAK_BASE_URL', 'KEYCLOAK_REALM', 'KEYCLOAK_CLIENT_ID'].filter((k) => !process.env[k]);
@@ -125,94 +117,126 @@ export class KeycloakStrategy implements AuthProvider {
     }
   }
 
-  private async getJwks(forceRefresh = false): Promise<Jwk[]> {
-    if (!forceRefresh && this.jwksCache && Date.now() - this.jwksCache.fetchedAt < JWKS_CACHE_TTL_MS) {
-      return this.jwksCache.keys;
+  private jwksClient(): JwksClient {
+    const uri = this.jwksUrl;
+    if (!uri) throw new Error('KeycloakStrategy: KEYCLOAK_BASE_URL/KEYCLOAK_REALM manquants.');
+    if (!this.jwks || this.jwks.uri !== uri) {
+      this.jwks = {
+        uri,
+        client: new JwksClient({
+          jwksUri: uri,
+          cache: true,
+          cacheMaxEntries: 10,
+          cacheMaxAge: JWKS_CACHE_MAX_AGE_MS,
+          rateLimit: true,
+          jwksRequestsPerMinute: JWKS_REQUESTS_PER_MINUTE,
+          timeout: JWKS_TIMEOUT_MS,
+          fetcher: async (jwksUri: string) => {
+            const res = await fetch(jwksUri, { signal: AbortSignal.timeout(JWKS_TIMEOUT_MS) });
+            if (!res.ok) throw new Error(`échec de récupération du JWKS (${res.status})`);
+            return (await res.json()) as { keys: unknown[] };
+          },
+        }),
+      };
     }
-    const url = this.jwksUrl;
-    if (!url) throw new Error('KeycloakStrategy: KEYCLOAK_BASE_URL/KEYCLOAK_REALM manquants.');
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`KeycloakStrategy: échec de récupération du JWKS (${res.status} ${res.statusText}).`);
-    const body = (await res.json()) as Jwks;
-    this.jwksCache = { fetchedAt: Date.now(), keys: body.keys ?? [] };
-    return this.jwksCache.keys;
+    return this.jwks.client;
   }
 
-  private async resolvePublicKeyPem(kid: string): Promise<string> {
-    let keys = await this.getJwks();
-    let jwk = keys.find((k) => k.kid === kid);
-    if (!jwk) {
-      // kid inconnu du cache : rotation de clé récente côté Keycloak possible — un seul refresh forcé.
-      keys = await this.getJwks(true);
-      jwk = keys.find((k) => k.kid === kid);
-    }
-    if (!jwk) throw new Error(`KeycloakStrategy: aucune clé JWKS ne correspond au "kid" du jeton ("${kid}").`);
-    const keyObject = createPublicKey({ key: jwk as JsonWebKey, format: 'jwk' });
-    return keyObject.export({ type: 'spki', format: 'pem' }) as string;
+  private async resolvePublicKey(kid: string): Promise<string> {
+    const key = await this.jwksClient().getSigningKey(kid);
+    return key.getPublicKey();
   }
 
-  /** Mapping rôle Keycloak → rôle RBAC interne — B.7 (voir hypothèses dans la doc de classe). */
+  /** Rôle applicatif unique (voir doc de classe) — `undefined` si absent, inconnu ou ambigu. */
   private extractRole(payload: KeycloakTokenPayload): Role | undefined {
-    if (payload.ida_place_role && (ROLES as readonly string[]).includes(payload.ida_place_role)) {
-      return payload.ida_place_role as Role;
+    if (payload.ida_place_role !== undefined) {
+      return (ROLES as readonly string[]).includes(payload.ida_place_role) ? (payload.ida_place_role as Role) : undefined;
     }
-    const realmRoles = payload.realm_access?.roles ?? [];
-    return ROLES.find((r) => realmRoles.includes(r));
+    const realmRoles = Array.isArray(payload.realm_access?.roles) ? payload.realm_access!.roles : [];
+    const appRoles = ROLES.filter((r) => realmRoles.includes(r));
+    return appRoles.length === 1 ? appRoles[0] : undefined;
+  }
+
+  private clientAllowed(payload: KeycloakTokenPayload): boolean {
+    const allowed = this.allowedClients();
+    if (allowed.length === 0) return false;
+    if (typeof payload.azp === 'string' && payload.azp.length > 0) return allowed.includes(payload.azp);
+    const aud = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
+    return aud.some((a) => allowed.includes(a));
   }
 
   async resolve(req: { headers: Record<string, unknown> }): Promise<AuthenticatedUser | null> {
     this.assertConfigured();
 
-    const authz = req.headers['authorization'] as string | undefined;
-    if (!authz?.startsWith('Bearer ')) return null;
+    const authz = req.headers['authorization'];
+    if (typeof authz !== 'string' || !authz.startsWith('Bearer ')) return null;
     const token = authz.slice(7);
 
     const decoded = jwt.decode(token, { complete: true });
-    const kid = decoded && typeof decoded === 'object' ? (decoded.header as { kid?: string }).kid : undefined;
-    if (!kid) {
-      this.logger.warn('JWT Keycloak sans "kid" dans son en-tête — rejeté.');
+    const header = decoded && typeof decoded === 'object' ? (decoded.header as { kid?: unknown; alg?: unknown }) : undefined;
+    const kid = header?.kid;
+    if (typeof kid !== 'string' || !KID_PATTERN.test(kid)) {
+      this.logger.warn('JWT Keycloak sans "kid" valide dans son en-tête — rejeté.');
+      return null;
+    }
+    if (header?.alg !== 'RS256') {
+      this.logger.warn(`JWT Keycloak avec un algorithme inattendu ("${sanitizeForLog(header?.alg, 20)}") — rejeté.`);
       return null;
     }
 
-    let publicKeyPem: string;
+    let publicKey: string;
     try {
-      publicKeyPem = await this.resolvePublicKeyPem(kid);
+      publicKey = await this.resolvePublicKey(kid);
     } catch (err) {
-      this.logger.error(`KeycloakStrategy: ${(err as Error).message}`);
+      // SEC-45 : `kid` et message neutralisés avant journalisation.
+      this.logger.warn(`Clé JWKS introuvable ou indisponible pour kid="${sanitizeForLog(kid, 128)}" (${sanitizeForLog(err)}).`);
       return null;
     }
 
     let payload: KeycloakTokenPayload;
     try {
-      payload = jwt.verify(token, publicKeyPem, { algorithms: ['RS256'], issuer: this.issuer }) as KeycloakTokenPayload;
+      payload = jwt.verify(token, publicKey, { algorithms: ['RS256'], issuer: this.issuer }) as KeycloakTokenPayload;
     } catch (err) {
-      this.logger.warn(`JWT Keycloak invalide (${(err as Error).message}).`);
+      this.logger.warn(`JWT Keycloak invalide (${sanitizeForLog(err)}).`);
       return null;
     }
 
-    // Clients attendus — ida-place-web (public/PKCE, front) ou ida-place-api
-    // (bearer-only, back) — voir doc de classe.
-    const expectedClients = [this.clientId, 'ida-place-web', 'ida-place-api'].filter((v): v is string => !!v);
-    const aud = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
-    const tokenClient = payload.azp ?? aud[0];
-    if (tokenClient && !expectedClients.includes(tokenClient)) {
-      this.logger.warn(`JWT Keycloak émis pour un client inattendu ("${tokenClient}") — rejeté.`);
+    if (payload.typ !== 'Bearer') {
+      this.logger.warn(`JWT Keycloak de type "${sanitizeForLog(payload.typ ?? '', 20)}" (Bearer attendu) — rejeté.`);
+      return null;
+    }
+    if (!this.clientAllowed(payload)) {
+      this.logger.warn(`JWT Keycloak sans client autorisé (azp="${sanitizeForLog(payload.azp ?? '', 64)}") — rejeté.`);
+      return null;
+    }
+    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+      this.logger.warn('JWT Keycloak sans "sub" — rejeté.');
+      return null;
+    }
+    if (payload.email_verified !== true) {
+      this.logger.warn('JWT Keycloak dont l\'e-mail n\'est pas vérifié (email_verified) — rejeté.');
       return null;
     }
 
     const role = this.extractRole(payload);
     if (!role) {
-      this.logger.warn('JWT Keycloak sans rôle applicatif reconnu (realm_access.roles / ida_place_role) — rejeté.');
+      this.logger.warn('JWT Keycloak sans rôle applicatif unique reconnu (ida_place_role / realm_access.roles) — rejeté.');
       return null;
     }
 
-    // Dérogations grant/revoke par utilisateur (miroir applicatif PlaceUser,
-    // common/directory) — voir doc de classe. `null` si pas de PlaceUser
-    // correspondant (miroir pas forcément synchronisé) ou compte suspendu :
-    // dans les deux cas, on applique le rôle seul, sans dérogation.
-    const email = payload.email ?? payload.preferred_username ?? '';
-    const derogations = email ? await this.directory.findActiveDerogationsByEmail(email) : null;
-    const privileges = this.rbac.effectivePrivileges(role, derogations?.grant ?? [], derogations?.revoke ?? []);
+    const email = payload.email ?? '';
+    const account = await this.directory.lookupAccount({ sub: payload.sub, email, emailVerified: true });
+    if (account.status === 'INACTIVE') {
+      this.logger.warn(`Authentification refusée : compte applicatif suspendu (${account.userId}).`);
+      return null;
+    }
+    if (account.status === 'SUB_MISMATCH') {
+      this.logger.warn(`Authentification refusée : le compte applicatif ${account.userId} est lié à une autre identité Keycloak.`);
+      return null;
+    }
+    const grant = account.status === 'ACTIVE' ? account.grant : [];
+    const revoke = account.status === 'ACTIVE' ? account.revoke : [];
+    const privileges = this.rbac.effectivePrivileges(role, grant, revoke);
 
     return {
       id: payload.sub,
@@ -221,6 +245,7 @@ export class KeycloakStrategy implements AuthProvider {
       role,
       companyId: payload.company_id,
       privileges,
+      ...(typeof payload.exp === 'number' ? { expiresAt: payload.exp * 1000 } : {}),
     };
   }
 }

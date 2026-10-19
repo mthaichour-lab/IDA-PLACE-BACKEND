@@ -1,19 +1,53 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { CreatePlaceUserDto, PlaceUserViewDto, UpdatePlaceUserDto } from '../../admin/dto/place-user.dto';
 import { paginateArray, PaginatedResult } from '../dto/pagination.dto';
 import { withDegradedFallback } from '../interfaces/degraded-mode';
-import { Privilege, Role } from '../rbac/roles-privileges';
+import { forbiddenPrivilegesForRole, isCompanyScopedRole, Privilege, Role } from '../rbac/roles-privileges';
 import { PlaceUser } from './place-user.entity';
 
 /** Repli mémoire — mode dégradé (voir README "Mode dégradé"). Seed identique à l'ancien mock, pour ne pas changer le comportement observé en dev sans base. */
 const MEMORY_USERS: PlaceUserViewDto[] = [
-  { id: 'u-1', name: 'Opérateur Place (dev)', email: 'operateur@finlab.dz', role: 'OPERATEUR_PLACE', active: true, grant: [], revoke: [] },
-  { id: 'u-2', name: 'Correspondant CAAT', email: 'correspondant@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', active: true, grant: [], revoke: [] },
-  { id: 'u-3', name: 'Trésorier SAA', email: 'tresorier@saa.dz', role: 'TRESORIER', companyId: 'SAA', active: false, grant: [], revoke: [] },
+  { id: '00000000-0000-4000-8000-000000000001', name: 'Opérateur Place (dev)', email: 'operateur@finlab.dz', role: 'OPERATEUR_PLACE', active: true, grant: [], revoke: [] },
+  { id: '00000000-0000-4000-8000-000000000002', name: 'Correspondant CAAT', email: 'correspondant@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', active: true, grant: [], revoke: [] },
+  { id: '00000000-0000-4000-8000-000000000003', name: 'Trésorier SAA', email: 'tresorier@saa.dz', role: 'TRESORIER', companyId: 'SAA', active: false, grant: [], revoke: [] },
 ];
+
+/** Repli mémoire : liaison `sub` Keycloak par utilisateur (équivalent de la colonne `keycloak_sub`). */
+const MEMORY_SUBS = new Map<string, string>();
+
+/** SEC-09 — état d'un compte applicatif pour une identité Keycloak (voir `lookupAccount`). */
+export type PlaceUserAccountLookup =
+  | { status: 'UNKNOWN' }
+  | { status: 'SUB_MISMATCH'; userId: string }
+  | { status: 'INACTIVE'; userId: string }
+  | { status: 'ACTIVE'; userId: string; grant: Privilege[]; revoke: Privilege[] };
+
+function accountStatus(u: { id: string; active: boolean; grant: string[]; revoke: string[] }): PlaceUserAccountLookup {
+  if (!u.active) return { status: 'INACTIVE', userId: u.id };
+  return { status: 'ACTIVE', userId: u.id, grant: [...u.grant] as Privilege[], revoke: [...u.revoke] as Privilege[] };
+}
+
+/**
+ * SEC-25 — plancher de séparation des tâches pour les dérogations
+ * individuelles : un rôle de compagnie ne peut recevoir aucun privilège
+ * réservé à la place par `grant`, et doit être rattaché à une compagnie.
+ * Vérifié sur l'état RÉSULTANT (rôle et grant après fusion du patch).
+ */
+function assertAccountConsistency(role: string, grant: readonly string[], companyId: string | undefined): void {
+  const forbidden = forbiddenPrivilegesForRole(role, grant);
+  if (forbidden.length > 0) {
+    throw new BadRequestException({
+      code: 'PRIVILEGE_RESERVE_PLACE',
+      message: `Privilège(s) réservé(s) aux rôles de place, interdit(s) pour le rôle ${role} : ${forbidden.join(', ')}.`,
+    });
+  }
+  if (isCompanyScopedRole(role) && !companyId) {
+    throw new BadRequestException({ code: 'BAD_REQUEST', message: `Le rôle ${role} doit être rattaché à une compagnie (companyId).` });
+  }
+}
 
 function toView(u: PlaceUser): PlaceUserViewDto {
   return { id: u.id, name: u.name, email: u.email, role: u.role, companyId: u.companyId, active: u.active, grant: u.grant, revoke: u.revoke };
@@ -48,8 +82,8 @@ function definedFieldsOnly<T extends object>(dto: T): Partial<T> {
  *  - `AdminModule` (écran 14 "Paramétrage") : CRUD complet (`list`/`create`/
  *    `update`), sans changement de comportement vis-à-vis de l'ancien
  *    `UsersService` qu'elle remplace.
- *  - `AuthModule` (`KeycloakStrategy`) : lecture seule des dérogations
- *    grant/revoke d'un utilisateur authentifié via `findActiveDerogationsByEmail`
+ *  - `AuthModule` (`KeycloakStrategy`) : état du compte et dérogations
+ *    grant/revoke d'une identité Keycloak via `lookupAccount`
  *    — avant cette extraction, consommer `UsersService` depuis `AuthModule`
  *    aurait créé une dépendance inverse `AuthModule` → `AdminModule`
  *    (`AdminModule` important déjà `AuthModule` pour ses guards), impossible
@@ -71,6 +105,7 @@ export class PlaceUserDirectory {
   }
 
   async create(dto: CreatePlaceUserDto): Promise<PlaceUserViewDto> {
+    assertAccountConsistency(dto.role, dto.grant ?? [], dto.companyId);
     return withDegradedFallback(
       'PlaceUserDirectory.create',
       async () => {
@@ -116,6 +151,7 @@ export class PlaceUserDirectory {
       async () => {
         const u = await this.repo.findOne({ id });
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable.' });
+        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, patch.companyId ?? u.companyId);
         this.repo.assign(u, patch as Partial<PlaceUser>);
         await this.repo.getEntityManager().flush();
         return toView(u);
@@ -123,6 +159,7 @@ export class PlaceUserDirectory {
       () => {
         const u = MEMORY_USERS.find((m) => m.id === id);
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable (mode dégradé).' });
+        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, patch.companyId ?? u.companyId);
         Object.assign(u, patch);
         return u;
       },
@@ -130,32 +167,49 @@ export class PlaceUserDirectory {
   }
 
   /**
-   * Lecture seule, consommée par `KeycloakStrategy` (B.7) pour appliquer les
-   * dérogations grant/revoke d'un utilisateur authentifié via Keycloak — le
-   * rôle/les privilèges de base viennent du token (realm_access.roles /
-   * ida_place_role), mais les dérogations PAR UTILISATEUR ne vivent que dans
-   * ce miroir applicatif `PlaceUser`, pas dans Keycloak.
+   * SEC-09/SEC-24 (revue sécurité 2026-10-19) — état du compte applicatif
+   * d'une identité Keycloak, consommé par `KeycloakStrategy` à CHAQUE requête
+   * (une suspension ou un `revoke` s'applique donc immédiatement).
    *
-   * Retourne `null` si aucun `PlaceUser` ne correspond à cet email (ce
-   * miroir n'est pas forcément synchronisé pour tous les utilisateurs
-   * Keycloak) OU si le compte est suspendu (`active:false`) — dans les deux
-   * cas, l'appelant (`KeycloakStrategy`) applique alors le rôle seul, sans
-   * dérogation. Keycloak reste la seule source de vérité pour
-   * l'authentification elle-même : ce miroir ne peut donc PAS rejeter une
-   * authentification, seulement moduler les privilèges d'un rôle déjà admis.
+   * AVANT : `findActiveDerogationsByEmail` renvoyait `null` aussi bien pour
+   * un utilisateur inconnu que pour un utilisateur SUSPENDU — la stratégie
+   * appliquait alors le rôle seul, sans les `revoke` : un agent suspendu
+   * localement restait connecté avec tous les privilèges de son rôle.
+   *
+   * Résolution :
+   *  1. par `sub` Keycloak si un compte y est déjà lié ;
+   *  2. sinon par e-mail, UNIQUEMENT si l'e-mail est vérifié par Keycloak ;
+   *     le compte trouvé est alors lié à ce `sub` (première connexion) ; s'il
+   *     est déjà lié à un AUTRE `sub` → `SUB_MISMATCH` (refus) ;
+   *  3. sinon `UNKNOWN` (miroir non synchronisé : rôle du jeton seul).
    */
-  async findActiveDerogationsByEmail(email: string): Promise<{ grant: Privilege[]; revoke: Privilege[] } | null> {
+  async lookupAccount(identity: { sub: string; email?: string; emailVerified: boolean }): Promise<PlaceUserAccountLookup> {
+    const email = identity.email?.trim();
     return withDegradedFallback(
-      'PlaceUserDirectory.findActiveDerogationsByEmail',
+      'PlaceUserDirectory.lookupAccount',
       async () => {
-        const u = await this.repo.findOne({ email });
-        if (!u || !u.active) return null;
-        return { grant: u.grant, revoke: u.revoke };
+        const bySub = await this.repo.findOne({ keycloakSub: identity.sub });
+        if (bySub) return accountStatus(bySub);
+        if (!email || !identity.emailVerified) return { status: 'UNKNOWN' } as const;
+        const byEmail = await this.repo.findOne({ email: { $in: [...new Set([email, email.toLowerCase()])] } });
+        if (!byEmail) return { status: 'UNKNOWN' } as const;
+        if (byEmail.keycloakSub && byEmail.keycloakSub !== identity.sub) return { status: 'SUB_MISMATCH', userId: byEmail.id } as const;
+        if (!byEmail.keycloakSub) {
+          byEmail.keycloakSub = identity.sub;
+          await this.repo.getEntityManager().flush();
+        }
+        return accountStatus(byEmail);
       },
       () => {
-        const u = MEMORY_USERS.find((m) => m.email === email);
-        if (!u || !u.active) return null;
-        return { grant: u.grant as Privilege[], revoke: u.revoke as Privilege[] };
+        const bySub = MEMORY_USERS.find((m) => MEMORY_SUBS.get(m.id) === identity.sub);
+        if (bySub) return accountStatus(bySub);
+        if (!email || !identity.emailVerified) return { status: 'UNKNOWN' } as const;
+        const byEmail = MEMORY_USERS.find((m) => m.email === email || m.email === email.toLowerCase());
+        if (!byEmail) return { status: 'UNKNOWN' } as const;
+        const bound = MEMORY_SUBS.get(byEmail.id);
+        if (bound && bound !== identity.sub) return { status: 'SUB_MISMATCH', userId: byEmail.id } as const;
+        MEMORY_SUBS.set(byEmail.id, identity.sub);
+        return accountStatus(byEmail);
       },
     );
   }

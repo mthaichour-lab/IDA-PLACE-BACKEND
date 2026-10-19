@@ -24,6 +24,15 @@ export class PlaceUser {
   @Property({ unique: true })
   email!: string;
 
+  /**
+   * SEC-09/SEC-24 — identifiant Keycloak (`sub`) lié à ce compte. Renseigné
+   * à la première authentification dont l'e-mail est VÉRIFIÉ ; ensuite, la
+   * liaison se fait par `sub` (un autre compte Keycloak présentant le même
+   * e-mail est refusé). Jamais modifiable par l'API d'administration.
+   */
+  @Property({ nullable: true, unique: true, length: 255 })
+  keycloakSub?: string;
+
   @Property({ length: 40 })
   role!: Role;
 
