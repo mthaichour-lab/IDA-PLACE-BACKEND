@@ -1,31 +1,28 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable, Logger } from '@nestjs/common';
-import { StorageProvider, StoredDocument } from './storage-provider.interface';
-
-const REQUIRED_ENV = ['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY'] as const;
+import { attachmentDisposition, DocumentStorageConfig, resolveDocumentStorageConfig } from '../storage-config';
+import { DownloadUrlOptions, StorageProvider, StoredDocument } from './storage-provider.interface';
 
 /**
- * S3StorageProvider — intégration MinIO/S3 réelle (B.10).
+ * S3StorageProvider — intégration MinIO/S3 réelle (B.10), obligatoire en
+ * production (SEC-11, voir `storage-config.ts`).
  *
- * Activée par `S3_ENABLED=true` (voir documents.module.ts, qui instancie
- * TOUJOURS cette classe aux côtés de `LocalFsStorageProvider` — même
- * principe que `KeycloakStrategy`/`DevAuthProvider` : le constructeur ne
- * doit jamais planter l'application en mode dégradé, donc le client S3
- * n'est construit, et la configuration vérifiée, QUE si `S3_ENABLED=true`).
- * Compatible MinIO (`forcePathStyle: true`, endpoint personnalisé).
+ * Instancié TOUJOURS aux côtés de `LocalFsStorageProvider` (même principe
+ * que `KeycloakStrategy`/`DevAuthProvider`) : le client S3 n'est construit,
+ * et la configuration vérifiée, QUE si `S3_ENABLED=true`. Compatible MinIO
+ * (`forcePathStyle: true`, endpoint personnalisé).
  *
- *  - `put()` : upload objet (nommage déjà géré en amont par
- *    `DocumentsService.upload` — `{tenant}/{timestamp}-{filename}`, voir
- *    documents.module.ts). Chiffrement au repos (SSE côté bucket MinIO/S3 —
- *    à configurer sur le bucket lui-même, pas dans ce provider) — TODO
- *    infra, hors périmètre du code applicatif.
- *  - `getPresignedUrl()` : URL pré-signée GET, durée courte (~15 min par
- *    défaut, B.10 — ne jamais l'allonger sans revoir B.10).
- *
- * TODO sprint suivant : orchestrer l'envoi à Paperless (OCR/indexation)
- * après upload S3 (voir `documents.service.ts`), traçabilité de
- * consultation (RG-09), filigrane dynamique (fait côté front).
+ *  - `put()` : dépôt avec chiffrement côté serveur demandé à S3
+ *    (`ServerSideEncryption`, SSE-S3 ou SSE-KMS selon `S3_SSE`), type réel
+ *    vérifié et `Content-Disposition: attachment` enregistrés sur l'objet.
+ *    Le bucket doit rester privé (configuration infra).
+ *  - `presignedDownloadUrl()` : URL GET pré-signée à durée courte (~15 min,
+ *    B.10) qui impose `Content-Disposition: attachment` et le type réel à la
+ *    réponse (un PDF piégé n'est jamais rendu en ligne par le navigateur).
+ *    `X-Content-Type-Options: nosniff` n'est pas paramétrable par une URL
+ *    pré-signée : il est ajouté par `GET /documents/:id/download` (API) et
+ *    doit l'être par le reverse proxy devant MinIO.
  */
 @Injectable()
 export class S3StorageProvider implements StorageProvider {
@@ -33,10 +30,12 @@ export class S3StorageProvider implements StorageProvider {
   private readonly logger = new Logger('S3StorageProvider');
   private readonly client?: S3Client;
   private readonly bucket?: string;
+  private readonly config: DocumentStorageConfig;
 
   constructor() {
-    if (process.env.S3_ENABLED === 'true') {
-      this.assertConfigured();
+    // Vérifie aussi la règle de production (S3 obligatoire) : jamais de succès simulé.
+    this.config = resolveDocumentStorageConfig();
+    if (this.config.useS3) {
       this.bucket = process.env.S3_BUCKET;
       this.client = new S3Client({
         endpoint: process.env.S3_ENDPOINT,
@@ -47,19 +46,7 @@ export class S3StorageProvider implements StorageProvider {
           secretAccessKey: process.env.S3_SECRET_KEY as string,
         },
       });
-      this.logger.log(`S3StorageProvider actif (endpoint=${process.env.S3_ENDPOINT}, bucket=${this.bucket}).`);
-    }
-  }
-
-  /**
-   * Vérifie la configuration minimale requise quand `S3_ENABLED=true` — même
-   * principe zero-trust que `KeycloakStrategy.assertConfigured()` : jamais
-   * de succès simulé si la configuration est incomplète.
-   */
-  private assertConfigured(): void {
-    const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
-    if (missing.length > 0) {
-      throw new Error(`S3StorageProvider: S3_ENABLED=true mais configuration manquante (${missing.join(', ')}).`);
+      this.logger.log(`S3StorageProvider actif (endpoint=${process.env.S3_ENDPOINT}, bucket=${this.bucket}, SSE=${this.config.sse ?? 'aucun'}).`);
     }
   }
 
@@ -70,17 +57,36 @@ export class S3StorageProvider implements StorageProvider {
     return { client: this.client, bucket: this.bucket };
   }
 
+  /** Paramètres de chiffrement côté serveur de `PutObject` (exportés pour test). */
+  sseParams(): { ServerSideEncryption?: 'AES256' | 'aws:kms'; SSEKMSKeyId?: string } {
+    if (!this.config.sse) return {};
+    return { ServerSideEncryption: this.config.sse, ...(this.config.sseKmsKeyId ? { SSEKMSKeyId: this.config.sseKmsKeyId } : {}) };
+  }
+
   async put(key: string, content: Buffer, contentType: string): Promise<StoredDocument> {
     const { client, bucket } = this.requireClient();
-    await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content, ContentType: contentType }));
+    await client.send(
+      new PutObjectCommand({ Bucket: bucket, Key: key, Body: content, ContentType: contentType, ContentDisposition: 'attachment', ...this.sseParams() }),
+    );
     this.logger.log(`Document stocké sur S3/MinIO : ${bucket}/${key}`);
     return { key, sizeBytes: content.length, contentType };
   }
 
-  /** URL pré-signée GET, durée courte par défaut (~15 min, B.10). */
-  async getPresignedUrl(key: string, ttlSeconds = 900): Promise<string> {
+  async get(key: string): Promise<Buffer> {
     const { client, bucket } = this.requireClient();
-    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    return getSignedUrl(client, command, { expiresIn: ttlSeconds });
+    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    return Buffer.from(await (res.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray());
+  }
+
+  /** URL pré-signée GET, durée courte par défaut (~15 min, B.10), en pièce jointe et type imposé. */
+  async presignedDownloadUrl(key: string, opts: DownloadUrlOptions): Promise<string> {
+    const { client, bucket } = this.requireClient();
+    const command = new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ResponseContentDisposition: attachmentDisposition(opts.filename),
+      ResponseContentType: opts.contentType,
+    });
+    return getSignedUrl(client, command, { expiresIn: opts.ttlSeconds ?? 900 });
   }
 }

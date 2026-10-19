@@ -64,4 +64,13 @@ export class Document {
   /** Id du `CommissionCase` (CommissionModule) auquel ce document est attaché, ou absent. */
   @Property({ nullable: true, length: 36 })
   commissionCaseId?: string;
+
+  /**
+   * SEC-10 — compagnie de l'uploadeur (code), absente pour un rôle place.
+   * Contrôle d'accès d'un document non attaché à un dossier : seule cette
+   * compagnie (et les rôles place) peut le télécharger. Jamais déduite de
+   * la clé de stockage (aléatoire).
+   */
+  @Property({ nullable: true, length: 8 })
+  ownerCompany?: string;
 }

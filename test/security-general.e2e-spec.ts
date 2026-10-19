@@ -18,15 +18,34 @@ describe('Revue sécurité générale (2026-10-18) — traversée de chemin, lim
   });
 
   describe('DocumentsModule — assainissement du nom de fichier (traversée de chemin)', () => {
-    it("un nom de fichier contenant \"../\" n'échappe jamais du préfixe compagnie dans la clé renvoyée", async () => {
+    it('un nom de fichier contenant "../" ne remonte jamais dans la clé ni dans les métadonnées (SEC-10 : clé aléatoire)', async () => {
+      // Multer réduit déjà le nom multipart à son dernier segment ; le service refuse
+      // en plus tout « .. », « / » ou caractère de contrôle résiduel (test unitaire).
       const res = await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .attach('file', Buffer.from('%PDF-1.4 contenu test'), { filename: '../../../../etc/cron.d/x', contentType: 'application/pdf' })
         .expect(201);
+      expect(res.body.filename).toBe('x');
+      expect(JSON.stringify(res.body)).not.toContain('..');
+      expect(res.body).not.toHaveProperty('key');
+    });
 
-      expect(res.body.key).toMatch(/^place\/\d+-x$/);
-      expect(res.body.key).not.toContain('..');
+    it('SEC-29 : un HTML renommé en .pdf est refusé (signature des octets)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/documents/upload')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .attach('file', Buffer.from('<html><script>alert(document.cookie)</script></html>'), { filename: 'constat.pdf', contentType: 'application/pdf' })
+        .expect(400);
+      expect(res.body.code).toBe('TYPE_NON_AUTORISE');
+    });
+
+    it('SEC-29 : le fichier de test EICAR est refusé', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/documents/upload')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .attach('file', Buffer.from('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'), { filename: 'eicar.pdf', contentType: 'application/pdf' })
+        .expect(400);
     });
 
     it('un type de fichier non autorisé (ex: .exe) est refusé avec un 400', async () => {

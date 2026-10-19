@@ -26,70 +26,68 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
     return JSON.stringify({ id: `u-${companyId}`, name: `${role} ${companyId}`, email: `u@${companyId}.test`, role, companyId });
   }
 
-  describe('DocumentsModule — upload/presign (B.10)', () => {
-    it("upload préfixe la clé par la compagnie de l'appelant, pas un \"default-tenant\" partagé", async () => {
+  /** SEC-10 (2026-10-19) : pièces téléchargées par IDENTIFIANT après contrôle d'accès ; plus aucune route ne signe une clé fournie par le client. */
+  describe('DocumentsModule — upload/téléchargement (B.10, SEC-10)', () => {
+    const pdf = () => Buffer.from('%PDF-1.4 contenu test');
+
+    it("upload renvoie l'identifiant du document et une URL de téléchargement, jamais la clé de stockage", async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .attach('file', Buffer.from('contenu test'), 'constat.pdf')
+        .attach('file', pdf(), 'constat.pdf')
         .expect(201);
-      expect(res.body.key).toMatch(/^CAAT\//);
-    });
-
-    it('upload par un rôle place préfixe la clé par "place"', async () => {
-      const res = await request(app.getHttpServer())
-        .post('/api/v1/documents/upload')
-        .set('x-dev-user', 'OPERATEUR_PLACE')
-        .attach('file', Buffer.from('contenu test'), 'pv.pdf')
-        .expect(201);
-      expect(res.body.key).toMatch(/^place\//);
+      expect(res.body.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(res.body.url).toBe(`/api/v1/documents/${res.body.id}/download`);
+      expect(res.body).not.toHaveProperty('key');
     });
 
     it('AUDITEUR_CSA (lecture seule) ne peut pas uploader — 403', async () => {
       await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', 'AUDITEUR_CSA')
-        .attach('file', Buffer.from('x'), 'x.pdf')
+        .attach('file', pdf(), 'x.pdf')
         .expect(403);
     });
 
-    it("presign refuse avec un 403 qu'une compagnie obtienne l'URL d'un document d'une AUTRE compagnie", async () => {
+    it("une compagnie n'obtient pas la pièce d'une AUTRE compagnie (404, existence non révélée)", async () => {
       const upload = await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .attach('file', Buffer.from('x'), 'x.pdf')
+        .attach('file', pdf(), 'x.pdf')
         .expect(201);
 
-      await request(app.getHttpServer())
-        .get(`/api/v1/documents/presign/${encodeURIComponent(upload.body.key)}`)
-        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
-        .expect(403);
+      await request(app.getHttpServer()).get(`/api/v1/documents/${upload.body.id}/download`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA')).expect(404);
+      await request(app.getHttpServer()).get(`/api/v1/documents/${upload.body.id}`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA')).expect(404);
     });
 
-    it("presign autorise la compagnie propriétaire du document", async () => {
+    it('la compagnie propriétaire télécharge sa pièce, en pièce jointe et sans reniflage de type', async () => {
       const upload = await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .attach('file', Buffer.from('x'), 'x.pdf')
+        .attach('file', pdf(), 'x.pdf')
         .expect(201);
 
-      await request(app.getHttpServer())
-        .get(`/api/v1/documents/presign/${encodeURIComponent(upload.body.key)}`)
-        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
-        .expect(200);
+      const res = await request(app.getHttpServer()).get(`/api/v1/documents/${upload.body.id}/download`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      expect(res.headers['content-type']).toMatch(/^application\/pdf/);
+      expect(res.headers['content-disposition']).toMatch(/^attachment; filename="x\.pdf"/);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(Buffer.from(res.body).toString()).toContain('%PDF-1.4');
     });
 
-    it('presign autorise un document "place" à tout utilisateur authentifié (aucune compagnie propriétaire)', async () => {
+    it('un document "place" reste lisible par tout utilisateur authentifié (aucune compagnie propriétaire)', async () => {
       const upload = await request(app.getHttpServer())
         .post('/api/v1/documents/upload')
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .attach('file', Buffer.from('x'), 'x.pdf')
+        .attach('file', pdf(), 'pv.pdf')
         .expect(201);
 
-      await request(app.getHttpServer())
-        .get(`/api/v1/documents/presign/${encodeURIComponent(upload.body.key)}`)
-        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
-        .expect(200);
+      await request(app.getHttpServer()).get(`/api/v1/documents/${upload.body.id}/download`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA')).expect(200);
+    });
+
+    it("plus aucune route ne signe une clé passée en paramètre (ancien /documents/presign/:key)", async () => {
+      const res = await request(app.getHttpServer()).get(`/api/v1/documents/presign/${encodeURIComponent('place/123-constat.pdf')}`).set('x-dev-user', 'OPERATEUR_PLACE');
+      expect([400, 404]).toContain(res.status);
+      expect(JSON.stringify(res.body)).not.toMatch(/url/);
     });
   });
 
@@ -272,7 +270,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .post('/api/v1/documents/upload')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
         .field('recoursId', recours.body.id)
-        .attach('file', Buffer.from('piece'), 'annexe2.pdf')
+        .attach('file', Buffer.from('%PDF-1.4 piece'), 'annexe2.pdf')
         .expect(201);
 
       await request(app.getHttpServer())
@@ -293,7 +291,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .post('/api/v1/documents/upload')
         .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
         .field('recoursId', recours.body.id)
-        .attach('file', Buffer.from('piece'), 'annexe2.pdf')
+        .attach('file', Buffer.from('%PDF-1.4 piece'), 'annexe2.pdf')
         .expect(201);
 
       const res = await request(app.getHttpServer())
@@ -308,7 +306,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
 
     it("renvoie un 404 si le recours cité n'existe pas", async () => {
       await request(app.getHttpServer())
-        .get('/api/v1/documents?recoursId=introuvable-xyz')
+        .get('/api/v1/documents?recoursId=00000000-0000-4000-8000-000000000000')
         .set('x-dev-user', 'OPERATEUR_PLACE')
         .expect(404);
     });

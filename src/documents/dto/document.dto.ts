@@ -1,23 +1,22 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
 
 /**
  * QUESTIONS_UAR.md §9, décision Product Owner 2026-10-18 — champs
  * ADDITIFS du formulaire multipart `POST /documents/upload` : un document
  * déposé peut optionnellement être attaché à un `Recours` ou à un
- * `CommissionCase` (jamais les deux, voir `document.entity.ts`). Absents
- * (comportement historique : document non attaché) : aucun changement pour
- * les appelants existants.
+ * `CommissionCase` (jamais les deux, voir `document.entity.ts`).
+ * SEC-44 : identifiants typés (UUID).
  */
 export class UploadDocumentDto {
   @ApiPropertyOptional({ description: 'Id du Recours (RecoursModule) auquel attacher ce document — exclusif avec commissionCaseId.' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   recoursId?: string;
 
   @ApiPropertyOptional({ description: 'Id du CommissionCase (CommissionModule) auquel attacher ce document — exclusif avec recoursId.' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   commissionCaseId?: string;
 }
 
@@ -26,11 +25,11 @@ export class UploadDocumentDto {
  * EXACTEMENT un des deux est attendu (voir `DocumentsService.listForDossier`).
  */
 export class ListDocumentsQueryDto {
-  @ApiPropertyOptional() @IsOptional() @IsString() recoursId?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() commissionCaseId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() recoursId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() commissionCaseId?: string;
 }
 
-/** Pièce attachée — réponse de `GET /documents?recoursId=X|commissionCaseId=Y` (QUESTIONS_UAR.md §9). */
+/** Pièce attachée — réponse de `GET /documents?recoursId=X|commissionCaseId=Y` et `GET /documents/:id`. */
 export class DocumentViewDto {
   @ApiProperty() id!: string;
   @ApiProperty() filename!: string;
@@ -38,6 +37,10 @@ export class DocumentViewDto {
   @ApiProperty() sizeBytes!: number;
   @ApiProperty() uploadedBy!: string;
   @ApiProperty() uploadedAt!: string;
-  /** URL pré-signée à durée courte (≈15 min, B.10) — recalculée à chaque appel, même mécanisme que `POST /documents/upload`. */
+  /**
+   * URL de téléchargement : pré-signée S3 à durée courte (≈15 min, B.10,
+   * pièce jointe) ou, en mode local, `/api/v1/documents/:id/download`
+   * (authentifiée). Jamais construite à partir d'une clé fournie par le client.
+   */
   @ApiProperty() url!: string;
 }
