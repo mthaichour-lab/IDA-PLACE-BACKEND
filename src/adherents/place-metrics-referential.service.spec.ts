@@ -125,6 +125,17 @@ describe('PlaceMetricsReferentialService (mode dégradé)', () => {
       expect(await service.listPopulations()).toHaveLength(1);
     });
 
+    it('rapporte TOUTES les erreurs indépendantes d’une même ligne, pas seulement la première', async () => {
+      const csv = 'code;annee;population;source_type;source_ref\n99;18xx;-5;INVENTE;\n';
+      const report = await service.importPopulations('pop.csv', Buffer.from(csv), operateur);
+      expect(report.rejectedCount).toBe(1);
+      expect(report.rows[0].reason).toMatch(/introuvable/);
+      expect(report.rows[0].reason).toMatch(/Année invalide/);
+      expect(report.rows[0].reason).toMatch(/Population invalide/);
+      expect(report.rows[0].reason).toMatch(/source_type invalide/);
+      expect(report.rows[0].reason).toMatch(/source_ref obligatoire/);
+    });
+
     it('400 sur un fichier vide', async () => {
       await expect(service.importPopulations('vide.csv', Buffer.from('code;annee;population;source_type;source_ref\n'), operateur)).rejects.toMatchObject({
         response: { code: 'BAD_REQUEST' },

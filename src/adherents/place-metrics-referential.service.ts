@@ -294,35 +294,49 @@ export class PlaceMetricsReferentialService {
 
     for (const { line, text } of lines) {
       const fields = text.split(';').map((f) => f.trim());
-      const reject = (reason: string, extra: Partial<PopulationImportRowResult> = {}) => rows.push({ line, status: 'REJETEE', reason, ...extra });
+      const reject = (reasons: string[], extra: Partial<PopulationImportRowResult> = {}) => rows.push({ line, status: 'REJETEE', reason: reasons.join(' ; '), ...extra });
       if (fields.length !== 5) {
-        reject(`5 colonnes attendues (${CSV_COLUMNS}), ${fields.length} trouvée(s).`);
+        reject([`5 colonnes attendues (${CSV_COLUMNS}), ${fields.length} trouvée(s).`]);
         continue;
       }
       const [rawCode, rawYear, rawPopulation, sourceType, sourceRef] = fields;
-      if (!/^\d{1,2}$/.test(rawCode)) {
-        reject(`Code wilaya invalide : "${rawCode}".`);
-        continue;
-      }
-      const wilayaCode = rawCode.padStart(2, '0');
+
+      // Chaque ligne rapporte TOUTES ses erreurs indépendantes (pas seulement la première) :
+      // un fichier de 69 wilayas aux colonnes mal formées ne se corrige pas en 69 allers-retours.
+      const reasons: string[] = [];
+      const codeValid = /^\d{1,2}$/.test(rawCode);
+      const wilayaCode = codeValid ? rawCode.padStart(2, '0') : undefined;
+      if (!codeValid) reasons.push(`Code wilaya invalide : "${rawCode}".`);
+      else if (!wilayas.some((w) => w.code === wilayaCode)) reasons.push(`Wilaya "${wilayaCode}" introuvable.`);
+
       const referenceYear = /^\d{4}$/.test(rawYear) ? Number(rawYear) : NaN;
-      const population = /^\d+$/.test(rawPopulation.replace(/[\s  ]/g, '')) ? Number(rawPopulation.replace(/[\s  ]/g, '')) : NaN;
-      const ctx = { wilayaCode, referenceYear: Number.isNaN(referenceYear) ? undefined : referenceYear };
-      if (!wilayas.some((w) => w.code === wilayaCode)) reject(`Wilaya "${wilayaCode}" introuvable.`, ctx);
-      else if (Number.isNaN(referenceYear) || referenceYear < 1900 || referenceYear > 2200) reject(`Année invalide : "${rawYear}".`, ctx);
-      else if (Number.isNaN(population) || population < 1 || population > MAX_POPULATION) reject(`Population invalide : "${rawPopulation}".`, ctx);
-      else if (!(POPULATION_SOURCE_TYPES as readonly string[]).includes(sourceType)) reject(`source_type invalide : "${sourceType}" (attendu : ${POPULATION_SOURCE_TYPES.join(', ')}).`, ctx);
-      else if (!sourceRef || sourceRef.length > 255) reject('source_ref obligatoire (255 caractères au plus).', ctx);
-      else if (seenInFile.has(`${wilayaCode}|${referenceYear}`)) reject(`Doublon de la ligne ${seenInFile.get(`${wilayaCode}|${referenceYear}`)} (même wilaya, même année).`, ctx);
-      else if (stored.some((p) => p.wilayaCode === wilayaCode && p.referenceYear === referenceYear)) reject('Population déjà saisie pour cette wilaya et cette année.', ctx);
-      else {
-        const invalidReason = populationInvalidReason(wilayaCode, referenceYear, wilayas);
-        if (invalidReason) reject(invalidReason, ctx);
+      const yearValid = !Number.isNaN(referenceYear) && referenceYear >= 1900 && referenceYear <= 2200;
+      if (!yearValid) reasons.push(`Année invalide : "${rawYear}".`);
+
+      const population = /^\d+$/.test(rawPopulation.replace(/[\s ]/g, '')) ? Number(rawPopulation.replace(/[\s ]/g, '')) : NaN;
+      if (Number.isNaN(population) || population < 1 || population > MAX_POPULATION) reasons.push(`Population invalide : "${rawPopulation}".`);
+
+      if (!(POPULATION_SOURCE_TYPES as readonly string[]).includes(sourceType)) reasons.push(`source_type invalide : "${sourceType}" (attendu : ${POPULATION_SOURCE_TYPES.join(', ')}).`);
+      if (!sourceRef || sourceRef.length > 255) reasons.push('source_ref obligatoire (255 caractères au plus).');
+
+      // Les contrôles suivants supposent un code et une année exploitables comme clé.
+      if (wilayaCode && yearValid && wilayas.some((w) => w.code === wilayaCode)) {
+        const key = `${wilayaCode}|${referenceYear}`;
+        if (seenInFile.has(key)) reasons.push(`Doublon de la ligne ${seenInFile.get(key)} (même wilaya, même année).`);
+        else if (stored.some((p) => p.wilayaCode === wilayaCode && p.referenceYear === referenceYear)) reasons.push('Population déjà saisie pour cette wilaya et cette année.');
         else {
-          seenInFile.set(`${wilayaCode}|${referenceYear}`, line);
-          accepted.push({ wilayaCode, referenceYear, population, sourceType: sourceType as PopulationSourceType, sourceRef });
-          rows.push({ line, status: 'ACCEPTEE', wilayaCode, referenceYear, population });
+          const invalidReason = populationInvalidReason(wilayaCode, referenceYear, wilayas);
+          if (invalidReason) reasons.push(invalidReason);
         }
+      }
+
+      const ctx = { wilayaCode, referenceYear: yearValid ? referenceYear : undefined };
+      if (reasons.length > 0) {
+        reject(reasons, ctx);
+      } else {
+        seenInFile.set(`${wilayaCode}|${referenceYear}`, line);
+        accepted.push({ wilayaCode: wilayaCode!, referenceYear, population, sourceType: sourceType as PopulationSourceType, sourceRef });
+        rows.push({ line, status: 'ACCEPTEE', wilayaCode, referenceYear, population });
       }
     }
 
