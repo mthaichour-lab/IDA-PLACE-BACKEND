@@ -179,21 +179,9 @@ export class ClaimsService {
       throw new BadRequestException({ code: 'DOSSIER_HORS_IDA', message: 'Dossier hors IDA : pas de recours conventionnel dans le cadre de la convention.' });
     }
     // Audit sécurité 2026-10-19 : une compagnie qui n'est plus ACTIF ne peut
-    // plus ouvrir de NOUVEAU recours — sauf pour un sinistre antérieur à sa
-    // date d'effet de retrait (Chapitre VI Art. 30-35 : « les obligations
-    // restent dues pour tous les sinistres antérieurs à la sortie »). Un
-    // statut EXCLU/SUSPENDU n'a pas cette exception : la compagnie n'exerce
-    // plus aucun droit conventionnel.
-    const company = await this.adherents.companyStatusByCode(dto.from);
-    if (company && company.status !== 'ACTIF') {
-      const antérieurAuRetrait = company.status === 'EN_RETRAIT' && company.withdrawalEffectiveDate && !!claim.accidentDate && claim.accidentDate < company.withdrawalEffectiveDate;
-      if (!antérieurAuRetrait) {
-        throw new ForbiddenException({
-          code: 'COMPAGNIE_NON_ACTIVE',
-          message: `${dto.from} n'est plus une compagnie active (statut ${company.status}) : aucun nouveau recours ne peut être ouvert en son nom.`,
-        });
-      }
-    }
+    // plus ouvrir de NOUVEAU recours — règle centralisée (voir aussi
+    // MatchingService.decide, ClaimsService.importFile).
+    await this.adherents.assertCompanyActiveFor(dto.from, claim.accidentDate);
     if ((await this.recours.listAll()).some((r) => r.claimId === claim.id)) {
       throw new ConflictException({ code: 'RECOURS_EXISTANT', message: 'Un recours existe déjà pour ce dossier.' });
     }
@@ -356,10 +344,18 @@ export class ClaimsService {
       // dans les motifs (le front n'affiche que `reasons`, pas de champ
       // `errors` séparé — contrat `ClaimImportRowResultDto` stable).
       const hasParseErrors = row.errors.length > 0;
-      const verdict: 'ELIGIBLE_IDA' | 'HORS_IDA' = hasParseErrors ? 'HORS_IDA' : eligibility.verdict;
-      const reasons = hasParseErrors
-        ? [...row.errors.map((e) => `Erreur de format : ${e}`), ...eligibility.reasons]
-        : eligibility.reasons;
+      // Audit sécurité 2026-10-19 : une compagnie non ACTIF ne déclare plus
+      // de nouveau dossier (même règle que ClaimsService.openRecours) — une
+      // ligne rejetée reste HORS_IDA avec son motif, jamais un échec de tout
+      // le fichier : c'est le contrat de ce rapport ligne par ligne.
+      const companyCode = v.compagnieA as string | undefined;
+      const inactiveReason = companyCode ? await this.adherents.companyInactiveReason(companyCode, v.dateAccident as string | undefined) : undefined;
+      const verdict: 'ELIGIBLE_IDA' | 'HORS_IDA' = hasParseErrors || inactiveReason ? 'HORS_IDA' : eligibility.verdict;
+      const reasons = [
+        ...(hasParseErrors ? row.errors.map((e) => `Erreur de format : ${e}`) : []),
+        ...(inactiveReason ? [inactiveReason] : []),
+        ...eligibility.reasons,
+      ];
 
       const art14 = resolveImportedArt14(v, row.extension, publishedCases, publishedCategories);
       warnings.push(...[...row.warnings, ...art14.warnings].map((w) => ({ rowNumber: row.rowNumber, ...w })));

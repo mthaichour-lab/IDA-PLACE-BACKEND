@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
@@ -233,7 +233,12 @@ export class AdherentsService {
           kind: dto.kind,
           feedMode: dto.feedMode,
           apiKeyMasked: maskKey(undefined),
-          status: dto.status,
+          // L'entité réelle défaut à ACTIF (`Company.status`) ; ce défaut ne
+          // s'applique qu'à l'entité MikroORM, jamais à cette vue mémoire —
+          // sans lui, le champ valait `undefined` (bug latent, resté invisible
+          // tant que rien ne lisait vraiment ce champ avant l'audit sécurité
+          // du 2026-10-19).
+          status: dto.status ?? CompanyStatus.ACTIF,
           delayOverrides: dto.delayOverrides,
           correspondentName: dto.correspondentName,
           correspondentPhone: dto.correspondentPhone,
@@ -322,6 +327,30 @@ export class AdherentsService {
         return c ? { status: c.status, withdrawalEffectiveDate: c.withdrawalEffectiveDate } : undefined;
       },
     );
+  }
+
+  /**
+   * `undefined` si `code` est ACTIF ou inconnu du référentiel (ce n'est pas
+   * à cette méthode de décider qu'une compagnie référencée ailleurs
+   * n'existe pas), sinon le motif de refus — pour un appelant qui doit
+   * TAGUER plutôt que lever (ex. un rapport d'import ligne par ligne).
+   * `eventDate` : date du sinistre concerné (accident), pour l'exception
+   * EN_RETRAIT (Chapitre VI Art. 30-35 : obligations maintenues pour les
+   * sinistres antérieurs à la sortie). EXCLU/SUSPENDU n'ont pas
+   * d'exception : aucun texte ne la justifie pour une sanction.
+   */
+  async companyInactiveReason(code: string, eventDate: string | undefined): Promise<string | undefined> {
+    const company = await this.companyStatusByCode(code);
+    if (!company || company.status === 'ACTIF') return undefined;
+    const antérieurAuRetrait = company.status === 'EN_RETRAIT' && !!company.withdrawalEffectiveDate && !!eventDate && eventDate < company.withdrawalEffectiveDate;
+    if (antérieurAuRetrait) return undefined;
+    return `${code} n'est plus une compagnie active (statut ${company.status}).`;
+  }
+
+  /** Lève `COMPAGNIE_NON_ACTIVE` (403) — voir `companyInactiveReason` pour les règles. */
+  async assertCompanyActiveFor(code: string, eventDate: string | undefined): Promise<void> {
+    const reason = await this.companyInactiveReason(code, eventDate);
+    if (reason) throw new ForbiddenException({ code: 'COMPAGNIE_NON_ACTIVE', message: reason });
   }
 
   // ---- Agencies --------------------------------------------------------

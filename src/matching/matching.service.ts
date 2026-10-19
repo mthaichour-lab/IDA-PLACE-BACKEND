@@ -278,6 +278,11 @@ export class MatchingService {
     const loaded = await this.loadForDecision(id);
     const current = loaded.mode === 'db' ? loaded.entity : loaded.row;
     if (!this.visibleToUser(current, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
+    // Audit sécurité 2026-10-19 : trancher une confrontation ne doit pas non
+    // plus engager une compagnie qui n'est plus ACTIF (même règle que
+    // ClaimsService.openRecours, un côté comme l'autre).
+    await this.adherents.assertCompanyActiveFor(current.companyA, current.accidentDateA);
+    if (current.companyB) await this.adherents.assertCompanyActiveFor(current.companyB, current.accidentDateB);
     const status = nextStatusForAction(dto.action);
     const symmetric = dto.action === 'confirm' || dto.action === 'reject';
     const now = new Date();

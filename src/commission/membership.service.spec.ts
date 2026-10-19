@@ -26,9 +26,9 @@ function throwingRepo() {
   };
 }
 
-const COMPANIES: Record<string, { id: string; code: string }> = {
-  'c-caat': { id: 'c-caat', code: 'CAAT' },
-  'c-saa': { id: 'c-saa', code: 'SAA' },
+const COMPANIES: Record<string, { id: string; code: string; status: string }> = {
+  'c-caat': { id: 'c-caat', code: 'CAAT', status: 'ACTIF' },
+  'c-saa': { id: 'c-saa', code: 'SAA', status: 'ACTIF' },
 };
 
 describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-35)', () => {
@@ -106,6 +106,14 @@ describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-
       expect(accepted).toMatchObject({ companyId: 'c-caat', companyCode: 'CAAT' });
       const b = await adhesion();
       await expect(service.accept(b.id, { agrementRef: 'AGR-2', companyId: 'inconnue' }, OPERATEUR)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('refuse (400 COMPAGNIE_NON_ACTIVE) de lier une adhésion à une compagnie déjà EXCLU/EN_RETRAIT — une réadhésion passe par une nouvelle demande', async () => {
+      adherents.getCompany.mockResolvedValueOnce({ id: 'c-tala', code: 'TALA', status: 'EXCLU' });
+      const a = await adhesion();
+      await expect(service.accept(a.id, { agrementRef: 'AGR-1', companyId: 'c-tala' }, OPERATEUR)).rejects.toMatchObject({
+        response: { code: 'COMPAGNIE_NON_ACTIVE' },
+      });
     });
 
     it('rejet motivé, puis toute nouvelle décision est un 409', async () => {

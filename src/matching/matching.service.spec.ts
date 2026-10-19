@@ -1,4 +1,5 @@
 import { getRepositoryToken } from '@mikro-orm/nestjs';
+import { ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { AdherentsService } from '../adherents/adherents.service';
@@ -29,16 +30,18 @@ const declB: ClaimMatchInput = { id: 'clm-b', numEconstat: 'EC-1', company: 'SAA
 describe('MatchingService — décision sur une paire (mode dégradé)', () => {
   let service: MatchingService;
   let realtime: { emitEvent: jest.Mock };
+  let assertCompanyActiveFor: jest.Mock;
 
   beforeEach(async () => {
     realtime = { emitEvent: jest.fn() };
+    assertCompanyActiveFor = jest.fn(async () => undefined);
     const moduleRef = await Test.createTestingModule({
       providers: [
         MatchingService,
         { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
         { provide: ConfigService, useValue: { get: () => undefined } },
         { provide: RealtimeGateway, useValue: realtime },
-        { provide: AdherentsService, useValue: { publishedBaremeCases: async () => [] } },
+        { provide: AdherentsService, useValue: { publishedBaremeCases: async () => [], assertCompanyActiveFor } },
       ],
     }).compile();
     service = moduleRef.get(MatchingService);
@@ -99,5 +102,17 @@ describe('MatchingService — décision sur une paire (mode dégradé)', () => {
 
   it('404 pour un élément inconnu', async () => {
     await expect(service.decide('inconnu', { action: 'confirm' }, 'Opérateur', operateur)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('refuse (403) de trancher une confrontation dont une compagnie n’est plus active, sans rien modifier (audit sécurité 2026-10-19)', async () => {
+    const { ab } = await rows();
+    assertCompanyActiveFor.mockImplementation(async (code: string) => {
+      if (code === 'SAA') throw new ForbiddenException({ code: 'COMPAGNIE_NON_ACTIVE', message: 'SAA retirée (test)' });
+    });
+    await expect(service.decide(ab.id, { action: 'confirm' }, 'Opérateur', operateur)).rejects.toMatchObject({ response: { code: 'COMPAGNIE_NON_ACTIVE' } });
+    expect(assertCompanyActiveFor).toHaveBeenCalledWith('CAAT', '2026-10-01');
+    const after = await rows();
+    expect(after.ab.status).not.toBe('CONFIRME_MANUEL');
+    expect(after.ba.status).not.toBe('CONFIRME_MANUEL');
   });
 });

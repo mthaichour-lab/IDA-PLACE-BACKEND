@@ -87,6 +87,11 @@ describe('AdherentsService (mode dégradé)', () => {
     expect(caat.agencyCounts).toEqual({ DG: 1, DR: 0, AG: 1 });
   });
 
+  it('createCompany (repli mémoire) défaut status à ACTIF quand il n’est pas fourni', async () => {
+    const created = await service.createCompany({ code: 'NEW1', name: 'Nouvelle Compagnie', color: '#445566', kind: 'INSURER' as never, feedMode: 'API' as never });
+    expect(created.status).toBe('ACTIF');
+  });
+
   it('createdAt (repli mémoire) est stable d’une lecture à l’autre', async () => {
     const first = (await service.listCompanies(1, 6)).items.find((c) => c.code === 'CAAT')!.createdAt;
     await new Promise((r) => setTimeout(r, 5));

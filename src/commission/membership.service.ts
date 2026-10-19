@@ -178,7 +178,19 @@ export class MembershipService {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: "L'acceptation exige la référence d'agrément pour la branche automobile (agrementRef)." });
     }
     let company: { id: string; code: string } | undefined;
-    if (dto.companyId) company = await this.adherents.getCompany(dto.companyId);
+    if (dto.companyId) {
+      const found = await this.adherents.getCompany(dto.companyId);
+      // Décision PO (2026-10-19) : une réadhésion passe par une nouvelle
+      // demande, jamais par un lien direct sur une compagnie déjà
+      // EXCLU/EN_RETRAIT/SUSPENDU — incohérence relevée par l'audit sécurité.
+      if (found.status !== 'ACTIF') {
+        throw new BadRequestException({
+          code: 'COMPAGNIE_NON_ACTIVE',
+          message: `${found.code} n'est pas ACTIF (statut ${found.status}) : une réadhésion passe par une nouvelle demande, pas par un lien sur cette compagnie.`,
+        });
+      }
+      company = found;
+    }
 
     return this.persistDecision(loaded, {
       state,
