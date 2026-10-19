@@ -1,4 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityRepository } from '@mikro-orm/postgresql';
+import { BadRequestException, ConflictException, Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { LedgerService } from '../ledger/ledger.service';
+import { UpdatePriceGridDto } from './dto/metering.dto';
+import { PriceGridVersion } from './entities/price-grid-version.entity';
 
 export interface PriceGridMetric {
   metric: string;
@@ -15,8 +22,8 @@ export interface PriceGrid {
   metrics: PriceGridMetric[];
 }
 
-/** Grille tarifaire TARIF-2026.01 — valeurs réelles du dossier (§B.8). Mutable en mémoire (mock persistance, hors périmètre de ce sprint). */
-let PRICE_GRID: PriceGrid = {
+/** Grille tarifaire TARIF-2026.01 — valeurs réelles du dossier (§B.8), version de référence (SEC-37 : jamais mutée ; les mises à jour créent de nouvelles versions). */
+export const SEED_PRICE_GRID: PriceGrid = {
   version: 'TARIF-2026.01',
   effectiveFrom: '2026-01-01',
   subscription: { label: 'Abonnement mensuel', monthly: 180000 },
@@ -84,34 +91,103 @@ export function buildMeasuredHistory(currentValue: number, periodEndingAt: strin
   return points;
 }
 
+/** Ligne de facture calculée pour une compagnie (mesure simulée × grille). */
+export type InvoiceLine = PriceGridMetric & { measured: number; facturable: number; amount: number };
+
+/** Fusion d'un correctif validé (DTO) sur une grille : inducteurs par clé, abonnement champ par champ, jamais d'affectation en bloc. */
+export function mergeGrid(base: PriceGrid, patch: UpdatePriceGridDto): PriceGrid {
+  const metrics = base.metrics.map((m) => {
+    const update = patch.metrics?.find((p) => p.metric === m.metric);
+    if (!update) return { ...m };
+    return {
+      ...m,
+      label: update.label ?? m.label,
+      unit: update.unit ?? m.unit,
+      includedQuota: update.includedQuota ?? m.includedQuota,
+      unitPrice: update.unitPrice ?? m.unitPrice,
+    };
+  });
+  return {
+    version: patch.version,
+    effectiveFrom: patch.effectiveFrom,
+    subscription: { label: patch.subscription?.label ?? base.subscription.label, monthly: patch.subscription?.monthly ?? base.subscription.monthly },
+    metrics,
+  };
+}
+
+/** Version en vigueur à une date (AAAA-MM-JJ) : la plus récente dont la date d'effet est atteinte. */
+export function gridEffectiveAt(versions: PriceGrid[], day: string): PriceGrid {
+  const applicable = versions.filter((v) => v.effectiveFrom <= day).sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
+  return applicable[0] ?? [...versions].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))[0];
+}
+
+const todayUtc = () => new Date().toISOString().slice(0, 10);
+
 /**
- * MeteringService — service public du MeteringModule (B.8). Extrait du
- * contrôleur (ce sprint) pour que d'autres modules réutilisent la grille
- * tarifaire TARIF-2026.01 réelle (ex: `SettlementModule`, §2 de la mission)
- * SANS importer d'entité interne (MeteringModule n'en a aucune — la grille
- * reste un mock mutable en mémoire, hors périmètre de ce sprint, voir
- * HANDOFF.md). `MeteringController` délègue désormais à ce service — forme
- * des routes `GET /pricing/grid`, `PUT /pricing/grid`, `GET /metering/...`
- * inchangée.
+ * MeteringService — service public du MeteringModule (B.8).
+ *
+ * SEC-37 : la grille tarifaire est PERSISTÉE et VERSIONNÉE
+ * (`price_grid_version`) ; `PUT /pricing/grid` crée une nouvelle version à
+ * date d'effet (aujourd'hui ou plus tard, jamais rétroactive), validée par
+ * un DTO strict et scellée dans le journal. Les factures restent SIMULÉES
+ * (`MOCK_MEASURED_CONSUMPTION`, collecte réelle non branchée) : marquées
+ * `SIMULEE` hors production et refusées en production.
  */
 @Injectable()
 export class MeteringService {
+  private readonly logger = new Logger('MeteringService');
+  /** Repli mémoire (et référence) : TARIF-2026.01 puis les versions créées pendant la vie du process. */
+  private readonly memoryVersions: PriceGrid[] = [SEED_PRICE_GRID];
+
+  constructor(
+    @Optional() @InjectRepository(PriceGridVersion) private readonly repo?: EntityRepository<PriceGridVersion>,
+    @Optional() private readonly ledger?: LedgerService,
+  ) {}
+
+  /** Grille de référence en mémoire (dernière version connue du process) — calculs dérivés non bloquants. */
   getGrid(): PriceGrid {
-    return PRICE_GRID;
+    return gridEffectiveAt(this.memoryVersions, todayUtc());
   }
 
-  /** Mesure mocquée courante d'une métrique (0 si inconnue) — voir `MOCK_MEASURED_CONSUMPTION`. */
+  private async versions(): Promise<PriceGrid[]> {
+    if (!this.repo) return this.memoryVersions;
+    return withDegradedFallback(
+      'MeteringService.versions',
+      async () => {
+        const rows = await this.repo!.findAll({ orderBy: { effectiveFrom: 'ASC' } });
+        return [SEED_PRICE_GRID, ...rows.map((r) => ({ ...r.grid, version: r.version, effectiveFrom: r.effectiveFrom }))];
+      },
+      () => this.memoryVersions,
+    );
+  }
+
+  /** Grille en vigueur pour une période AAAA-MM (premier jour du mois) ou, sans période, aujourd'hui. */
+  async gridFor(period?: string): Promise<PriceGrid> {
+    return gridEffectiveAt(await this.versions(), period ? `${period}-01` : todayUtc());
+  }
+
+  /** SEC-37 : aucune facture simulée n'est servie en production (collecte réelle non branchée). */
+  assertSimulationAllowed(): void {
+    if (process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException({
+        code: 'FACTURATION_SIMULEE_INDISPONIBLE',
+        message: 'Facturation indisponible : la collecte réelle de consommation n’est pas branchée (données simulées non servies en production).',
+      });
+    }
+  }
+
+  /** Mesure simulée courante d'une métrique (0 si inconnue) — `Object.hasOwn` : jamais une clé héritée (`__proto__`, `constructor`). */
   measuredFor(metric: string): number {
-    return MOCK_MEASURED_CONSUMPTION[metric] ?? 0;
+    return Object.hasOwn(MOCK_MEASURED_CONSUMPTION, metric) ? MOCK_MEASURED_CONSUMPTION[metric] : 0;
   }
 
   history(metric: string, period: string, monthsCount = 10): { period: string; value: number }[] {
     return buildMeasuredHistory(this.measuredFor(metric), period, monthsCount);
   }
 
-  /** Lignes de facture pour UNE compagnie (même calcul que `MeteringController.get()`, extrait ici pour être réutilisé par `placeSummary`). */
-  computeInvoiceLines(): (PriceGridMetric & { measured: number; facturable: number; amount: number })[] {
-    return this.getGrid().metrics.map((m) => {
+  /** Lignes de facture pour UNE compagnie (même calcul que la facture mensuelle). */
+  computeInvoiceLines(grid: PriceGrid = this.getGrid()): InvoiceLine[] {
+    return grid.metrics.map((m) => {
       const mesure = this.measuredFor(m.metric);
       const facturable = Math.max(0, mesure - m.includedQuota);
       const divider = m.unit.startsWith('1 000') ? 1000 : m.unit.startsWith('100 ') ? 100 : 1;
@@ -121,19 +197,12 @@ export class MeteringService {
   }
 
   /**
-   * Dashboard des coûts place entière (écran 14 "Coûts & tarification",
-   * sous-onglet Paramétrage) — additif, 2026-10-18. Somme, pour CHAQUE
-   * adhérent réel de la place (`adherentCount`, fourni par
-   * `AdherentsService.listCompanies` — jamais un nombre inventé), la MÊME
-   * facture mensuelle mock déjà utilisée par `/metering/:company/:period`
-   * (`MOCK_MEASURED_CONSUMPTION` ne varie pas par compagnie dans ce sprint,
-   * voir tête de fichier — additionner across compagnies reste une
-   * opération honnête sur des données déjà mockées, pas une seconde couche
-   * d'invention).
+   * Dashboard des coûts place entière (écran 14 "Coûts & tarification") —
+   * somme, pour CHAQUE adhérent réel (`adherentCount`), la MÊME facture
+   * simulée que `/metering/:company/:period`.
    */
-  placeSummary(adherentCount: number) {
-    const perCompanyLines = this.computeInvoiceLines();
-    const grid = this.getGrid();
+  placeSummary(adherentCount: number, grid: PriceGrid = this.getGrid()) {
+    const perCompanyLines = this.computeInvoiceLines(grid);
     const subscriptionTotal = grid.subscription.monthly * adherentCount;
     const lines = perCompanyLines.map((l) => ({
       metric: l.metric,
@@ -152,37 +221,45 @@ export class MeteringService {
       consumptionTotal,
       revenueTotal,
       inducerCount: grid.metrics.length,
+      simulated: true,
       lines: lines.map((l) => ({ ...l, revenueSharePct: consumptionTotal > 0 ? Math.round((l.amountHT / consumptionTotal) * 1000) / 10 : 0 })),
     };
   }
 
   /**
-   * Fusionne par clé plutôt que de remplacer en bloc : un payload partiel
-   * (ex. un seul inducteur de `metrics`, ou `subscription` sans `metrics`)
-   * ne doit JAMAIS faire disparaître le reste de la grille. Bug trouvé en
-   * revue Testeur, sprint 3 : `{ ...PRICE_GRID, ...patch }` remplaçait tout
-   * le tableau `metrics` dès qu'il était présent dans le payload, même
-   * partiel — risque de verrouillage de place (grille + matrice de rôles
-   * partagent le même défaut, voir `AdminController.putRolesMatrix`).
+   * SEC-37 — nouvelle version de la grille : libellé inédit, date d'effet
+   * au plus tôt aujourd'hui (aucune modification rétroactive d'une facture),
+   * construite à partir de la version en vigueur à cette date, persistée puis
+   * scellée dans le journal (`GRILLE_TARIFAIRE`).
    */
-  updateGrid(patch: Partial<PriceGrid>): PriceGrid {
-    const metrics = patch.metrics
-      ? PRICE_GRID.metrics.map((m) => {
-          const update = patch.metrics!.find((p) => p.metric === m.metric);
-          return update ? { ...m, ...update } : m;
-        })
-      : PRICE_GRID.metrics;
-    PRICE_GRID = {
-      ...PRICE_GRID,
-      ...patch,
-      subscription: patch.subscription ? { ...PRICE_GRID.subscription, ...patch.subscription } : PRICE_GRID.subscription,
-      metrics,
-    };
-    return PRICE_GRID;
+  async updateGrid(patch: UpdatePriceGridDto, actor: AuthenticatedUser): Promise<PriceGrid> {
+    if (patch.effectiveFrom < todayUtc()) {
+      throw new BadRequestException({ code: 'DATE_EFFET_RETROACTIVE', message: 'La date d’effet d’une nouvelle grille ne peut pas être antérieure à aujourd’hui.' });
+    }
+    const versions = await this.versions();
+    if (versions.some((v) => v.version === patch.version)) {
+      throw new ConflictException({ code: 'VERSION_EXISTANTE', message: `La version ${patch.version} existe déjà : une grille publiée n’est jamais modifiée.` });
+    }
+    const next = mergeGrid(gridEffectiveAt(versions, patch.effectiveFrom), patch);
+    const author = actor.email || actor.id;
+    const repo = this.repo;
+    if (repo) {
+      await withDegradedFallback(
+        'MeteringService.updateGrid',
+        async () => {
+          await repo.getEntityManager().persistAndFlush(repo.create({ version: next.version, effectiveFrom: next.effectiveFrom, grid: next, createdBy: author } as never));
+        },
+        () => undefined,
+      );
+    }
+    this.memoryVersions.push(next);
+    await this.ledger?.append('GRILLE_TARIFAIRE', next.version, author, `Nouvelle grille ${next.version} en vigueur au ${next.effectiveFrom} (abonnement ${next.subscription.monthly} DA, ${next.metrics.length} inducteurs).`);
+    this.logger.log(`Grille ${next.version} créée par ${author}, en vigueur au ${next.effectiveFrom}.`);
+    return next;
   }
 
   /** Prix unitaire d'une métrique de la grille courante (0 si inconnue — ne doit jamais lever pour un calcul dérivé non bloquant). */
   unitPrice(metric: string): number {
-    return PRICE_GRID.metrics.find((m) => m.metric === metric)?.unitPrice ?? 0;
+    return this.getGrid().metrics.find((m) => m.metric === metric)?.unitPrice ?? 0;
   }
 }

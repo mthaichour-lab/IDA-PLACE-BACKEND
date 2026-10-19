@@ -242,6 +242,52 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-37 — grille tarifaire et factures simulées', () => {
+    it('PUT /pricing/grid : prix négatif ou métrique inconnue refusés (400), version rétroactive refusée', async () => {
+      const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+      await http().put('/api/v1/pricing/grid').set('x-dev-user', 'ADMIN_UAR').send({ version: 'TARIF-2098.01', effectiveFrom: tomorrow, metrics: [{ metric: 'apiCalls', unitPrice: -45 }] }).expect(400);
+      await http().put('/api/v1/pricing/grid').set('x-dev-user', 'ADMIN_UAR').send({ version: 'TARIF-2098.01', effectiveFrom: tomorrow, metrics: [{ metric: '__proto__', unitPrice: 1 }] }).expect(400);
+      await http().put('/api/v1/pricing/grid').set('x-dev-user', 'ADMIN_UAR').send({ version: 'TARIF-2098.01', effectiveFrom: '2020-01-01' }).expect(400);
+      const created = await http().put('/api/v1/pricing/grid').set('x-dev-user', 'ADMIN_UAR').send({ version: 'TARIF-2098.01', effectiveFrom: tomorrow, metrics: [{ metric: 'sms', unitPrice: 5 }] }).expect(200);
+      expect(created.body).toMatchObject({ version: 'TARIF-2098.01', effectiveFrom: tomorrow });
+      // La grille du jour n'est pas modifiée rétroactivement.
+      const today = await http().get('/api/v1/pricing/grid').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(today.body.version).not.toBe('TARIF-2098.01');
+    });
+
+    it('facture et historique : marqués SIMULEE, période et métrique validées', async () => {
+      const invoice = await http().get('/api/v1/metering/CAAT/2026-09').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(200);
+      expect(invoice.body).toMatchObject({ status: 'SIMULEE', simulated: true });
+      await http().get('/api/v1/metering/CAAT/2026-13').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(400);
+      await http().get('/api/v1/metering/CAAT/2026-09/history/__proto__').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(400);
+    });
+  });
+
+  describe('SEC-38 — contrôles d’accès masqués dans l’interface, refusés côté serveur', () => {
+    it('PUT /pricing/grid par un CORRESPONDANT_IDA ou un TRESORIER : 403', async () => {
+      for (const role of ['CORRESPONDANT_IDA', 'TRESORIER'] as const) {
+        await http().put('/api/v1/pricing/grid').set('x-dev-user', companyUser(role, 'CAAT')).send({ version: 'TARIF-2097.01', effectiveFrom: '2097-01-01' }).expect(403);
+      }
+    });
+
+    it('facturation d’une autre compagnie (écran metering) : 403', async () => {
+      await http().get('/api/v1/metering/SAA/2026-09').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(403);
+      await http().get('/api/v1/metering/SAA/2026-09/history/sms').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(403);
+    });
+
+    it('panneau Art. 14 côté compagnie B : PATCH /claims/:id/responsabilite par la partie adverse refusé (403)', async () => {
+      await http()
+        .post('/api/v1/claims/import')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .attach('file', csvFile(csvRow({ numEconstat: 'E2E-SEC38-ART14', compagnieA: 'CAAT', compagnieB: 'SAA' })), 'a.csv')
+        .expect(201);
+      const claim = (await allClaims()).find((c) => c.numEconstat === 'E2E-SEC38-ART14')!;
+      await http().patch(`/api/v1/claims/${claim.id}/responsabilite`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA')).send({ circonstancesA: [1] }).expect(403);
+      await http().patch(`/api/v1/claims/${claim.id}/responsabilite`).set('x-dev-user', companyUser('TRESORIER', 'CAAT')).send({ circonstancesA: [1] }).expect(403);
+      await http().patch(`/api/v1/claims/${claim.id}/responsabilite`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).send({ circonstancesA: [1] }).expect(200);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

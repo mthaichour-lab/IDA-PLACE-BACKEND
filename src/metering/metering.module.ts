@@ -8,7 +8,11 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess } from '../common/rbac/tenant-scope';
-import { MeteringService, PriceGrid } from './metering.service';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { LedgerModule } from '../ledger/ledger.module';
+import { MeteringHistoryParamsDto, MeteringInvoiceParamsDto, MeteringPeriodParamDto, UpdatePriceGridDto } from './dto/metering.dto';
+import { PriceGridVersion } from './entities/price-grid-version.entity';
+import { MeteringService } from './metering.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 
@@ -49,58 +53,67 @@ class MeteringController {
   @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({
     summary:
-      'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — somme de la facture mock de chaque adhérent RÉEL (AdherentsService), jamais un nombre de compagnies inventé',
+      'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — SIMULÉ (refusé en production, SEC-37), réservé aux rôles place (SEC-26)',
   })
-  async placeSummary(@Param('period') period: string) {
+  async placeSummary(@Param() p: MeteringPeriodParamDto) {
+    this.service.assertSimulationAllowed();
     const { total } = await this.adherents.listCompanies(1, 1);
-    return { period, ...this.service.placeSummary(total) };
+    return { period: p.period, ...this.service.placeSummary(total, await this.service.gridFor(p.period)) };
   }
 
-  // Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté par
-  // anticipation — la consommation est aujourd'hui un mock IDENTIQUE pour
-  // toutes les compagnies (`MOCK_MEASURED_CONSUMPTION`, metering.service.ts),
-  // donc pas de fuite de donnée réelle aujourd'hui, mais la route était la
-  // seule du module sans ce contrôle, un piège pour le jour où le TODO
-  // "consommation réelle par tenant" (voir doc de classe) sera implémenté.
+  // Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` — une compagnie
+  // ne consulte que SA facturation (SEC-38 : refus côté serveur, pas
+  // seulement dans l'interface). SEC-37 : facture SIMULÉE (consommation
+  // mockée) marquée `SIMULEE`, jamais `EMISE`, et refusée en production.
   @Get('metering/:company/:period')
-  @ApiOperation({ summary: 'Consommation + facture mensuelle réconciliable (mock, calcul basé sur TARIF-2026.01) — B.7 : scopée par compagnie' })
-  get(@Param('company') company: string, @Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
-    assertCompanyAccess(user, company);
-    const grid = this.service.getGrid();
-    const lines = this.service.computeInvoiceLines();
+  @ApiOperation({ summary: 'Consommation + facture mensuelle SIMULÉE (grille en vigueur sur la période) — B.7 : scopée par compagnie ; 503 en production (SEC-37)' })
+  async get(@Param() p: MeteringInvoiceParamsDto, @CurrentUser() user: AuthenticatedUser) {
+    assertCompanyAccess(user, p.company);
+    this.service.assertSimulationAllowed();
+    const grid = await this.service.gridFor(p.period);
+    const lines = this.service.computeInvoiceLines(grid);
     const totalHT = grid.subscription.monthly + lines.reduce((s, l) => s + l.amount, 0);
     return {
-      company, period, gridVersion: grid.version,
+      company: p.company, period: p.period, gridVersion: grid.version,
       subscription: grid.subscription, lines,
       totalHT, totalTVA: Math.round(totalHT * 0.19), totalTTC: Math.round(totalHT * 1.19),
-      status: 'EMISE',
+      status: 'SIMULEE',
+      simulated: true,
     };
   }
 
   @Get('metering/:company/:period/history/:metric')
   @ApiOperation({
     summary:
-      'Historique mensuel (10 mois) d’une métrique de consommation — MOCK déterministe, rampe vers la valeur courante (collecte réelle OpenTelemetry/Kubernetes hors périmètre, voir doc de classe) — B.7 : scopée par compagnie',
+      'Historique mensuel (10 mois) d’une métrique de consommation — SIMULÉ (rampe déterministe), métrique de la grille uniquement (400 sinon) — B.7 : scopée par compagnie ; 503 en production',
   })
-  history(@Param('company') company: string, @Param('period') period: string, @Param('metric') metric: string, @CurrentUser() user: AuthenticatedUser) {
-    assertCompanyAccess(user, company);
-    return { metric, points: this.service.history(metric, period) };
+  history(@Param() p: MeteringHistoryParamsDto, @CurrentUser() user: AuthenticatedUser) {
+    assertCompanyAccess(user, p.company);
+    this.service.assertSimulationAllowed();
+    return { metric: p.metric, points: this.service.history(p.metric, p.period), simulated: true };
   }
 
   @Get('pricing/grid')
-  @ApiOperation({ summary: 'Grille tarifaire courante (TARIF-2026.01)' })
+  @ApiOperation({ summary: 'Grille tarifaire en vigueur aujourd’hui (versionnée, SEC-37)' })
   getGrid() {
-    return this.service.getGrid();
+    return this.service.gridFor();
   }
 
+  // SEC-37 : DTO strict (bornes, liste blanche des métriques, version et date
+  // d'effet obligatoires) ; crée une nouvelle version persistée et scellée,
+  // jamais rétroactive. SEC-38 : 403 côté serveur sans le privilège `grid`.
   @Put('pricing/grid')
   @Privileges('grid')
-  @ApiOperation({ summary: 'Mise à jour de la grille tarifaire (super admin)' })
-  // TODO(backend-agent): valider le DTO + persister une nouvelle version (PriceGrid, §B.3) au lieu de muter l'objet en mémoire.
-  putGrid(@Body() body: Partial<PriceGrid>) {
-    return this.service.updateGrid(body);
+  @ApiOperation({ summary: 'Nouvelle version de la grille tarifaire à date d’effet (super admin) — 400 si invalide ou rétroactive, 409 si la version existe' })
+  putGrid(@Body() body: UpdatePriceGridDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.updateGrid(body, user);
   }
 }
 
-@Module({ imports: [AdherentsModule], controllers: [MeteringController], providers: [MeteringService], exports: [MeteringService] })
+@Module({
+  imports: [MikroOrmModule.forFeature([PriceGridVersion]), AdherentsModule, LedgerModule],
+  controllers: [MeteringController],
+  providers: [MeteringService],
+  exports: [MeteringService],
+})
 export class MeteringModule {}
