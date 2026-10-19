@@ -315,6 +315,13 @@ describe('Configuration de production (SEC-01, SEC-08, SEC-15, SEC-41)', () => {
     DB_PASSWORD: 'mot-de-passe-de-test-production',
     DB_SSL: 'false',
     LEDGER_HMAC_KEY: 'p'.repeat(48),
+    // SEC-11 (branche dossiers) : stockage objet obligatoire en production —
+    // configuration factice (aucun appel S3 au démarrage).
+    S3_ENABLED: 'true',
+    S3_ENDPOINT: 'http://minio.test:9000',
+    S3_BUCKET: 'ida-place-docs',
+    S3_ACCESS_KEY: 'test-access-key',
+    S3_SECRET_KEY: 'test-secret-key',
     CORS_ORIGIN: 'https://ida-place.test',
     SWAGGER_ENABLED: undefined,
     THROTTLE_ENABLED: undefined,

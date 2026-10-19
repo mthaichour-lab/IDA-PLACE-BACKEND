@@ -9,7 +9,8 @@ import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess } from '../common/rbac/tenant-scope';
 import { MeteringService, PriceGrid } from './metering.service';
-import { PlaceOnlyGuard } from '../cockpit/place-only.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 
 /**
  * MeteringModule — écrans 10 "Métrologie & facturation" et 14
@@ -45,7 +46,7 @@ class MeteringController {
   // SEC-26 : chiffre d'affaires de l'opérateur, place entière — réservé aux
   // rôles place (TRESORIER détient `bill` mais reste un rôle compagnie).
   @Get('metering/place-summary/:period')
-  @UseGuards(PlaceOnlyGuard)
+  @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({
     summary:
       'Dashboard des coûts place entière (écran 14, sous-onglet "Coûts & tarification") — somme de la facture mock de chaque adhérent RÉEL (AdherentsService), jamais un nombre de compagnies inventé',

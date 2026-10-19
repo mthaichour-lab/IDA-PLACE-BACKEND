@@ -2,7 +2,8 @@ import { Controller, Get, Module, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
-import { PlaceOnlyGuard } from './place-only.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
@@ -75,7 +76,7 @@ function currentQuarterPeriod(): string {
 @ApiBearerAuth()
 @Controller('cockpit')
 @UseGuards(AuthGuard, PrivilegesGuard)
-class CockpitController {
+export class CockpitController {
   constructor(
     private readonly claims: ClaimsService,
     private readonly matching: MatchingService,
@@ -97,7 +98,7 @@ class CockpitController {
   // compagnie). Les services sont appelés sans `user` (agrégat place-entière),
   // ce qui n'est acceptable que derrière cette garde.
   @Get('summary')
-  @UseGuards(PlaceOnlyGuard)
+  @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (écran 1) — réservé aux rôles place (SEC-05) ; mis en cache (Redis si REDIS_ENABLED, voir cache.service.ts)' })
   async summary(@CurrentUser() user: AuthenticatedUser) {
     // SEC-13 : un seul calcul simultané par clé (effet de troupeau), en plus du cache Redis.

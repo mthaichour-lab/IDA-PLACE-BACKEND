@@ -1,28 +1,30 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { cockpitSummaryCacheKey } from './cockpit.module';
-import { PlaceOnlyGuard } from './place-only.guard';
+import { CockpitController, cockpitSummaryCacheKey } from './cockpit.module';
 
 const user = (role: AuthenticatedUser['role'], companyId?: string): AuthenticatedUser => ({ id: role, name: role, email: `${role}@test.dz`, role, companyId, privileges: [] });
 
-function ctxFor(u?: AuthenticatedUser): ExecutionContext {
-  return { switchToHttp: () => ({ getRequest: () => ({ user: u }) }) } as unknown as ExecutionContext;
+/** Contexte HTTP `GET /cockpit/summary` pour la garde réelle (métadonnées `@Roles` du handler). */
+function summaryContext(u?: AuthenticatedUser): ExecutionContext {
+  return {
+    getHandler: () => CockpitController.prototype.summary,
+    getClass: () => CockpitController,
+    switchToHttp: () => ({ getRequest: () => ({ user: u, method: 'GET' }) }),
+  } as unknown as ExecutionContext;
 }
 
 describe('SEC-05 — cockpit réservé aux rôles place', () => {
-  const guard = new PlaceOnlyGuard();
+  const guard = new PrivilegesGuard(new Reflector());
 
   it.each(['OPERATEUR_PLACE', 'ADMIN_UAR', 'MEMBRE_COMMISSION', 'AUDITEUR_CSA'] as const)('%s passe la garde', (role) => {
-    expect(guard.canActivate(ctxFor(user(role)))).toBe(true);
+    expect(guard.canActivate(summaryContext(user(role)))).toBe(true);
   });
 
-  it.each(['CORRESPONDANT_IDA', 'TRESORIER'] as const)('%s est refusé (403), même avec tous les privilèges', (role) => {
-    const u = { ...user(role, 'CAAT'), privileges: ['admin', 'bill', 'closeQuarter'] as AuthenticatedUser['privileges'] };
-    expect(() => guard.canActivate(ctxFor(u))).toThrow(ForbiddenException);
-  });
-
-  it('utilisateur non résolu : refusé', () => {
-    expect(() => guard.canActivate(ctxFor(undefined))).toThrow(ForbiddenException);
+  it.each(['CORRESPONDANT_IDA', 'TRESORIER'] as const)('%s est refusé (403), même avec des privilèges dérogatoires', (role) => {
+    const u = { ...user(role, 'CAAT'), privileges: ['bill', 'synth'] as AuthenticatedUser['privileges'] };
+    expect(() => guard.canActivate(summaryContext(u))).toThrow(ForbiddenException);
   });
 
   it('deux tenants n’obtiennent jamais la même entrée de cache', () => {

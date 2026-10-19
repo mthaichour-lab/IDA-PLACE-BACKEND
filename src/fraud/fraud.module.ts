@@ -12,7 +12,8 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { FraudAction } from './entities/fraud-action.entity';
 import { FraudCase } from './entities/fraud-case.entity';
 import { FraudService } from './fraud.service';
-import { PlaceOnlyGuard } from '../cockpit/place-only.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 
 /**
  * FraudModule — écran 9 "Anti-fraude", B.2/B.9. Détection RÉELLE (5 règles,
@@ -46,7 +47,7 @@ class FraudController {
   // transmission de toutes les compagnies) — réservé aux rôles place, 403
   // pour un rôle compagnie (décision PO 2026-10-18 : « audit trail de place »).
   @Get('actions')
-  @UseGuards(PlaceOnlyGuard)
+  @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({ summary: 'Journal des actions suspectes de place (appariement manuel/déliage/reliage, transmissions tardives), paginé (6/p) — réservé aux rôles place (SEC-21)' })
   actions(@Query() q: PaginationQueryDto) {
     return this.service.actions(q.page, q.pageSize);
