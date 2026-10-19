@@ -437,7 +437,7 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
         .expect(201);
 
       const claimId = await importEligibleClaim(app, 'E2E-SEC-WITHDRAWN', 'WDR1', 'SAA');
-      const companies = await request(app.getHttpServer()).get('/api/v1/referential/companies?pageSize=200').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      const companies = await request(app.getHttpServer()).get('/api/v1/referential/companies?pageSize=100').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
       const wd1 = (companies.body.items as { id: string; code: string }[]).find((c) => c.code === 'WDR1');
       expect(wd1).toBeDefined();
 
