@@ -1,10 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { CacheService } from '../common/cache/cache.service';
+import { AggregateCache } from './aggregate-cache';
 import { AdherentsService } from '../adherents/adherents.service';
 import { IrsamMeasureDefinition } from '../adherents/entities/irsam-benchmark.entity';
 import { PopulationReference } from '../adherents/place-metrics-referential.service';
 import { WilayaSeed } from '../adherents/wilayas.data';
 import { ClaimsService } from '../claims/claims.service';
 import { RecoursService } from '../recours/recours.service';
+
+/** SEC-13 : durée de cache des agrégats statistiques (Redis uniquement ; sans Redis, seul le calcul simultané est partagé). */
+const STATS_CACHE_TTL_SECONDS = 30;
 
 export interface WilayaStatDto extends WilayaSeed {
   declarations: number;
@@ -113,11 +118,17 @@ function repartition(values: Array<string | undefined>): RepartitionDto {
  */
 @Injectable()
 export class StatsService {
+  /** SEC-13 : agrégats place-entière mis en cache (Redis si activé) + un seul calcul simultané par clé. */
+  private readonly aggregates: AggregateCache;
+
   constructor(
     private readonly claims: ClaimsService,
     private readonly recours: RecoursService,
     private readonly adherents: AdherentsService,
-  ) {}
+    @Optional() cache?: CacheService,
+  ) {
+    this.aggregates = new AggregateCache(cache);
+  }
 
   /**
    * `year` : année étudiée (optionnelle). Fournie, seules les déclarations de
@@ -126,8 +137,12 @@ export class StatsService {
    * car rapporter un cumul pluriannuel à la population d'une seule année
    * gonflerait le taux.
    */
-  async wilayas(year?: number): Promise<WilayaStatDto[]> {
-    const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
+  wilayas(year?: number): Promise<WilayaStatDto[]> {
+    return this.aggregates.get(`stats:wilayas:${year ?? 'toutes'}`, STATS_CACHE_TTL_SECONDS, () => this.computeWilayas(year));
+  }
+
+  private async computeWilayas(year?: number): Promise<WilayaStatDto[]> {
+    const { items: allClaims } = await this.claims.listAllForAnalysis();
     const [wilayas, populations] = await Promise.all([
       this.adherents.listWilayas(),
       year === undefined ? Promise.resolve<Record<string, PopulationReference>>({}) : this.adherents.populationReferences(year),
@@ -150,8 +165,12 @@ export class StatsService {
     });
   }
 
-  async monthly(): Promise<MonthlyStatDto[]> {
-    const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
+  monthly(): Promise<MonthlyStatDto[]> {
+    return this.aggregates.get('stats:monthly', STATS_CACHE_TTL_SECONDS, () => this.computeMonthly());
+  }
+
+  private async computeMonthly(): Promise<MonthlyStatDto[]> {
+    const { items: allClaims } = await this.claims.listAllForAnalysis();
     const allRecours = await this.recours.listAll();
     type MonthEntry = { declarations: number; econstat: number; autresCanaux: number; annexes2: number; oppositions: number; indemnises: number };
     const byMonth = new Map<string, MonthEntry>();
@@ -200,8 +219,13 @@ export class StatsService {
       .map(([month, v]) => ({ month, ...v }));
   }
 
-  async summary(): Promise<StatsSummaryDto> {
-    const { total: declarations, items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
+  summary(): Promise<StatsSummaryDto> {
+    return this.aggregates.get('stats:summary', STATS_CACHE_TTL_SECONDS, () => this.computeSummary());
+  }
+
+  private async computeSummary(): Promise<StatsSummaryDto> {
+    const { items: allClaims } = await this.claims.listAllForAnalysis();
+    const declarations = allClaims.length;
     const allRecours = await this.recours.listAll();
 
     const withOpposition = allRecours.filter((r) => !!r.opposition).length;

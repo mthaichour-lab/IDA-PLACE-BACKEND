@@ -1,6 +1,7 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
+import { FilterQuery } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
@@ -27,6 +28,14 @@ import {
 } from './fraud.detection';
 
 type MemoryFraudCase = FraudCaseViewDto & { dedupeKey: string };
+
+/** SEC-36 — couverture de la dernière analyse anti-fraude. */
+export interface FraudAnalysisStatus {
+  claimsAnalyzed: number;
+  /** Vrai si `ANALYSIS_MAX_CLAIMS` a été atteint : les dossiers les plus anciens n'ont pas été analysés. */
+  truncated: boolean;
+  computedAt?: string;
+}
 
 /** Regroupement d'affichage (écran 9, panneau de détail) — noms des groupes tels que cités par le dossier technique §9. */
 const FRAUD_CASE_TYPE_TO_GROUP = {
@@ -75,7 +84,7 @@ function mapStatusToActionType(status: string): FraudActionType | undefined {
  * // RecoursModule réel, croiser avec les forclusions/silences de place.
  */
 @Injectable()
-export class FraudService {
+export class FraudService implements OnApplicationBootstrap {
   private readonly logger = new Logger('FraudService');
   private readonly memoryCases: MemoryFraudCase[] = [];
   private readonly memoryActions: FraudActionViewDto[] = [];
@@ -83,6 +92,9 @@ export class FraudService {
   private readonly recurrenceWindowDays: number;
   private readonly transmissionLateDays: number;
   private readonly velocitySameDayThreshold: number;
+  private running?: Promise<void>;
+  private rerunRequested = false;
+  private lastAnalysis: FraudAnalysisStatus = { claimsAnalyzed: 0, truncated: false };
 
   constructor(
     @InjectRepository(FraudCase) private readonly caseRepo: EntityRepository<FraudCase>,
@@ -101,6 +113,49 @@ export class FraudService {
     // humaines de MatchingModule (jamais un import direct du module, voir
     // doc de classe).
     this.realtime.onEvent('match.updated', (payload) => this.handleMatchUpdated(payload));
+    // SEC-13 : le recalcul (avec écritures) n'est plus déclenché par les GET
+    // mais à l'ingestion de nouveaux dossiers, sous verrou en mémoire.
+    this.realtime.onEvent('claim.ingested', () => void this.scheduleRecompute('import'));
+  }
+
+  onApplicationBootstrap(): void {
+    void this.scheduleRecompute('démarrage');
+  }
+
+  /**
+   * SEC-13 — un seul recalcul à la fois (verrou en mémoire du process) ; un
+   * déclenchement pendant un calcul en cours le fait rejouer UNE fois à la
+   * fin (données arrivées entre-temps), jamais en parallèle. `@nestjs/schedule`
+   * n'étant pas installé, pas de tâche périodique : ingestion + démarrage.
+   */
+  scheduleRecompute(reason: string): Promise<void> {
+    if (this.running) {
+      this.rerunRequested = true;
+      return this.running;
+    }
+    this.running = (async () => {
+      try {
+        do {
+          this.rerunRequested = false;
+          await this.recompute();
+        } while (this.rerunRequested);
+      } catch (err) {
+        this.logger.error(`Recalcul anti-fraude (${reason}) en échec : ${(err as Error).message}`);
+      } finally {
+        this.running = undefined;
+      }
+    })();
+    return this.running;
+  }
+
+  /** Lecture cohérente : attend un recalcul DÉJÀ en cours, sans jamais en déclencher (aucun GET n'écrit). */
+  private async whenIdle(): Promise<void> {
+    if (this.running) await this.running;
+  }
+
+  /** SEC-36 : état de la dernière analyse (troncature signalée, jamais masquée). */
+  analysisStatus(): FraudAnalysisStatus {
+    return { ...this.lastAnalysis };
   }
 
   private handleMatchUpdated(payload: unknown): void {
@@ -142,51 +197,75 @@ export class FraudService {
     await this.logAction(type, actor, details, claimId);
   }
 
+  /** SEC-13 : pagination EN BASE (plus de fenêtre de 5 000 entrées chargée à chaque appel). */
   async actions(page: number, pageSize: number): Promise<PaginatedResult<FraudActionViewDto>> {
-    const rows = await withDegradedFallback(
+    const safePage = Math.max(1, page);
+    return withDegradedFallback(
       'FraudService.actions',
       async () => {
-        const all = await this.actionRepo.findAll({ orderBy: { at: 'DESC' }, limit: 5000 });
-        return all.map((e) => this.toActionView(e));
+        const [rows, total] = await this.actionRepo.findAndCount({}, { orderBy: { at: 'DESC', id: 'ASC' }, limit: pageSize, offset: (safePage - 1) * pageSize });
+        return new PaginatedResult(rows.map((e) => this.toActionView(e)), total, safePage);
       },
-      () => [...this.memoryActions].sort((a, b) => (a.at < b.at ? 1 : -1)),
+      () => paginateArray([...this.memoryActions].sort((a, b) => (a.at < b.at ? 1 : -1)), safePage, pageSize),
     );
-    return paginateArray(rows, page, pageSize);
   }
 
-  /** Revue sécurité 2026-10-18 (B.7) : filtre par `companiesInvolved` quand l'appelant est scopé compagnie — même principe que `from`/`to` ailleurs, un cas reste visible à une compagnie partie même s'il en nomme une autre (détection inter-compagnies par nature). */
-  async cases(page: number, pageSize: number, user?: AuthenticatedUser): Promise<PaginatedResult<FraudCaseViewDto>> {
-    let rows = await this.allCasesWithPlate();
+  /** Revue sécurité 2026-10-18 (B.7) : filtre par `companiesInvolved` quand l'appelant est scopé compagnie — un cas reste visible à une compagnie partie même s'il en nomme une autre (détection inter-compagnies par nature). SEC-13 : filtre et pagination EN BASE, sans recalcul. */
+  async cases(page: number, pageSize: number, user?: AuthenticatedUser): Promise<PaginatedResult<FraudCaseViewDto> & { analysis: FraudAnalysisStatus }> {
+    await this.whenIdle();
     const tenant = user ? resolveTenantFilter(user) : undefined;
-    if (tenant) rows = rows.filter((c) => c.companiesInvolved.includes(tenant));
-    rows.sort((a, b) => b.score - a.score);
-    return paginateArray(rows, page, pageSize);
+    const { rows, total } = await this.readCases(tenant, { page, pageSize });
+    const result = new PaginatedResult(await this.withPlates(rows), total, Math.max(1, page));
+    return Object.assign(result, { analysis: this.analysisStatus() });
   }
 
-  /** Toutes les affaires, triées par score, enrichies de `plateA` (jointure réelle sur le premier dossier lié — jamais fabriquée). */
-  private async allCasesWithPlate(): Promise<FraudCaseViewDto[]> {
-    await this.recompute();
-    const [rows, { items: allClaims }] = await Promise.all([
-      withDegradedFallback<FraudCaseViewDto[]>(
-        'FraudService.cases',
-        async () => {
-          const all = await this.caseRepo.findAll({ limit: 5000 });
-          return all.map((e) => ({
-            id: e.id,
-            type: e.type,
-            score: e.score,
-            severity: e.severity,
-            claimIds: e.claimIds,
-            companiesInvolved: e.companiesInvolved,
-            details: e.details,
-            detectedAt: (e.updatedAt ?? e.detectedAt).toISOString(),
-          }));
-        },
-        () => this.memoryCases.map(({ dedupeKey: _dedupeKey, ...rest }) => rest),
-      ),
-      this.claims.list({ page: 1, pageSize: 100_000 }),
-    ]);
-    const plateByClaimId = new Map(allClaims.map((c) => [c.id, c.plateA]));
+  private toCaseView(e: FraudCase): FraudCaseViewDto {
+    return {
+      id: e.id,
+      type: e.type,
+      score: e.score,
+      severity: e.severity,
+      claimIds: e.claimIds,
+      companiesInvolved: e.companiesInvolved,
+      details: e.details,
+      detectedAt: (e.updatedAt ?? e.detectedAt).toISOString(),
+    };
+  }
+
+  /**
+   * SEC-13 — cas filtrés par compagnie partie (`companies_involved @> {X}`)
+   * puis triés/paginés EN BASE ; plus de `limit 5000` appliqué avant le
+   * filtre tenant. Sans `paging` : tous les cas de la compagnie (signaux).
+   */
+  private async readCases(company: string | undefined, paging?: { page: number; pageSize: number }): Promise<{ rows: FraudCaseViewDto[]; total: number }> {
+    return withDegradedFallback(
+      'FraudService.cases',
+      async () => {
+        const where: FilterQuery<FraudCase> = company ? { companiesInvolved: { $contains: [company] } } : {};
+        const orderBy = { score: 'DESC', id: 'ASC' } as const;
+        if (!paging) {
+          const all = await this.caseRepo.find(where, { orderBy });
+          return { rows: all.map((e) => this.toCaseView(e)), total: all.length };
+        }
+        const [ents, total] = await this.caseRepo.findAndCount(where, { orderBy, limit: paging.pageSize, offset: (Math.max(1, paging.page) - 1) * paging.pageSize });
+        return { rows: ents.map((e) => this.toCaseView(e)), total };
+      },
+      () => {
+        const all = this.memoryCases
+          .map(({ dedupeKey: _dedupeKey, ...rest }) => rest)
+          .filter((c) => !company || c.companiesInvolved.includes(company))
+          .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
+        if (!paging) return { rows: all, total: all.length };
+        const p = paginateArray(all, paging.page, paging.pageSize);
+        return { rows: p.items, total: p.total };
+      },
+    );
+  }
+
+  /** `plateA` (jointure réelle sur le premier dossier lié — jamais fabriquée), en ne lisant que les dossiers des cas renvoyés. */
+  private async withPlates(rows: FraudCaseViewDto[]): Promise<FraudCaseViewDto[]> {
+    const summaries = await this.claims.summariesFor([...new Set(rows.flatMap((r) => r.claimIds))]);
+    const plateByClaimId = new Map(summaries.map((c) => [c.id, c.plateA]));
     return rows.map((r) => ({ ...r, plateA: r.claimIds.map((id) => plateByClaimId.get(id)).find((p) => p) }));
   }
 
@@ -198,8 +277,8 @@ export class FraudService {
   /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `company` venait du path sans aucune vérification. */
   async signalsByAdherent(company: string, user: AuthenticatedUser): Promise<FraudSignalGroupDto[]> {
     assertCompanyAccess(user, company);
-    const all = await this.allCasesWithPlate();
-    const involving = all.filter((c) => c.companiesInvolved.includes(company));
+    await this.whenIdle();
+    const involving = await this.withPlates((await this.readCases(company)).rows);
 
     const byGroup = new Map<string, FraudCaseViewDto[]>();
     for (const c of involving) {
@@ -220,7 +299,9 @@ export class FraudService {
 
   /** Recalcule les 5 détections à partir des données réelles et persiste (upsert idempotent par `dedupeKey`). */
   private async recompute(): Promise<void> {
-    const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
+    // SEC-36 : tous les dossiers, lus par lots (plus de fenêtre de 5 000).
+    const { items: allClaims, truncated } = await this.claims.listAllForAnalysis();
+    this.lastAnalysis = { claimsAnalyzed: allClaims.length, truncated, computedAt: new Date().toISOString() };
 
     const fraudClaims: FraudClaimInput[] = allClaims.map((c) => ({
       id: c.id,

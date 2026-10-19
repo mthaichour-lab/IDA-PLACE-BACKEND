@@ -17,6 +17,8 @@ function throwingRepo() {
     find: fail,
     findOne: fail,
     findAll: fail,
+    findAndCount: fail,
+    count: fail,
     getEntityManager: jest.fn(() => ({ persist: jest.fn(), flush: fail, persistAndFlush: fail })),
   };
 }

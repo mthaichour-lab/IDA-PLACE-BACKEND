@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { CacheService } from '../common/cache/cache.service';
+import { AggregateCache } from '../stats/aggregate-cache';
 import { ConfigService } from '@nestjs/config';
 import { PaginatedResult, paginateArray } from '../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -47,6 +49,17 @@ export interface MonitoringJourneyDto {
   requestSentAt: string;
 }
 
+export interface MonitoringScoresDto {
+  weights: typeof MONITORING_WEIGHTS;
+  companies: MonitoringCompanyResult[];
+  notes: string[];
+  silenceDays: number;
+  oppositionAlertThresholdPct: number;
+}
+
+/** SEC-13 : durée de cache du classement (Redis uniquement). */
+const MONITORING_CACHE_TTL_SECONDS = 30;
+
 export interface TrajectoryDto {
   claimRef: string;
   companyA: string;
@@ -74,6 +87,7 @@ export interface TrajectoryDto {
 @Injectable()
 export class MonitoringService {
   private readonly recoursMaxMonths: number;
+  private readonly aggregates: AggregateCache;
 
   constructor(
     private readonly claims: ClaimsService,
@@ -81,21 +95,22 @@ export class MonitoringService {
     private readonly recours: RecoursService,
     private readonly commission: CommissionService,
     configService: ConfigService,
+    @Optional() cache?: CacheService,
   ) {
+    this.aggregates = new AggregateCache(cache);
     this.recoursMaxMonths = Number(
       configService.get<string>('ELIGIBILITY_RECOURS_MAX_MONTHS') ?? DEFAULT_ELIGIBILITY_CONFIG.recoursMaxMonths,
     );
   }
 
-  async scores(): Promise<{
-    weights: typeof MONITORING_WEIGHTS;
-    companies: MonitoringCompanyResult[];
-    notes: string[];
-    silenceDays: number;
-    oppositionAlertThresholdPct: number;
-  }> {
+  /** SEC-13 : classement place-entière mis en cache (Redis si activé) + un seul calcul simultané. */
+  scores(): Promise<MonitoringScoresDto> {
+    return this.aggregates.get('monitoring:scores', MONITORING_CACHE_TTL_SECONDS, () => this.computeScores());
+  }
+
+  private async computeScores(): Promise<MonitoringScoresDto> {
     const [{ items: allClaims }, allRecours, { items: allSanctions }] = await Promise.all([
-      this.claims.list({ page: 1, pageSize: 100_000 }),
+      this.claims.listAllForAnalysis(),
       this.recours.listAll(),
       this.commission.listSanctions({ page: 1, pageSize: 100_000 }),
     ]);
@@ -206,7 +221,8 @@ export class MonitoringService {
    * est absent, voir matching.service.ts).
    */
   async trajectories(page: number, pageSize: number, user: AuthenticatedUser): Promise<PaginatedResult<TrajectoryDto>> {
-    const queue = await this.matching.queue({ filter: 'TOUS', page: 1, pageSize: 100_000 }, user);
+    // SEC-13 : la page demandée est lue directement (filtre tenant et pagination en base).
+    const queue = await this.matching.queue({ filter: 'TOUS', page, pageSize }, user);
     const rows: TrajectoryDto[] = queue.items.map((i) => ({
       claimRef: i.refA,
       companyA: i.companyA,
@@ -219,6 +235,6 @@ export class MonitoringService {
       confirmedBy: i.confirmedBy,
       confirmedAt: i.confirmedAt,
     }));
-    return paginateArray(rows, page, pageSize);
+    return new PaginatedResult(rows, queue.total, queue.page);
   }
 }

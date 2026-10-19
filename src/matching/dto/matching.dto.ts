@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
 
 export const MATCH_LEVELS = ['AUTO', 'MANUEL', 'NON'] as const;
@@ -21,7 +21,8 @@ export class MatchCriteriaDto {
 export class MatchQueueQueryDto {
   @ApiPropertyOptional({ enum: MATCH_FILTERS, default: 'TOUS' }) @IsOptional() @IsIn(MATCH_FILTERS as unknown as string[]) filter: string = 'TOUS';
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
+  // SEC-13 : borné à 100 (`?pageSize=100000` refusé, 400).
+  @ApiPropertyOptional({ maximum: 100 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize: number = DEFAULT_PAGE_SIZE;
 }
 
 export class TauxSelonBaremeDto {

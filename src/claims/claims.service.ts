@@ -1,10 +1,11 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
+import { FilterQuery } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
 import { normalizeCircumstances, normalizeReferenceCode, resolvePublishedBaremeCase } from '../adherents/bareme-rules';
-import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
+import { DEFAULT_PAGE_SIZE, paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
@@ -26,6 +27,13 @@ import { ClaimViewDto, ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from '
 
 /** Repli mémoire — mode dégradé. Persistant pour la durée du process (voir README "Mode dégradé"). */
 const MEMORY_CLAIMS: ClaimViewDto[] = [];
+
+function positiveInt(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`${name} doit être un entier strictement positif (reçu "${raw}").`);
+  return n;
+}
 
 function toClaimView(c: Claim): ClaimViewDto {
   return {
@@ -121,6 +129,8 @@ export class ClaimsService {
   private readonly logger = new Logger('ClaimsService');
   /** SEC-12 : plafonds d'import lus une fois au démarrage (valeur illisible = échec au démarrage, jamais un plafond levé). */
   private readonly importLimits: ImportLimits = importLimitsFromEnv();
+  /** SEC-36 : plafond mémoire des agrégats internes (voir `listAllForAnalysis`). */
+  private readonly analysisMaxClaims: number = positiveInt(process.env.ANALYSIS_MAX_CLAIMS, 100_000, 'ANALYSIS_MAX_CLAIMS');
 
   constructor(
     @InjectRepository(Claim) private readonly repo: EntityRepository<Claim>,
@@ -179,12 +189,95 @@ export class ClaimsService {
     return c.company === tenant || c.counterpartyCompany === tenant;
   }
 
+  /**
+   * SEC-13 : filtre tenant, filtres et pagination appliqués EN BASE (avant
+   * toute limite) — avant, les 5 000 dossiers les plus récents de TOUTE la
+   * place étaient chargés puis filtrés en mémoire, d'où des dossiers d'une
+   * compagnie invisibles dès que la place dépassait 5 000 dossiers.
+   */
   async list(query: ListClaimsQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<ClaimViewDto>> {
-    let rows = await this.findAll();
-    rows = rows.filter((c) => this.visibleToUser(c, user));
-    if (query.company) rows = rows.filter((c) => c.company === query.company);
-    if (query.state) rows = rows.filter((c) => c.state === query.state);
-    return paginateArray(rows, query.page, query.pageSize);
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
+    return withDegradedFallback(
+      'ClaimsService.list',
+      async () => {
+        const and: FilterQuery<Claim>[] = [];
+        if (tenant) and.push({ $or: [{ company: tenant }, { counterpartyCompany: tenant }] });
+        if (query.company) and.push({ company: query.company });
+        if (query.state) and.push({ state: query.state });
+        const [rows, total] = await this.repo.findAndCount(and.length > 0 ? { $and: and } : {}, {
+          orderBy: { createdAt: 'DESC', id: 'ASC' },
+          limit: pageSize,
+          offset: (page - 1) * pageSize,
+        });
+        return new PaginatedResult(rows.map(toClaimView), total, page);
+      },
+      () => {
+        let rows = [...MEMORY_CLAIMS].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        rows = rows.filter((c) => this.visibleToUser(c, user));
+        if (query.company) rows = rows.filter((c) => c.company === query.company);
+        if (query.state) rows = rows.filter((c) => c.state === query.state);
+        return paginateArray(rows, page, pageSize);
+      },
+    );
+  }
+
+  /**
+   * SEC-13 — compagnie et plaque de quelques dossiers par id (usage interne,
+   * ex. enrichissement d'une page de cas de fraude) sans charger la table.
+   */
+  async summariesFor(ids: string[]): Promise<Array<{ id: string; company: string; plateA?: string }>> {
+    if (ids.length === 0) return [];
+    const wanted = new Set(ids);
+    return withDegradedFallback(
+      'ClaimsService.summariesFor',
+      async () => {
+        const out: Array<{ id: string; company: string; plateA?: string }> = [];
+        for (let i = 0; i < ids.length; i += 1000) {
+          const rows = await this.repo.find({ id: { $in: ids.slice(i, i + 1000) } });
+          out.push(...rows.map((r) => ({ id: r.id, company: r.company, plateA: r.plateA })));
+        }
+        return out;
+      },
+      () => MEMORY_CLAIMS.filter((c) => wanted.has(c.id)).map((c) => ({ id: c.id, company: c.company, plateA: c.plateA })),
+    );
+  }
+
+  /**
+   * SEC-36/SEC-13 — TOUS les dossiers, lus par lots (plus de troncature
+   * silencieuse à 5 000), pour les agrégats internes (fraude, monitoring,
+   * statistiques, cockpit). Plafond de sécurité mémoire `ANALYSIS_MAX_CLAIMS`
+   * (100 000 par défaut) : au-delà, `truncated: true` est renvoyé et
+   * journalisé, jamais masqué. Usage interne uniquement (aucun filtre
+   * tenant) : les appelants exposés aux rôles compagnie projettent ensuite.
+   */
+  async listAllForAnalysis(): Promise<{ items: ClaimViewDto[]; truncated: boolean }> {
+    const max = this.analysisMaxClaims;
+    const batch = 1000;
+    const result = await withDegradedFallback(
+      'ClaimsService.listAllForAnalysis',
+      async () => {
+        const items: ClaimViewDto[] = [];
+        for (let offset = 0; ; offset += batch) {
+          const rows = await this.repo.find({}, { orderBy: { createdAt: 'DESC', id: 'ASC' }, limit: batch, offset });
+          items.push(...rows.map(toClaimView));
+          if (rows.length < batch) return { items, truncated: false };
+          if (items.length >= max) {
+            const more = await this.repo.count({});
+            return { items: items.slice(0, max), truncated: more > max };
+          }
+        }
+      },
+      () => {
+        const all = [...MEMORY_CLAIMS].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        return { items: all.slice(0, max), truncated: all.length > max };
+      },
+    );
+    if (result.truncated) {
+      this.logger.warn(`Analyse tronquée à ${max} dossiers (ANALYSIS_MAX_CLAIMS) : les plus anciens sont exclus des agrégats.`);
+    }
+    return result;
   }
 
   /**

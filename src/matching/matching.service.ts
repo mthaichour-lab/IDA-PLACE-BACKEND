@@ -1,10 +1,11 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
+import { FilterQuery } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
-import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
+import { DEFAULT_PAGE_SIZE, paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
@@ -136,15 +137,29 @@ export class MatchingService {
     return { ...this.thresholds };
   }
 
-  private async findAllDtos(): Promise<MatchQueueItemDto[]> {
-    return withDegradedFallback(
-      'MatchingService.findAll',
-      async () => {
-        const rows = await this.repo.findAll({ orderBy: { at: 'DESC' } });
-        return rows.map(toDto);
-      },
-      () => [...this.memory].sort((a, b) => (a.at < b.at ? 1 : -1)).map(toPublicDto),
-    );
+  /**
+   * SEC-13 — critères de la file traduits en requête : filtre tenant et
+   * onglet appliqués EN BASE, avant la pagination (plus de chargement de
+   * toute la table pour chaque lecture).
+   */
+  private whereFor(tenant: string | undefined, filter?: string): FilterQuery<MatchQueueItem> {
+    const and: FilterQuery<MatchQueueItem>[] = [];
+    if (tenant) and.push({ $or: [{ companyA: tenant }, { companyB: tenant }] });
+    if (filter === 'AUTO') and.push({ level: MatchLevel.AUTO });
+    if (filter === 'A_CONFIRMER') and.push({ status: MatchStatus.A_CONFIRMER });
+    if (filter === 'NON_APPARIES') and.push({ refB: null });
+    return and.length > 0 ? { $and: and } : {};
+  }
+
+  /** Équivalent mémoire de `whereFor` (mode dégradé). */
+  private memoryRows(tenant: string | undefined, filter?: string): MatchQueueItemDto[] {
+    return [...this.memory]
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? -1 : 1))
+      .map(toPublicDto)
+      .filter((r) => !tenant || r.companyA === tenant || r.companyB === tenant)
+      .filter((r) => filter !== 'AUTO' || r.level === 'AUTO')
+      .filter((r) => filter !== 'A_CONFIRMER' || r.status === 'A_CONFIRMER')
+      .filter((r) => filter !== 'NON_APPARIES' || !r.refB);
   }
 
   /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les lignes où sa compagnie est `companyA` ou `companyB` ; les rôles "place" voient tout. Ajouté en continuité de la revue Product Owner (même angle mort que Claims/Recours/Settlement/Commission, repéré après coup sur ce module "figé" du sprint 2 — filtrer les lignes retournées ne change pas la forme du DTO/de la route). */
@@ -156,16 +171,27 @@ export class MatchingService {
   }
 
   async queue(query: MatchQueueQueryDto, user?: AuthenticatedUser): Promise<PaginatedResult<MatchQueueItemDto>> {
-    let rows = await this.findAllDtos();
-    rows = rows.filter((r) => this.visibleToUser(r, user));
-    if (query.filter === 'AUTO') rows = rows.filter((r) => r.level === 'AUTO');
-    if (query.filter === 'A_CONFIRMER') rows = rows.filter((r) => r.status === 'A_CONFIRMER');
-    if (query.filter === 'NON_APPARIES') rows = rows.filter((r) => !r.refB);
-    const page = paginateArray(rows, query.page, query.pageSize);
     const tenant = user ? resolveTenantFilter(user) : undefined;
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
+    const { items, total } = await withDegradedFallback(
+      'MatchingService.queue',
+      async () => {
+        const [rows, count] = await this.repo.findAndCount(this.whereFor(tenant, query.filter), {
+          orderBy: { at: 'DESC', id: 'ASC' },
+          limit: pageSize,
+          offset: (page - 1) * pageSize,
+        });
+        return { items: rows.map(toDto), total: count };
+      },
+      () => {
+        const p = paginateArray(this.memoryRows(tenant, query.filter), page, pageSize);
+        return { items: p.items, total: p.total };
+      },
+    );
     // SEC-03 : barème calculé sur les données complètes, PUIS masquage pour le lecteur.
-    const items = (await this.withBareme(page.items)).map((r) => projectForViewer(r, tenant));
-    return new PaginatedResult(items, page.total, page.page);
+    const projected = (await this.withBareme(items)).map((r) => projectForViewer(r, tenant));
+    return new PaginatedResult(projected, total, page);
   }
 
   /** Détail d'un appariement (écran 2), avec les deux saisies Art. 14 côte à côte. */
@@ -187,21 +213,22 @@ export class MatchingService {
     throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
   }
 
+  /** SEC-13 : lecture d'UNE ligne par id (plus de chargement de toute la table) ; 404/403 levés hors du repli. */
   async getItem(id: string, user?: AuthenticatedUser): Promise<MatchItemDetailDto> {
-    const row = (await this.findAllDtos()).find((r) => r.id === id);
-    if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
-    if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
-    const ids = await withDegradedFallback(
+    const found = await withDegradedFallback(
       'MatchingService.getItem',
       async () => {
         const e = await this.repo.findOne({ id });
-        return { claimAId: e?.declAId, claimBId: e?.declBId ?? undefined };
+        return e ? { row: toDto(e), claimAId: e.declAId, claimBId: e.declBId ?? undefined } : undefined;
       },
       () => {
         const m = this.memory.find((r) => r.id === id);
-        return { claimAId: m?.declAId, claimBId: m?.declBId };
+        return m ? { row: toPublicDto(m), claimAId: m.declAId, claimBId: m.declBId } : undefined;
       },
     );
+    if (!found) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
+    const { row, ...ids } = found;
+    if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
     const [withBareme] = await this.withBareme([row]);
     const tenant = user ? resolveTenantFilter(user) : undefined;
     const projected = projectForViewer({ ...withBareme, claimAId: ids.claimAId ?? '', claimBId: ids.claimBId }, tenant);
@@ -258,10 +285,8 @@ export class MatchingService {
     return withDegradedFallback(
       'MatchingService.listInternalPairs',
       async () => {
-        const rows = await this.repo.findAll();
-        return rows
-          .filter((r) => !!r.declBId)
-          .map((r) => ({ declAId: r.declAId, declBId: r.declBId as string, score: r.score, status: r.status }));
+        const rows = await this.repo.find({ declBId: { $ne: null } });
+        return rows.map((r) => ({ declAId: r.declAId, declBId: r.declBId as string, score: r.score, status: r.status }));
       },
       () =>
         this.memory
@@ -270,14 +295,18 @@ export class MatchingService {
     );
   }
 
+  /** SEC-13 : compteurs calculés en base (COUNT), filtre tenant compris. */
   async counters(user?: AuthenticatedUser): Promise<Record<string, number>> {
-    const rows = (await this.findAllDtos()).filter((r) => this.visibleToUser(r, user));
-    return {
-      TOUS: rows.length,
-      AUTO: rows.filter((r) => r.level === 'AUTO').length,
-      A_CONFIRMER: rows.filter((r) => r.status === 'A_CONFIRMER').length,
-      NON_APPARIES: rows.filter((r) => !r.refB).length,
-    };
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const tabs = ['TOUS', 'AUTO', 'A_CONFIRMER', 'NON_APPARIES'] as const;
+    return withDegradedFallback(
+      'MatchingService.counters',
+      async () => {
+        const counts = await Promise.all(tabs.map((t) => this.repo.count(this.whereFor(tenant, t))));
+        return Object.fromEntries(tabs.map((t, i) => [t, counts[i]]));
+      },
+      () => Object.fromEntries(tabs.map((t) => [t, this.memoryRows(tenant, t).length])),
+    );
   }
 
   /**

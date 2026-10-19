@@ -23,6 +23,7 @@ import { SettlementModule } from '../settlement/settlement.module';
 import { SettlementService } from '../settlement/settlement.service';
 import { StatsModule } from '../stats/stats.module';
 import { StatsService } from '../stats/stats.service';
+import { AggregateCache } from '../stats/aggregate-cache';
 
 const SUMMARY_CACHE_TTL_SECONDS = 10;
 
@@ -84,8 +85,12 @@ class CockpitController {
     private readonly experts: ExpertsService,
     private readonly adherents: AdherentsService,
     private readonly stats: StatsService,
-    private readonly cache: CacheService,
-  ) {}
+    cache: CacheService,
+  ) {
+    this.aggregates = new AggregateCache(cache);
+  }
+
+  private readonly aggregates: AggregateCache;
 
   // SEC-05 : positions nettes, couples créancier/débiteur et pénalités de
   // TOUTES les compagnies — réservé aux rôles place (403 pour un rôle
@@ -95,7 +100,8 @@ class CockpitController {
   @UseGuards(PlaceOnlyGuard)
   @ApiOperation({ summary: 'KPIs agrégés du cockpit de place (écran 1) — réservé aux rôles place (SEC-05) ; mis en cache (Redis si REDIS_ENABLED, voir cache.service.ts)' })
   async summary(@CurrentUser() user: AuthenticatedUser) {
-    return this.cache.getOrSet(cockpitSummaryCacheKey(user), SUMMARY_CACHE_TTL_SECONDS, () => this.computeSummary());
+    // SEC-13 : un seul calcul simultané par clé (effet de troupeau), en plus du cache Redis.
+    return this.aggregates.get(cockpitSummaryCacheKey(user), SUMMARY_CACHE_TTL_SECONDS, () => this.computeSummary());
   }
 
   private async computeSummary() {
@@ -115,7 +121,7 @@ class CockpitController {
       wilayaStats,
       monthlyStats,
     ] = await Promise.all([
-      this.claims.list({ page: 1, pageSize: 100_000 }),
+      this.claims.listAllForAnalysis(),
       this.matching.counters(),
       this.recours.listAll(),
       this.settlement.quarter(quarterPeriod),

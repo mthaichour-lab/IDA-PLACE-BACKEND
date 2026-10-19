@@ -9,7 +9,7 @@ function fakeClaims(
   claims: { wilaya?: string; expertAmount?: number; estimatedAmount?: number; accidentDate?: string; createdAt?: string; canalDeclaration?: string; baremeCode?: string; vehicleCategoryA?: string }[],
 ): ClaimsService {
   return {
-    list: jest.fn(async () => ({ page: 1, total: claims.length, items: claims })),
+    listAllForAnalysis: jest.fn(async () => ({ items: claims, truncated: false })),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 }

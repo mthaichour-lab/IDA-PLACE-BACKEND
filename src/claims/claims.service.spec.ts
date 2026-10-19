@@ -22,6 +22,8 @@ function throwingRepo() {
     findAndCount: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     findOne: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     findAll: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    find: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
+    count: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),
     getEntityManager: jest.fn(() => ({
       persist: jest.fn(),
       persistAndFlush: jest.fn().mockRejectedValue(new Error('DB injoignable (test)')),

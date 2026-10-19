@@ -151,6 +151,17 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-13 — requêtes au coût borné', () => {
+    it.each(['/api/v1/claims', '/api/v1/matching/queue'])('%s?pageSize=100000 est refusé (400)', async (url) => {
+      await http().get(url).query({ pageSize: 100000 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
+    });
+
+    it('GET /fraud/cases renvoie l’état de couverture de l’analyse (SEC-36) sans recalculer', async () => {
+      const res = await http().get('/api/v1/fraud/cases').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(res.body.analysis).toMatchObject({ truncated: false, claimsAnalyzed: expect.any(Number) });
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

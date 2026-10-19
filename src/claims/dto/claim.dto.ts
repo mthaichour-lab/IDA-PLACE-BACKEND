@@ -16,7 +16,8 @@ export const CLAIM_STATES = [
 
 export class ListClaimsQueryDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
+  // SEC-13 : borné à 100 (`?pageSize=100000` refusé, 400).
+  @ApiPropertyOptional({ maximum: 100 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize: number = DEFAULT_PAGE_SIZE;
   @ApiPropertyOptional() @IsOptional() @IsString() company?: string;
   @ApiPropertyOptional({ enum: CLAIM_STATES }) @IsOptional() @IsIn(CLAIM_STATES as unknown as string[]) state?: string;
 }
