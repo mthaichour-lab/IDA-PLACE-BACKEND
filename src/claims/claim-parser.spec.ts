@@ -1,7 +1,7 @@
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
 import * as ExcelJS from 'exceljs';
 import { CLAIM_IMPORT_EXTENSION_COLUMNS } from './claim-extension-columns';
-import { mapExtensionRow, mapRow, parseClaimFile, splitCsvLine } from './claim-parser';
+import { mapExtensionRow, mapRow, neutralizeFormula, parseClaimFile, splitCsvLine } from './claim-parser';
 
 describe('splitCsvLine', () => {
   it('découpe des champs simples séparés par des virgules', () => {
@@ -182,5 +182,66 @@ describe('colonnes d’extension 48-53 (barème Art. 14)', () => {
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     const [row] = await parseClaimFile(buffer, 'v2.xlsx');
     expect(row.extension).toEqual({ circonstancesA: [2, 5], baremeCode: 'B03' });
+  });
+});
+
+describe('SEC-39 — injection de formules à l’import', () => {
+  const col = (key: string) => CLAIM_IMPORT_COLUMNS.findIndex((c) => c.key === key);
+  function rowWith(overrides: Record<string, string>): string[] {
+    const cells = CLAIM_IMPORT_COLUMNS.map(() => '');
+    for (const [k, v] of Object.entries(overrides)) cells[col(k)] = v;
+    return cells;
+  }
+
+  it('neutralizeFormula : préfixe d’une apostrophe toute valeur texte commençant par =, +, -, @, tabulation ou CR', () => {
+    for (const v of ['=HYPERLINK("http://x","clic")', '+cmd|calc', '-2+3', '@SUM(A1)', '\t=1', '\r=1']) {
+      expect(neutralizeFormula(v)).toEqual({ value: `'${v}`, neutralized: true });
+    }
+  });
+
+  it('neutralizeFormula : une valeur purement numérique signée (téléphone, numéro) reste inchangée', () => {
+    for (const v of ['+213 555 00 00 01', '-12', '+33.5', 'Ahmed', '16-123-456']) {
+      expect(neutralizeFormula(v)).toEqual({ value: v, neutralized: false });
+    }
+  });
+
+  it('colonnes texte : valeur neutralisée et avertissement FORMULE_NEUTRALISEE, la ligne reste importable', () => {
+    const { values, errors, warnings } = mapRow(rowWith({ assureAIdentite: '=HYPERLINK("http://evil","Ahmed")', observationsIda: '@SUM(A1:A9)', telephoneAssureA: '+213555000001' }));
+    expect(errors).toEqual([]);
+    expect(values.assureAIdentite).toBe(`'=HYPERLINK("http://evil","Ahmed")`);
+    expect(values.observationsIda).toBe(`'@SUM(A1:A9)`);
+    expect(values.telephoneAssureA).toBe('+213555000001');
+    expect(warnings.map((w) => w.columnKey)).toEqual(['observationsIda', 'assureAIdentite']);
+    expect(warnings.every((w) => w.code === 'FORMULE_NEUTRALISEE')).toBe(true);
+  });
+
+  it('colonnes liste : chaque élément est neutralisé', () => {
+    const { values } = mapRow(rowWith({ piecesFournies: 'CONSTAT_AMIABLE;=cmd()' }));
+    expect(values.piecesFournies).toEqual(['CONSTAT_AMIABLE', "'=cmd()"]);
+  });
+
+  it('colonnes numériques : un montant négatif devient un nombre (contrôlé par l’éligibilité), une formule est une erreur de format', () => {
+    const negative = mapRow(rowWith({ montantEstime: '-500' }));
+    expect(negative.values.montantEstime).toBe(-500);
+    expect(negative.errors).toEqual([]);
+    const formula = mapRow(rowWith({ montantEstime: '=1+1', montantExpertise: 'Infinity' }));
+    expect(formula.values.montantEstime).toBeUndefined();
+    expect(formula.values.montantExpertise).toBeUndefined();
+    expect(formula.errors).toHaveLength(2);
+  });
+
+  it('colonnes date : « -1 » ou une formule ne sont jamais lues comme une date', () => {
+    const { values, errors } = mapRow(rowWith({ dateAccident: '-1', dateDeclaration: '=TODAY()' }));
+    expect(values.dateAccident).toBeUndefined();
+    expect(values.dateDeclaration).toBeUndefined();
+    expect(errors).toHaveLength(2);
+  });
+
+  it('colonnes d’extension texte (48-53) : neutralisées aussi', () => {
+    const cells = Array.from({ length: 53 }, () => '');
+    cells[50] = '=1+1';
+    const { extension, warnings } = mapExtensionRow(cells);
+    expect(extension.baremeCode).toBe("'=1+1");
+    expect(warnings).toEqual([expect.objectContaining({ column: 51, code: 'FORMULE_NEUTRALISEE' })]);
   });
 });

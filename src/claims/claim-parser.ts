@@ -47,7 +47,7 @@ export interface ClaimExtensionValues {
 export interface ClaimImportWarning {
   column: number;
   columnKey: string;
-  code: 'CIRCONSTANCE_INVALIDE' | 'BAREME_NON_PUBLIE';
+  code: 'CIRCONSTANCE_INVALIDE' | 'BAREME_NON_PUBLIE' | 'FORMULE_NEUTRALISEE';
   message: string;
 }
 
@@ -132,20 +132,45 @@ async function parseXlsxBuffer(buffer: Buffer, limits: Pick<ImportLimits, 'maxRo
   return rows;
 }
 
+/**
+ * SEC-39 — injection de formules (CSV/XLSX rouverts dans un tableur) :
+ * une cellule TEXTE commençant par `=`, `+`, `-`, `@`, tabulation ou retour
+ * chariot est neutralisée par une apostrophe en tête (recommandation OWASP),
+ * jamais conservée telle quelle. Les colonnes typées (nombre, date, booléen,
+ * énumération) ne sont pas concernées : leur valeur est convertie (un
+ * montant négatif `-500` devient le nombre -500, contrôlé ensuite par les
+ * règles d'éligibilité) ou rejetée en erreur de format. Une valeur purement
+ * numérique saisie dans une colonne texte (téléphone `+213…`, n° `-12`) ne
+ * peut pas porter de formule et reste inchangée.
+ */
+const FORMULA_TRIGGER = /^[=+\-@\t\r]/;
+const HARMLESS_SIGNED_NUMBER = /^[+-]?\d[\d\s.,/]*$/;
+
+export function neutralizeFormula(value: string): { value: string; neutralized: boolean } {
+  if (!FORMULA_TRIGGER.test(value) || HARMLESS_SIGNED_NUMBER.test(value)) return { value, neutralized: false };
+  return { value: `'${value}`, neutralized: true };
+}
+
+/** Bornes de vraisemblance d'une date de sinistre/déclaration (évite `-1` lu comme l'an -1). */
+const MIN_YEAR = 1900;
+const MAX_YEAR = 2100;
+
 const TRUE_LITERALS = new Set(['true', '1', 'oui', 'yes', 'vrai', 'x']);
 const FALSE_LITERALS = new Set(['false', '0', 'non', 'no', 'faux', '']);
 
-function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?: string } {
+function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?: string; neutralized?: boolean } {
   const trimmed = raw?.trim() ?? '';
   if (trimmed === '') return { value: undefined };
 
   switch (col.type) {
-    case 'string':
-      return { value: trimmed };
+    case 'string': {
+      const { value, neutralized } = neutralizeFormula(trimmed);
+      return { value, neutralized };
+    }
 
     case 'number': {
       const n = Number(trimmed.replace(/\s/g, '').replace(',', '.'));
-      if (Number.isNaN(n)) return { value: undefined, error: `${col.label} : valeur numérique attendue (reçu "${raw}")` };
+      if (!Number.isFinite(n)) return { value: undefined, error: `${col.label} : valeur numérique attendue (reçu "${raw}")` };
       return { value: n };
     }
 
@@ -157,8 +182,15 @@ function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?:
     }
 
     case 'date': {
-      const d = new Date(trimmed.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? `${trimmed}T00:00:00Z` : trimmed);
-      if (Number.isNaN(d.getTime())) return { value: undefined, error: `${col.label} : date invalide (reçu "${raw}")` };
+      // SEC-39 : formats explicites uniquement (ISO AAAA-MM-JJ[Thh:mm…] ou
+      // JJ/MM/AAAA) — l'analyseur libre de `Date` lisait « -1 » comme le
+      // 31/12/2000 et acceptait n'importe quel texte.
+      const fr = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmed);
+      const iso = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(trimmed);
+      const d = fr ? new Date(`${fr[3]}-${fr[2]}-${fr[1]}T00:00:00Z`) : iso ? new Date(trimmed.length === 10 ? `${trimmed}T00:00:00Z` : trimmed) : new Date(NaN);
+      if (Number.isNaN(d.getTime()) || d.getUTCFullYear() < MIN_YEAR || d.getUTCFullYear() > MAX_YEAR) {
+        return { value: undefined, error: `${col.label} : date invalide (reçu "${raw}")` };
+      }
       return { value: d.toISOString().slice(0, 10) };
     }
 
@@ -178,8 +210,9 @@ function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?:
       const items = trimmed
         .split(/[;,|]/)
         .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      return { value: items };
+        .filter((s) => s.length > 0)
+        .map((s) => neutralizeFormula(s));
+      return { value: items.map((i) => i.value), neutralized: items.some((i) => i.neutralized) };
     }
 
     default:
@@ -187,17 +220,28 @@ function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?:
   }
 }
 
+function formulaWarning(col: { index: number; key: string; label: string }): ClaimImportWarning {
+  return {
+    column: col.index,
+    columnKey: col.key,
+    code: 'FORMULE_NEUTRALISEE',
+    message: `${col.label} : valeur commençant par un caractère de formule (=, +, -, @) neutralisée par une apostrophe.`,
+  };
+}
+
 /** Mappe une ligne brute (cellules dans l'ordre du modèle) vers le modèle 47 colonnes typé. */
-export function mapRow(cells: string[]): { values: Record<string, unknown>; errors: string[] } {
+export function mapRow(cells: string[]): { values: Record<string, unknown>; errors: string[]; warnings: ClaimImportWarning[] } {
   const values: Record<string, unknown> = {};
   const errors: string[] = [];
+  const warnings: ClaimImportWarning[] = [];
   for (const col of CLAIM_IMPORT_COLUMNS) {
     const raw = cells[col.index - 1] ?? '';
-    const { value, error } = coerceCell(String(raw ?? ''), col);
+    const { value, error, neutralized } = coerceCell(String(raw ?? ''), col);
     values[col.key] = value;
     if (error) errors.push(error);
+    if (neutralized) warnings.push(formulaWarning(col));
   }
-  return { values, errors };
+  return { values, errors, warnings };
 }
 
 function parseCircumstances(raw: string, col: ClaimExtensionColumnDef): { value?: number[]; warning?: ClaimImportWarning } {
@@ -223,7 +267,9 @@ export function mapExtensionRow(cells: string[]): { extension: ClaimExtensionVal
       if (warning) warnings.push(warning);
       else extension[col.key] = value;
     } else {
-      extension[col.key] = raw;
+      const { value, neutralized } = neutralizeFormula(raw);
+      extension[col.key] = value;
+      if (neutralized) warnings.push(formulaWarning(col));
     }
   }
   return { extension: extension as ClaimExtensionValues, warnings };
@@ -242,8 +288,8 @@ export async function parseClaimFile(buffer: Buffer, fileName: string, limits: I
   const dataRows = rawRows.slice(1); // ligne 1 = en-tête (modèle téléchargeable, B.4)
 
   return dataRows.map((cells, i) => {
-    const { values, errors } = mapRow(cells);
+    const { values, errors, warnings: cellWarnings } = mapRow(cells);
     const { extension, warnings } = mapExtensionRow(cells);
-    return { rowNumber: i + 1, values, errors, extension, warnings };
+    return { rowNumber: i + 1, values, errors, extension, warnings: [...cellWarnings, ...warnings] };
   });
 }

@@ -84,6 +84,21 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-39 — import : injection de formules neutralisée', () => {
+    it('une identité « =HYPERLINK(…) » est stockée neutralisée et signalée dans le rapport', async () => {
+      const res = await http()
+        .post('/api/v1/claims/import')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'))
+        .attach('file', csvFile(csvRow({ numEconstat: 'E2E-SEC39', compagnieA: 'CAAT', compagnieB: 'SAA', assureAIdentite: '=HYPERLINK("http://evil.example","Ahmed")' })), 'f.csv')
+        .expect(201);
+      expect(res.body.warnings).toEqual([expect.objectContaining({ columnKey: 'assureAIdentite', code: 'FORMULE_NEUTRALISEE' })]);
+      expect(res.body.rows[0].data.assureAIdentite).toMatch(/^'=HYPERLINK\(/);
+      const claim = (await allClaims()).find((c) => c.numEconstat === 'E2E-SEC39')!;
+      const detail = await http().get(`/api/v1/claims/${claim.id}`).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(detail.body.assureIdentite.startsWith("'")).toBe(true);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(
