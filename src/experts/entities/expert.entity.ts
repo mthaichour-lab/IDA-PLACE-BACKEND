@@ -35,8 +35,13 @@ export class Expert {
   @Enum(() => ExpertStatus)
   status: ExpertStatus = ExpertStatus.ACTIF;
 
+  /** SEC-49 : RIB chiffré (AES-256-GCM, `experts/rib-cipher.ts`), jamais en clair ni renvoyé par l'API. */
   @Property({ nullable: true, hidden: true })
   rib?: string;
+
+  /** Quatre derniers caractères du RIB, pour l'affichage masqué aux rôles place. */
+  @Property({ nullable: true, length: 4 })
+  ribLast4?: string;
 
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();
