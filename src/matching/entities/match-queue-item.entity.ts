@@ -34,10 +34,11 @@ export class MatchQueueItem {
   id: string = v4();
 
   /** Id du `Claim` (ClaimsModule) porté par cette ligne. */
-  @Property({ length: 36 })
+  // Colonne créée par Migration20260201000000_ClaimsMatching : la stratégie de nommage donnerait `decl_aid` (vérifié sur PostgreSQL, 2026-10-20).
+  @Property({ length: 36, fieldName: 'decl_a_id' })
   declAId!: string;
 
-  @Property({ nullable: true, length: 36 })
+  @Property({ nullable: true, length: 36, fieldName: 'decl_b_id' })
   declBId?: string;
 
   @Property()
@@ -112,10 +113,10 @@ export class MatchQueueItem {
   @Property({ nullable: true, length: 2 })
   wilayaB?: string;
 
-  @Property({ nullable: true })
+  @Property({ nullable: true, fieldName: 'assure_a_identite' })
   assureAIdentite?: string;
 
-  @Property({ nullable: true })
+  @Property({ nullable: true, fieldName: 'assure_b_identite' })
   assureBIdentite?: string;
 
   @Property({ nullable: true })
