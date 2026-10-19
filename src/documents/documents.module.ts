@@ -19,7 +19,6 @@ import { ANTIVIRUS_SCANNER, AntivirusFactory, AntivirusScanner } from './antivir
 import { assertDocumentContent, safeOriginalFilename } from './content-validation';
 import { DocumentViewDto, ListDocumentsQueryDto, UploadDocumentDto } from './dto/document.dto';
 import { Document } from './entities/document.entity';
-import { StrictQuery } from '../claims/dto/strict-query.pipe';
 import { STORAGE_PROVIDER } from './documents.tokens';
 import { LocalFsStorageProvider } from './providers/local-fs.provider';
 import { S3StorageProvider } from './providers/s3.provider';
@@ -299,7 +298,6 @@ class DocumentsController {
     summary:
       'QUESTIONS_UAR.md §9 — pièces attachées à un dossier (recoursId OU commissionCaseId, exactement un des deux) : 404 si le dossier n’existe pas, 403 si hors périmètre compagnie de l’appelant.',
   })
-  @StrictQuery(ListDocumentsQueryDto)
   listForDossier(@Query() query: ListDocumentsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listForDossier(query, user);
   }

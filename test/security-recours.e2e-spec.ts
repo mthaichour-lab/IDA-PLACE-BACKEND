@@ -98,9 +98,12 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
     it('?companyId[$ne]=X n’atteint jamais le filtre ORM ; un companyId mal formé est refusé (400)', async () => {
       const companies = await http().get('/api/v1/referential/companies').query({ pageSize: 100 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
       const caat = companies.body.items.find((c: { code: string }) => c.code === 'CAAT');
-      // L'opérateur injecté n'élargit jamais le périmètre d'un rôle compagnie : seules SES agences sont renvoyées.
-      const injected = await http().get('/api/v1/referential/agencies').query(`companyId[$ne]=${caat.id}&pageSize=100`).set('x-dev-user', corr('CAAT')).expect(200);
-      expect(injected.body.items.every((a: { companyId: string }) => a.companyId === caat.id)).toBe(true);
+      // L'opérateur injecté n'atteint jamais le service : clé de requête non déclarée → 400 (intercepteur strict global, phase 2).
+      const injected = await http().get('/api/v1/referential/agencies').query(`companyId[$ne]=${caat.id}&pageSize=100`).set('x-dev-user', corr('CAAT')).expect(400);
+      expect(injected.body.code).toBe('PARAMETRE_INCONNU');
+      // Sans opérateur, un rôle compagnie ne reçoit que SES agences.
+      const own = await http().get('/api/v1/referential/agencies').query({ pageSize: 100 }).set('x-dev-user', corr('CAAT')).expect(200);
+      expect(own.body.items.every((a: { companyId: string }) => a.companyId === caat.id)).toBe(true);
       await http().get('/api/v1/referential/agencies').query({ companyId: 'pas-un-uuid' }).set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
       await http().get('/api/v1/recours').query({ pageSize: 500 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(400);
     });

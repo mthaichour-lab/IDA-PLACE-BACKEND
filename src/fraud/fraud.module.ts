@@ -11,7 +11,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { FraudAction } from './entities/fraud-action.entity';
 import { FraudCase } from './entities/fraud-case.entity';
 import { FraudService } from './fraud.service';
-import { CompanyParamDto, StrictQuery } from '../claims/dto/strict-query.pipe';
+import { CompanyParamDto } from '../claims/dto/company-param.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 
@@ -40,7 +40,6 @@ class FraudController {
   // SEC-43 : lecture scopée par compagnie dans le service (partie au cas)
   @Authenticated()
   @ApiOperation({ summary: 'File des cas suspects (réel : doublons, e-constat réutilisé, récurrence véhicule, montants calibrés, incohérences A/B), triée par score desc, paginée (6/p) — B.7 : scopée par compagnie partie au cas' })
-  @StrictQuery(PaginationQueryDto)
   cases(@Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.cases(q.page, q.pageSize, user);
   }
@@ -51,7 +50,6 @@ class FraudController {
   @Get('actions')
   @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({ summary: 'Journal des actions suspectes de place (appariement manuel/déliage/reliage, transmissions tardives), paginé (6/p) — réservé aux rôles place (SEC-21)' })
-  @StrictQuery(PaginationQueryDto)
   actions(@Query() q: PaginationQueryDto) {
     return this.service.actions(q.page, q.pageSize);
   }

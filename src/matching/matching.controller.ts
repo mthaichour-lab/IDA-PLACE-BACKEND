@@ -6,7 +6,6 @@ import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { MatchDecisionDto, MatchQueueQueryDto } from './dto/matching.dto';
 import { MatchingService } from './matching.service';
-import { StrictQuery } from '../claims/dto/strict-query.pipe';
 
 /** MatchingModule — écran 2 "Confrontation & matching" (B.7 : scoping tenant réel, voir matching.service.ts). */
 @ApiTags('matching')
@@ -19,7 +18,6 @@ export class MatchingController {
   // SEC-43 : lecture scopée par compagnie dans le service (paires dont la compagnie est partie)
   @Authenticated()
   @ApiOperation({ summary: 'File de confrontation A/B, paginée (6/p), filtrable (Tous/Auto/À confirmer/Non appariés) (B.7 : scopée par compagnie)' })
-  @StrictQuery(MatchQueueQueryDto)
   queue(@Query() q: MatchQueueQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.queue(q, user);
   }

@@ -145,11 +145,10 @@ describe('Socle sécurité — configuration de développement', () => {
       await http().get('/api/v1/referential/companies').query({ pageSize: 100000 }).set(DEV('OPERATEUR_PLACE')).expect(400);
     });
 
-    it('query parser "simple" : ?companyId[$ne]=X n’est pas un opérateur de filtre', async () => {
+    it('query parser "simple" : ?companyId[$ne]=X n’est pas un opérateur de filtre, et la clé est refusée (400)', async () => {
       expect(app.getHttpAdapter().getInstance().get('query parser')).toBe('simple');
-      const all = await http().get('/api/v1/referential/agencies').query({ pageSize: 100 }).set(DEV('OPERATEUR_PLACE')).expect(200);
-      const injected = await http().get('/api/v1/referential/agencies?pageSize=100&companyId[$ne]=X').set(DEV('OPERATEUR_PLACE')).expect(200);
-      expect(injected.body.total).toBe(all.body.total);
+      const injected = await http().get('/api/v1/referential/agencies?pageSize=100&companyId[$ne]=X').set(DEV('OPERATEUR_PLACE')).expect(400);
+      expect(injected.body).toMatchObject({ code: 'PARAMETRE_INCONNU', details: { parametres: ['companyId[$ne]'] } });
     });
 
     it('JSON invalide : 400 normalisé (et non 500), sans écho du contenu', async () => {

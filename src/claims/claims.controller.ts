@@ -1,5 +1,4 @@
 import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { StrictQuery } from './dto/strict-query.pipe';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -59,7 +58,6 @@ export class ClaimsController {
       },
     }),
   )
-  @StrictQuery(ImportClaimsQueryDto)
   async importFile(
     @Query() q: ImportClaimsQueryDto,
     @CurrentUser() user: AuthenticatedUser,
@@ -76,7 +74,6 @@ export class ClaimsController {
   // SEC-43 : lecture scopée par compagnie dans le service (B.7)
   @Authenticated()
   @ApiOperation({ summary: 'Liste paginée des dossiers (6/p), filtrable par compagnie/état — scopée par compagnie (B.7)' })
-  @StrictQuery(ListClaimsQueryDto)
   list(@Query() q: ListClaimsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.list(q, user);
   }

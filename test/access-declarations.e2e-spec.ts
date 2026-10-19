@@ -8,6 +8,7 @@ import { AppModule } from '../src/app.module';
 import { AUTHENTICATED_KEY, IS_PUBLIC_KEY } from '../src/common/decorators/access.decorator';
 import { PRIVILEGES_KEY } from '../src/common/decorators/privileges.decorator';
 import { ROLES_KEY } from '../src/common/decorators/roles.decorator';
+import { describeQueryDeclaration } from '../src/common/validation/strict-query';
 import { createTestApp } from './utils/test-app';
 
 /**
@@ -29,6 +30,9 @@ interface RouteInfo {
   roles: string[];
   authenticated: boolean;
   isPublic: boolean;
+  /** SEC-44 : clés de query string acceptées (intercepteur strict global). */
+  queryKeys: string[];
+  untypedWholeQuery: boolean;
 }
 
 function joinPath(...parts: (string | string[] | undefined)[]): string {
@@ -54,6 +58,7 @@ function discoverRoutes(moduleRef: TestingModule): RouteInfo[] {
       if (path === undefined) continue;
       const method = RequestMethod[Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod];
       const targets = [handler, ctrl];
+      const query = describeQueryDeclaration(ctrl, handler, reflector);
       routes.push({
         route: `${method} ${joinPath(prefix, path)}`,
         method,
@@ -61,6 +66,8 @@ function discoverRoutes(moduleRef: TestingModule): RouteInfo[] {
         roles: reflector.getAllAndOverride<string[]>(ROLES_KEY, targets) ?? [],
         authenticated: reflector.getAllAndOverride<boolean>(AUTHENTICATED_KEY, targets) === true,
         isPublic: reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, targets) === true,
+        queryKeys: query.keys.sort(),
+        untypedWholeQuery: query.untypedWholeQuery,
       });
     }
   }
@@ -177,6 +184,60 @@ describe('SEC-43 — déclarations d’accès de toutes les routes (découverte)
   });
 });
 
+/**
+ * SEC-44 — clés de requête envoyées par le frontend (relevé en lecture seule
+ * de `ida-place-frontend/src`, appels `apiGet`/`fetchAllPages`, 2026-10-20).
+ * Chacune doit être déclarée par la route, sinon l'intercepteur strict la
+ * refuserait (400).
+ */
+const FRONTEND_QUERY_KEYS: Record<string, string[]> = {
+  'GET /admin/users': ['page', 'pageSize'],
+  'GET /commission/cases': ['page', 'pageSize'],
+  'GET /commission/membership-requests': ['page', 'pageSize', 'state', 'type'],
+  'GET /commission/sanctions': ['page', 'pageSize'],
+  'GET /documents': ['commissionCaseId', 'recoursId'],
+  'GET /fraud/actions': ['page', 'pageSize'],
+  'GET /fraud/cases': ['page', 'pageSize'],
+  'GET /ledger': ['from', 'page', 'pageSize', 'to'],
+  'GET /matching/queue': ['filter', 'page', 'pageSize'],
+  'GET /monitoring/companies/:code/journeys': ['page', 'pageSize'],
+  'GET /recours': ['filter', 'page', 'pageSize', 'q'],
+  'GET /referential/agencies': ['page', 'pageSize'],
+  'GET /referential/calendar': ['from', 'to'],
+  'GET /referential/companies': ['page', 'pageSize'],
+  'GET /referential/experts': ['page', 'pageSize'],
+  'GET /referential/mobile-holidays': ['year'],
+  'GET /stats/wilayas': ['year'],
+};
+
+describe('SEC-44 — paramètres de requête stricts sur toutes les routes', () => {
+  let moduleRef: TestingModule;
+  let routes: RouteInfo[];
+
+  beforeAll(async () => {
+    moduleRef = await Test.createTestingModule({ imports: [AppModule, DiscoveryModule] }).compile();
+    routes = discoverRoutes(moduleRef);
+  });
+
+  afterAll(async () => {
+    await moduleRef.close();
+  });
+
+  it('tout @Query() entier est typé par un DTO (clés déductibles)', () => {
+    expect(routes.filter((r) => r.untypedWholeQuery).map((r) => r.route)).toEqual([]);
+  });
+
+  it('les clés envoyées par le frontend sont toutes déclarées', () => {
+    const byRoute = new Map(routes.map((r) => [r.route, r.queryKeys]));
+    const missing = Object.entries(FRONTEND_QUERY_KEYS).flatMap(([route, keys]) => {
+      const allowed = byRoute.get(route);
+      if (!allowed) return [`${route} : route introuvable`];
+      return keys.filter((k) => !allowed.includes(k)).map((k) => `${route} : ${k}`);
+    });
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('SEC-43 — gardes globales (comportement HTTP)', () => {
   let app: NestExpressApplication;
   const http = () => request(app.getHttpServer());
@@ -197,6 +258,13 @@ describe('SEC-43 — gardes globales (comportement HTTP)', () => {
     await http().get('/api/v1/stats/summary').expect(401);
     await http().get('/api/v1/referential/wilayas').expect(401);
     await http().get('/api/v1/me').expect(401);
+  });
+
+  it('SEC-44 : clé de requête inconnue → 400 PARAMETRE_INCONNU, y compris sur une route sans @Query', async () => {
+    const unknown = await http().get('/api/v1/referential/companies?companyId[$ne]=X').set({ 'x-dev-user': 'CORRESPONDANT_IDA' }).expect(400);
+    expect(unknown.body.code).toBe('PARAMETRE_INCONNU');
+    await http().get('/api/v1/stats/summary?debug=1').set({ 'x-dev-user': 'OPERATEUR_PLACE' }).expect(400);
+    await http().get('/api/v1/referential/companies?page=1&pageSize=6').set({ 'x-dev-user': 'CORRESPONDANT_IDA' }).expect(200);
   });
 
   it('le 403 de privilège ne divulgue pas les privilèges détenus', async () => {

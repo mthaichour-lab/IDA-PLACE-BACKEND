@@ -5,7 +5,7 @@ import { Authenticated } from '../common/decorators/access.decorator';
 import { ClaimsModule } from '../claims/claims.module';
 import { RecoursModule } from '../recours/recours.module';
 import { StatsService } from './stats.service';
-import { StrictQuery, StatsWilayasQueryDto } from '../claims/dto/strict-query.pipe';
+import { StatsWilayasQueryDto } from './dto/stats-query.dto';
 
 /**
  * StatsModule — écran 11 "Statistiques de la place", B.2. Agrégation RÉELLE
@@ -26,7 +26,6 @@ class StatsController {
     summary:
       'Carte en tuiles des 69 wilayas (grille 13×8) — déclarations/montants réels, `per100k` seulement si une population valide est saisie (sinon null) ; `year` optionnel = année étudiée',
   })
-  @StrictQuery(StatsWilayasQueryDto)
   wilayas(@Query() q: StatsWilayasQueryDto) {
     return this.service.wilayas(q.year);
   }

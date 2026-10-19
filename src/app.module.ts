@@ -2,11 +2,12 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { buildMikroOrmConfig } from './common/config/database.config';
 import { AuthGuard } from './common/guards/auth.guard';
 import { PrivilegesGuard } from './common/guards/privileges.guard';
+import { StrictQueryInterceptor } from './common/validation/strict-query';
 import { AdherentsModule } from './adherents/adherents.module';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
@@ -48,6 +49,9 @@ import { StatsModule } from './stats/stats.module';
  *    après le throttler : toute route est authentifiée et doit déclarer son
  *    accès (`@Privileges`, `@Roles`, `@Authenticated` ou `@Public`) — fermé
  *    par défaut, même pour un contrôleur qui oublierait `@UseGuards` ;
+ *  - `StrictQueryInterceptor` GLOBAL (SEC-44) : toute clé de query string non
+ *    déclarée par la route (`@Query()` typé par un DTO, `@Query('cle')`) est
+ *    refusée en 400 `PARAMETRE_INCONNU`, avant la liste blanche du pipe ;
  *  - `HealthModule` : sondes `/health/live` et `/health/ready` (SEC-08).
  */
 @Module({
@@ -97,6 +101,7 @@ import { StatsModule } from './stats/stats.module';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: PrivilegesGuard },
+    { provide: APP_INTERCEPTOR, useClass: StrictQueryInterceptor },
   ],
 })
 export class AppModule {}
