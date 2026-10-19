@@ -1,8 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
+import { MAX_TECHNICAL_AMOUNT_DA } from '../money';
 import { RECOURS_ACTIONS, RECOURS_STATES } from '../recours.rules';
+
+/** Code compagnie : 2 à 4 caractères majuscules/chiffres (colonnes `varchar(4)` ; codes réels de 3 lettres comme SAA ou GAM). */
+export const COMPANY_CODE_PATTERN = /^[A-Z0-9]{2,4}$/;
+export const COMPANY_CODE_MESSAGE = 'code compagnie : 2 à 4 caractères majuscules ou chiffres';
+/** Taille de page maximale (règle « Volumétrie » du plan de remédiation). */
+export const MAX_PAGE_SIZE = 100;
 
 /** Filtres d'onglets écran 4 — "tous" en plus des états réels (RECOURS_STATES). */
 export const RECOURS_FILTERS = ['TOUS', ...RECOURS_STATES] as const;
@@ -17,10 +24,11 @@ export class ListRecoursQueryDto {
   @ApiPropertyOptional({ description: 'Recherche libre : n° recours (id), n° dossier (claimId), compagnie (from/to)' })
   @IsOptional()
   @IsString()
+  @MaxLength(64)
   q?: string;
 
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100_000) page: number = 1;
+  @ApiPropertyOptional({ maximum: MAX_PAGE_SIZE }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) pageSize: number = DEFAULT_PAGE_SIZE;
 }
 
 export class RecoursOppositionDto {
@@ -75,21 +83,28 @@ export class CreateRecoursDto {
   @ApiProperty({ description: 'Id du dossier (Claim) à l’origine du recours' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(36)
   claimId!: string;
 
   @ApiProperty({ description: 'Compagnie demanderesse (code)' })
   @IsString()
-  @IsNotEmpty()
+  @Matches(COMPANY_CODE_PATTERN, { message: COMPANY_CODE_MESSAGE })
   from!: string;
 
   @ApiProperty({ description: 'Compagnie adverse (code)' })
   @IsString()
-  @IsNotEmpty()
+  @Matches(COMPANY_CODE_PATTERN, { message: COMPANY_CODE_MESSAGE })
   to!: string;
 
-  @ApiProperty()
-  @IsNumber()
-  @Min(0)
+  /**
+   * SEC-06 : nombre fini, deux décimales au plus, strictement positif. Le
+   * service borne en plus par le montant du dossier (expertisé, sinon
+   * estimé) et par le plafond conventionnel (`ELIGIBILITY_MAX_AMOUNT_DA`).
+   */
+  @ApiProperty({ description: 'Montant en DA (2 décimales au plus) — ≤ montant du dossier et ≤ plafond conventionnel' })
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(MAX_TECHNICAL_AMOUNT_DA)
   amount!: number;
 }
 
@@ -101,13 +116,30 @@ export class RecoursTransitionDto {
   @ApiPropertyOptional({ description: 'Motif (opposition, contestation, décision de commission...)' })
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   reason?: string;
 
   @ApiPropertyOptional({ description: "Action « opposer » uniquement : code du motif d'opposition (400 si inconnu ou interdit)" })
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(64)
   reasonCode?: string;
+}
+
+/** SEC-17 — une ligne d'historique (route d'audit réservée aux rôles place). */
+export class RecoursHistoryEntryDto {
+  @ApiProperty() at!: string;
+  @ApiProperty() action!: string;
+  @ApiPropertyOptional() fromState?: string;
+  @ApiProperty() toState!: string;
+  @ApiProperty({ description: 'Identifiant stable de l’auteur (jamais le nom affiché)' }) actorId!: string;
+  @ApiProperty() actorRole!: string;
+  @ApiPropertyOptional({ description: 'Compagnie partie au nom de laquelle l’acte est accompli' }) onBehalfOf?: string;
+  @ApiPropertyOptional() reason?: string;
+  @ApiPropertyOptional() resolutionKind?: string;
+  @ApiPropertyOptional() commissionCaseId?: string;
+  @ApiPropertyOptional() pvRef?: string;
 }
 
 export class RecoursTransitionResultDto {

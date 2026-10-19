@@ -20,7 +20,7 @@ export class RecoursOpeningController {
   @Privileges('insert')
   @ApiOperation({
     summary:
-      "Enregistrement d'un recours (Annexe 2) : dossier existant, de l'assureur direct (`from`), contre la partie tierce déclarée (`to`), éligible IDA, sans recours antérieur (400/409 sinon ; B.7 : `from` = compagnie de l'appelant, sauf rôle place)",
+      "Enregistrement d'un recours (Annexe 2) : dossier existant, de l'assureur direct (`from`), contre la partie tierce déclarée (`to`), éligible IDA, sans recours antérieur, montant ≤ montant du dossier (expertisé, sinon estimé) et ≤ plafond conventionnel, 2 décimales au plus (400/409 sinon ; B.7 : `from` = compagnie de l'appelant, sauf rôle place)",
   })
   create(@Body() dto: CreateRecoursDto, @CurrentUser() user: AuthenticatedUser) {
     return this.claims.openRecours(dto, user);

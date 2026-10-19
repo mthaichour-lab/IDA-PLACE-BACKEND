@@ -1,8 +1,14 @@
+import { toCents } from '../recours/money';
 import {
+  canonicalJson,
   computeBilateralMatrix,
   computeBilateralNetPositions,
+  computeDirectionalPairs,
   computeMultilateralNetPositions,
   isIsoDateInMonth,
+  isPeriodElapsed,
+  lastDayOfMonth,
+  lastDayOfQuarter,
   isIsoDateInQuarter,
   parsePeriodMonth,
   parsePeriodQuarter,
@@ -156,5 +162,75 @@ describe('computeMultilateralNetPositions — compensation multilatérale (B.2/B
 
   it('matrice vide : aucune compagnie, aucune position', () => {
     expect(computeMultilateralNetPositions({})).toEqual([]);
+  });
+});
+
+describe('SEC-34 — compensation en centimes entiers (propriétés)', () => {
+  /** Générateur pseudo-aléatoire déterministe (LCG) : le test est reproductible. */
+  function rng(seed: number) {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 2 ** 32;
+    };
+  }
+  const companies = ['CAAT', 'SAA', 'CASH', 'ALLI', 'GAM', 'CAAR'];
+
+  it('pour 200 jeux aléatoires, la somme des positions nettes multilatérales vaut EXACTEMENT 0 centime et chaque net est exact', () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const random = rng(seed);
+      const rows = Array.from({ length: 1 + Math.floor(random() * 60) }, () => {
+        const from = companies[Math.floor(random() * companies.length)];
+        let to = companies[Math.floor(random() * companies.length)];
+        if (to === from) to = companies[(companies.indexOf(from) + 1) % companies.length];
+        return { from, to, amount: Math.floor(random() * 30_000_000) / 100 }; // jusqu'à 300 000,00 DA, 2 décimales
+      });
+      const matrix = computeBilateralMatrix(rows);
+      const net = computeMultilateralNetPositions(matrix);
+      expect(net.reduce((sum, n) => sum + toCents(n.net), 0)).toBe(0);
+      for (const n of net) {
+        const expected = rows.reduce((acc, r) => acc + (r.to === n.code ? toCents(r.amount) : 0) - (r.from === n.code ? toCents(r.amount) : 0), 0);
+        expect(toCents(n.net)).toBe(expected);
+        expect(Number.isInteger(Math.round(n.net * 100))).toBe(true);
+      }
+      // Netting bilatéral : chaque position est positive, à deux décimales.
+      for (const p of computeBilateralNetPositions(matrix)) {
+        expect(p.amount).toBeGreaterThan(0);
+        expect(Math.abs(p.amount * 100 - Math.round(p.amount * 100))).toBeLessThan(1e-6);
+      }
+    }
+  });
+
+  it('aucun résidu flottant : 0,10 + 0,20 contre 0,30 donne une position nulle, pas 5,5e-17', () => {
+    const matrix = computeBilateralMatrix([
+      { from: 'CAAT', to: 'SAA', amount: 0.1 },
+      { from: 'CAAT', to: 'SAA', amount: 0.2 },
+      { from: 'SAA', to: 'CAAT', amount: 0.3 },
+    ]);
+    expect(matrix.CAAT.SAA).toBe(0.3);
+    expect(computeBilateralNetPositions(matrix)).toEqual([]);
+    expect(computeMultilateralNetPositions(matrix).map((n) => n.net)).toEqual([0, 0]);
+  });
+
+  it('les paires de l’Annexe 7 sont sommées au centime près', () => {
+    const pairs = computeDirectionalPairs([
+      { from: 'CAAT', to: 'SAA', amount: 0.1 },
+      { from: 'CAAT', to: 'SAA', amount: 0.2 },
+    ]);
+    expect(pairs).toEqual([{ from: 'CAAT', to: 'SAA', count: 2, totalAmount: 0.3 }]);
+  });
+});
+
+describe('SEC-19 — périodes échues et instantané canonique', () => {
+  it('une période n’est échue qu’après son dernier jour', () => {
+    expect(lastDayOfMonth({ year: 2026, month: 2 })).toBe('2026-02-28');
+    expect(lastDayOfQuarter({ year: 2026, quarter: 4 })).toBe('2026-12-31');
+    expect(isPeriodElapsed('2026-03-31', new Date('2026-03-31T23:59:00Z'))).toBe(false);
+    expect(isPeriodElapsed('2026-03-31', new Date('2026-04-01T00:00:00Z'))).toBe(true);
+  });
+
+  it('la sérialisation canonique ne dépend pas de l’ordre des clés', () => {
+    expect(canonicalJson({ b: 1, a: { d: [1, 2], c: 'x' } })).toBe(canonicalJson({ a: { c: 'x', d: [1, 2] }, b: 1 }));
+    expect(canonicalJson({ a: 1, b: undefined })).toBe('{"a":1}');
   });
 });

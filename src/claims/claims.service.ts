@@ -178,10 +178,23 @@ export class ClaimsService {
     if (claim.eligibilityVerdict !== 'ELIGIBLE_IDA') {
       throw new BadRequestException({ code: 'DOSSIER_HORS_IDA', message: 'Dossier hors IDA : pas de recours conventionnel dans le cadre de la convention.' });
     }
+    // SEC-06 : le recours ne peut pas réclamer plus que le dossier — montant
+    // expertisé, à défaut estimé (le plafond conventionnel et le format du
+    // montant sont contrôlés par RecoursService.create).
+    const claimAmount = claim.expertAmount ?? claim.estimatedAmount;
+    if (typeof claimAmount !== 'number' || !Number.isFinite(claimAmount) || claimAmount <= 0) {
+      throw new BadRequestException({ code: 'MONTANT_DOSSIER_INCONNU', message: 'Le dossier ne porte aucun montant (expertisé ou estimé) : recours impossible.' });
+    }
+    if (dto.amount > claimAmount) {
+      throw new BadRequestException({ code: 'RECOURS_MONTANT_SUPERIEUR_DOSSIER', message: `Le montant du recours dépasse celui du dossier (${claimAmount} DA).` });
+    }
     // Audit sécurité 2026-10-19 : une compagnie qui n'est plus ACTIF ne peut
     // plus ouvrir de NOUVEAU recours — règle centralisée (voir aussi
     // MatchingService.decide, ClaimsService.importFile).
     await this.adherents.assertCompanyActiveFor(dto.from, claim.accidentDate);
+    // Contrôle anticipé (message clair) ; l'unicité réelle, y compris sous
+    // requêtes concurrentes, est garantie par RecoursService.create (SEC-20 :
+    // contrainte UNIQUE(claim_id) en base, 409 RECOURS_EXISTANT).
     if ((await this.recours.listAll()).some((r) => r.claimId === claim.id)) {
       throw new ConflictException({ code: 'RECOURS_EXISTANT', message: 'Un recours existe déjà pour ce dossier.' });
     }

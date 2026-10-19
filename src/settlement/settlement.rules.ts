@@ -3,7 +3,15 @@
  * "Compensation trimestrielle". Fonctions PURES (aucune I/O), testées sans
  * Nest ni base de données (même esprit que `recours.rules.ts`/
  * `matching.scoring.ts`).
+ *
+ * SEC-34 : toute l'arithmétique (matrice, netting bilatéral, compensation
+ * multilatérale, paires de l'Annexe 7) se fait en CENTIMES ENTIERS ; les
+ * montants en DA ne sont reconvertis qu'en sortie. La somme des positions
+ * nettes multilatérales vaut donc exactement 0 centime, sans résidu
+ * flottant (avant : `double precision` et sommes flottantes, résidus du type
+ * 1e-13 et fausses positions non nulles).
  */
+import { fromCents, toCents } from '../recours/money';
 
 export interface PeriodMonth {
   year: number;
@@ -58,12 +66,23 @@ export interface SettledRecoursLike {
 export type BilateralMatrix = Record<string, Record<string, number>>;
 
 export function computeBilateralMatrix(rows: SettledRecoursLike[]): BilateralMatrix {
-  const matrix: BilateralMatrix = {};
+  const cents: Record<string, Record<string, number>> = {};
   for (const r of rows) {
-    if (!matrix[r.from]) matrix[r.from] = {};
-    matrix[r.from][r.to] = (matrix[r.from][r.to] ?? 0) + r.amount;
+    if (!cents[r.from]) cents[r.from] = {};
+    cents[r.from][r.to] = (cents[r.from][r.to] ?? 0) + toCents(r.amount);
+  }
+  const matrix: BilateralMatrix = {};
+  for (const from of Object.keys(cents)) {
+    matrix[from] = {};
+    for (const to of Object.keys(cents[from])) matrix[from][to] = fromCents(cents[from][to]);
   }
   return matrix;
+}
+
+/** Montant de la matrice en centimes (0 si absent). */
+function cell(matrix: BilateralMatrix, a: string, b: string): number {
+  const v = matrix[a]?.[b];
+  return v === undefined ? 0 : toCents(v);
 }
 
 function allCompanies(matrix: BilateralMatrix): string[] {
@@ -98,11 +117,9 @@ export function computeBilateralNetPositions(matrix: BilateralMatrix): Bilateral
       const key = [a, b].sort().join('|');
       if (seen.has(key)) continue;
       seen.add(key);
-      const ab = matrix[a]?.[b] ?? 0;
-      const ba = matrix[b]?.[a] ?? 0;
-      const net = ab - ba;
-      if (net > 0) result.push({ from: a, to: b, amount: net });
-      else if (net < 0) result.push({ from: b, to: a, amount: -net });
+      const net = cell(matrix, a, b) - cell(matrix, b, a);
+      if (net > 0) result.push({ from: a, to: b, amount: fromCents(net) });
+      else if (net < 0) result.push({ from: b, to: a, amount: fromCents(-net) });
       // net === 0 : position bilatérale intégralement compensée, aucune ligne.
     }
   }
@@ -132,10 +149,10 @@ export function computeMultilateralNetPositions(matrix: BilateralMatrix): Compan
     let outgoing = 0;
     for (const other of companies) {
       if (other === code) continue;
-      incoming += matrix[other]?.[code] ?? 0;
-      outgoing += matrix[code]?.[other] ?? 0;
+      incoming += cell(matrix, other, code);
+      outgoing += cell(matrix, code, other);
     }
-    return { code, net: incoming - outgoing };
+    return { code, net: fromCents(incoming - outgoing) };
   });
 }
 
@@ -160,10 +177,10 @@ export function computeDirectionalPairs(rows: SettledRecoursLike[]): Directional
     const key = `${r.from}\u0000${r.to}`;
     const bucket = map.get(key) ?? { from: r.from, to: r.to, count: 0, totalAmount: 0 };
     bucket.count += 1;
-    bucket.totalAmount += r.amount;
+    bucket.totalAmount += toCents(r.amount);
     map.set(key, bucket);
   }
-  return Array.from(map.values());
+  return Array.from(map.values()).map((p) => ({ ...p, totalAmount: fromCents(p.totalAmount) }));
 }
 
 /**
@@ -180,4 +197,31 @@ export function computeInsertionDeadline(period: PeriodMonth): string {
   const nextMonth = period.month === 12 ? 1 : period.month + 1;
   const nextYear = period.month === 12 ? period.year + 1 : period.year;
   return `${nextYear}-${String(nextMonth).padStart(2, '0')}-05`;
+}
+
+/** Dernier jour (AAAA-MM-JJ, UTC) d'une période mensuelle. */
+export function lastDayOfMonth(period: PeriodMonth): string {
+  return new Date(Date.UTC(period.year, period.month, 0)).toISOString().slice(0, 10);
+}
+
+/** Dernier jour (AAAA-MM-JJ, UTC) d'un trimestre. */
+export function lastDayOfQuarter(period: PeriodQuarter): string {
+  return new Date(Date.UTC(period.year, period.quarter * 3, 0)).toISOString().slice(0, 10);
+}
+
+/** SEC-19 : une période n'est clôturable qu'une fois ÉCHUE (son dernier jour strictement passé). */
+export function isPeriodElapsed(lastDay: string, now: Date): boolean {
+  return now.toISOString().slice(0, 10) > lastDay;
+}
+
+/** Sérialisation canonique (clés triées, récursive) — base du hachage d'un instantané de clôture. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
