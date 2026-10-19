@@ -161,7 +161,11 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     expect(list.items[0].state).toBe('A_APPARIER');
 
     // Événement temps réel émis après import (B.12).
-    expect(emitEvent).toHaveBeenCalledWith('claim.ingested', expect.objectContaining({ fileName: 'import.csv', eligibleCount: 1 }));
+    // SEC-07 : place + compagnie déclarante uniquement, compteurs sans nom de fichier ni donnée de dossier.
+    const [, wsPayload, opts] = emitEvent.mock.calls.find(([event]) => event === 'claim.ingested')!;
+    expect(wsPayload).toEqual({ company: 'CAAT', totalRows: 1, eligibleCount: 1, ineligibleCount: 0, rejectedCount: 0, importedAt: expect.any(String) });
+    expect(opts.rooms).toEqual(['tenant:place', 'tenant:CAAT']);
+    expect(opts.internalPayload).toMatchObject({ fileName: 'import.csv', claimIds: [list.items[0].id] });
   });
 
   it('marque HORS_IDA un dossier à 1 véhicule et conserve le motif Art. 4', async () => {

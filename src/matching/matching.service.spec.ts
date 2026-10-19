@@ -165,3 +165,49 @@ describe('MatchingService — SEC-03 (seuil, compagnie désignée, masquage)', (
     expect(detail.masked).toBeUndefined();
   });
 });
+
+describe('MatchingService — SEC-07 (diffusion temps réel ciblée et minimale)', () => {
+  it('une décision ne part qu’aux salons de la place et des deux parties, sans donnée nominative ; le détail reste interne', async () => {
+    const emit = jest.fn();
+    const to = jest.fn(() => ({ emit }));
+    const gateway = new RealtimeGateway({ resolve: async () => null });
+    gateway.server = { to } as never;
+    const internal = jest.fn();
+    gateway.onEvent('match.updated', internal);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MatchingService,
+        { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        { provide: RealtimeGateway, useValue: gateway },
+        { provide: AdherentsService, useValue: { publishedBaremeCases: async () => [], assertCompanyActiveFor: jest.fn() } },
+      ],
+    }).compile();
+    const service = moduleRef.get(MatchingService);
+    const a: ClaimMatchInput = { ...declA, id: 'rt-a', numEconstat: 'EC-RT', assureIdentite: 'Nom A' };
+    const b: ClaimMatchInput = { ...declB, id: 'rt-b', numEconstat: 'EC-RT', assureIdentite: 'Nom B' };
+    await service.ingestClaims([a, b], { byKeys: async () => [a, b], all: async () => [a, b] });
+
+    // Ingestion : seulement CAAT/SAA (+ place), sans l'id du dossier de la contrepartie.
+    expect(to).toHaveBeenCalledWith(['tenant:place', 'tenant:CAAT', 'tenant:SAA']);
+    expect(emit).toHaveBeenCalledWith('match.updated', { claimId: 'rt-a', matched: true });
+
+    const { items } = await service.queue({ page: 1, pageSize: 100 } as never);
+    const row = items.find((i) => i.refA === 'EC-RT' && i.companyA === 'CAAT')!;
+    to.mockClear();
+    emit.mockClear();
+    internal.mockClear();
+    await service.decide(row.id, { action: 'confirm' }, 'Agent Opérateur', operateur);
+
+    for (const call of to.mock.calls as unknown as string[][][]) expect([...call[0]].sort()).toEqual(['tenant:CAAT', 'tenant:SAA', 'tenant:place']);
+    const wsPayloads = emit.mock.calls.map(([, p]) => p);
+    expect(wsPayloads).toEqual([
+      { id: row.id, status: 'CONFIRME_MANUEL', level: 'AUTO', decidedAt: expect.any(String) },
+      expect.objectContaining({ status: 'CONFIRME_MANUEL' }),
+    ]);
+    expect(JSON.stringify(wsPayloads)).not.toMatch(/Nom A|Nom B|Agent Opérateur|111|222/);
+    // FraudModule (journal des actions) reçoit toujours la décision complète.
+    expect(internal).toHaveBeenCalledWith(expect.objectContaining({ decision: expect.objectContaining({ decidedBy: 'Agent Opérateur', status: 'CONFIRME_MANUEL' }) }));
+  });
+});

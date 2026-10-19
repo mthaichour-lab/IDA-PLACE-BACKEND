@@ -12,7 +12,7 @@ import { EligibilityService } from '../eligibility/eligibility.service';
 import { MatchingService } from '../matching/matching.service';
 import { matchKeysFor } from '../matching/matching.selection';
 import { ClaimMatchInput } from '../matching/matching.types';
-import { RealtimeGateway } from '../realtime/realtime.module';
+import { PLACE_ROOM, RealtimeGateway, tenantRoom } from '../realtime/realtime.module';
 import { CreateRecoursDto, RecoursViewDto } from '../recours/dto/recours.dto';
 import { RecoursService } from '../recours/recours.service';
 import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
@@ -478,13 +478,21 @@ export class ClaimsService {
       warnings,
     };
 
-    // B.12 — événement temps réel après tout import réussi.
-    this.realtime.emitEvent('claim.ingested', {
-      fileName: report.fileName,
+    // B.12 — événement temps réel après tout import réussi. SEC-07 : diffusé
+    // à la place et à la seule compagnie déclarante, payload de compteurs
+    // (aucun nom de fichier ni donnée de dossier) ; les abonnés internes
+    // reçoivent en plus les id des dossiers créés.
+    const counters = {
+      company,
       totalRows: report.totalRows,
       eligibleCount: report.eligibleCount,
       ineligibleCount: report.ineligibleCount,
+      rejectedCount: report.rejectedCount,
       importedAt: report.importedAt,
+    };
+    this.realtime.emitEvent('claim.ingested', counters, {
+      rooms: [PLACE_ROOM, tenantRoom(company)],
+      internalPayload: { ...counters, fileName: report.fileName, claimIds: created.map((c) => c.id) },
     });
 
     return report;

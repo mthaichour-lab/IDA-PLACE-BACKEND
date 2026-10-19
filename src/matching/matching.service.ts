@@ -8,7 +8,7 @@ import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
-import { RealtimeGateway } from '../realtime/realtime.module';
+import { PLACE_ROOM, RealtimeGateway, tenantRoom } from '../realtime/realtime.module';
 import {
   MatchDecisionDto,
   MatchDecisionResultDto,
@@ -339,8 +339,11 @@ export class MatchingService {
       decidedBy,
     };
     // B.12 — événement temps réel après toute décision de confrontation.
-    this.realtime.emitEvent('match.updated', { item: result, decision });
-    if (mirrorResult) this.realtime.emitEvent('match.updated', { item: mirrorResult, decision: { ...decision, id: mirrorResult.id } });
+    // SEC-07 : salons des seules parties (+ place), payload minimal sans
+    // plaque, identité, police ni nom d'agent ; la ligne complète reste
+    // réservée aux abonnés internes (FraudModule, journal des actions).
+    this.emitMatchDecision(result, decision);
+    if (mirrorResult) this.emitMatchDecision(mirrorResult, { ...decision, id: mirrorResult.id });
     return decision;
   }
 
@@ -545,8 +548,27 @@ export class MatchingService {
       }
     }
 
+    // SEC-07 : seules les compagnies parties (+ place) sont notifiées ; l'id du
+    // dossier de la contrepartie ne part qu'aux abonnés internes.
     for (const { claim, matchedWith } of outcomes) {
-      this.realtime.emitEvent('match.updated', { claimId: claim.id, matchedWith: matchedWith?.id });
+      this.realtime.emitEvent(
+        'match.updated',
+        { claimId: claim.id, matched: !!matchedWith },
+        { rooms: partyRooms(claim.company, matchedWith?.company), internalPayload: { claimId: claim.id, matchedWith: matchedWith?.id } },
+      );
     }
   }
+
+  private emitMatchDecision(item: MatchQueueItemDto, decision: MatchDecisionResultDto): void {
+    this.realtime.emitEvent(
+      'match.updated',
+      { id: item.id, status: item.status, level: item.level, decidedAt: decision.decidedAt },
+      { rooms: partyRooms(item.companyA, item.companyB), internalPayload: { item, decision } },
+    );
+  }
+}
+
+/** SEC-07 : salon de place + salons des compagnies parties (sans doublon). */
+export function partyRooms(...companies: Array<string | undefined>): string[] {
+  return [PLACE_ROOM, ...new Set(companies.filter((c): c is string => !!c).map(tenantRoom))];
 }
