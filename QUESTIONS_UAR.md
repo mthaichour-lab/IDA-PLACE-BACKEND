@@ -15,111 +15,110 @@ sujet.
 
 ---
 
-## 1. Référentiel de place — taxonomie des motifs d'inéligibilité
+## 1. Référentiel de place — taxonomie des motifs d'inéligibilité — ✅ TRANCHÉ PAR LE PO EXPERT (2026-10-19), à valider UAR
 
-**Capture** : écran 12 "Référentiel de place", section Motifs — le guide
-illustré nomme une taxonomie "17 cas / RG-01".
+**Décision (PO expert métier, sur délégation du Product Owner réel)** :
+« 17 cas » ne désigne très probablement PAS une liste de motifs
+d'inéligibilité mais les **17 circonstances du constat amiable** (base du
+barème Art. 14). « RG-01 » n'est établi par aucun document fourni : la
+seule interdiction de motif documentée est « la non-déclaration ne peut
+jamais motiver une opposition » (Guide pédagogique UAR, diapo 10, Art. 10).
 
-**Pourquoi pas construit** : `GET /referential/motifs` existe déjà et
-renvoie le catalogue RÉEL des motifs tels qu'implémentés dans
-`eligibility.rules.ts` (Art. 3/4/5-6/13/19/28) — **11 motifs**, pas 17.
-Aucun des deux documents de référence ne liste les 17 cas de "RG-01" ni
-ne définit ce que "RG-01" désigne.
+**Construit** : `ConstatCircumstance` (17 libellés du constat européen,
+statut `STANDARD_A_CONFIRMER`), `OppositionMotif` (seul motif pré-rempli :
+« Non-déclaration du sinistre », interdit), `reasonCode` optionnel sur
+l'action `opposer` (400 si inconnu ou interdit). Écran 12 en 3 blocs
+(11 motifs du moteur / 17 circonstances / motifs d'opposition), « RG-01 »
+affiché nulle part ; écran 4 : liste de motifs ou attestation « pas une
+non-déclaration ».
 
-**Question** : La règle de gestion "RG-01" existe-t-elle dans un document
-non fourni (cahier des charges fonctionnel détaillé, référentiel
-réglementaire UAR) ? Si oui, quels sont les 6 motifs supplémentaires par
-rapport aux 11 déjà couverts, et quel article de la convention les fonde ?
-
-**Une fois répondu** : étendre `ELIGIBILITY_MOTIF_CATALOG`
-(`src/adherents/referential-reference-data.ts`) avec les motifs
-manquants — purement additif, aucune migration.
-
----
-
-## 2. Référentiel de place — calendrier des jours fériés mobiles
-
-**Capture** : écran 12, section Calendrier — jours ouvrés algériens.
-
-**Pourquoi pas construit** : `GET /referential/calendar` couvre déjà le
-week-end légal (vendredi-samedi) et les jours fériés à **date fixe**
-2026-2027 (`ALGERIA_FIXED_HOLIDAYS`,
-`src/adherents/referential-reference-data.ts`). Les jours fériés
-**mobiles** (calendrier hégirien : Aïd el-Fitr, Aïd el-Adha, Awal
-Muharram, Mawlid) dépendent de l'observation lunaire et ne peuvent pas
-être calculés par une formule fixe sans risque d'erreur d'un jour — les
-dates officielles sont publiées chaque année par décret.
-
-**Question** : Y a-t-il une source officielle (API, flux, publication
-annuelle de l'UAR) donnant les dates algériennes des jours fériés mobiles
-pour l'année en cours + N-1 ? À défaut, qui les saisit manuellement
-chaque année et à quelle fréquence ?
-
-**Une fois répondu** : ajouter une table `MobileHoliday` (année, date,
-libellé) saisie manuellement ou importée de la source trouvée — ne
-jamais calculer la date par un algorithme de conversion hégirien-grégorien
-seul (imprécis de ±1 jour selon l'observation locale).
+**Reste à valider par l'UAR** : existence d'un document « RG-01 » ;
+formulation et version arabe des 17 circonstances algériennes ; liste des
+motifs d'opposition admis. Remarque du Testeur : un motif seulement saisi
+(non validé) est déjà proposé et accepté — à trancher si seule une valeur
+`VALIDE_UAR` doit compter.
 
 ---
 
-## 3. Statistiques de la place — référentiel démographique par wilaya
+## 2. Référentiel de place — calendrier des jours fériés mobiles — ✅ TRANCHÉ PAR LE PO EXPERT (2026-10-19), à valider UAR
 
-**Capture** : écran 11 "Statistiques de la place" — carte en tuiles des
-69 wilayas avec mesure "Pour 100 000 habitants" en plus de
-"Déclarations"/"Montants".
+**Décision** : une ligne par date, saisie manuelle annuelle (`params`),
+`PREVISIONNEL` → `CONFIRME` (référence du communiqué/décret obligatoire).
+Les dates prévisionnelles comptent tout de suite dans les jours ouvrés.
+Aucune conversion hégirienne par algorithme, aucune date pré-remplie.
 
-**Pourquoi pas construit** : `stats.service.ts` calcule déjà
-déclarations/montants réels par wilaya. Aucun des deux documents de
-référence ne fournit de table population-par-wilaya, et en inventer une
-produirait un taux "pour 100k hab." complètement fabriqué.
+**Construit** : `MobileHoliday` + `GET /referential/calendar?from&to`
+(union fixes + mobiles avec statut). Les échéances sont recalculées à
+chaque lecture (pas de recalcul stocké). Le 5ᵉ jour ouvré de l'avancement
+du lot (§8) en tient compte. Ajouts : Yennayer (12 janvier, férié légal
+depuis 2018) ; fériés fixes générés pour toute année (ils étaient figés sur
+2026-2027 — trouvé par le Testeur).
 
-**Question** : Quelle source de référence utiliser pour la population par
-wilaya (recensement ONS le plus récent, projection annuelle) ? Doit-elle
-être figée (snapshot à une date) ou mise à jour périodiquement ?
-
-**Une fois répondu** : ajouter une table `WilayaPopulation` (code wilaya,
-année, population) seedée depuis la source, et un calcul additif dans
-`stats.service.ts` (`declarations / population * 100000`) — aucune
-migration des endpoints existants.
+**Reste à valider par l'UAR** : source officielle retenue et date limite de
+saisie annuelle (proposition : 1er décembre de N-1).
 
 ---
 
-## 4. Statistiques de la place — comparatif IRSAM
+## 3. Statistiques de la place — référentiel démographique par wilaya — ✅ MÉCANISME CONSTRUIT (2026-10-19), données à fournir
 
-**Capture** : écran 11 — comparatif "vs IRSAM" sur les délais de
-traitement.
+**Décision** : table `WilayaPopulation` (wilaya × année, source
+obligatoire), saisie ou import CSV tout-ou-rien. Jamais d'interpolation ni
+de projection ; une population antérieure au découpage actuel d'une wilaya
+est invalide (mère comme fille).
 
-**Pourquoi pas construit** : "IRSAM" n'est défini dans aucun des deux
-documents (probablement un indicateur sectoriel existant, mais sans
-baseline chiffrée fournie).
+**Construit** : `per100k`/`populationRef` sur `GET /stats/wilayas?year=` —
+`null` sans population valide, et `null` sans `year` (un cumul pluriannuel
+rapporté à une seule année gonflerait le taux). Écran 11 : sélecteur
+d'année, tuiles « n.d. » hachurées, mesure désactivée sans population.
 
-**Question** : Qu'est-ce qu'IRSAM exactement (indicateur, organisme
-source) ? Quelle est sa valeur de référence actuelle, et à quelle
-fréquence est-elle mise à jour ?
-
-**Une fois répondu** : ajouter la baseline comme constante paramétrable
-(même mécanisme que `DEFAULT_RECOURS_TIMER_CONFIG`) et un calcul
-comparatif additif dans `stats.service.ts`.
+**Reste à fournir** : les populations elles-mêmes (RGPH ou estimations
+ONS), et les noms officiels des wilayas 59 à 69, non remplis de mémoire.
 
 ---
 
-## 5. Statistiques de la place / dossiers — codes de barème Art. 14
+## 4. Statistiques de la place — comparatif IRSAM — ✅ MÉCANISME CONSTRUIT (2026-10-19), valeur à fournir
 
-**Capture** : écrans 3 et 11 — code de barème Art. 14 (B01-B11) par
-dossier, catégorie de véhicule.
+**Défini** (Guide pédagogique UAR, diapo 3) : IRSAM est la convention de
+juin 2016 de règlement inter-compagnies des sinistres auto matériels
+(plateforme E-Recours), qui a précédé IDA.
 
-**Pourquoi pas construit** : aucun champ `Claim` ne porte de code de
-barème ni de catégorie de véhicule — le modèle 47 colonnes
-(`claim-47-columns.ts`) ne les capture pas à l'import.
+**Décision** : indicateur comparé = délai moyen de règlement d'un recours
+(`avgSettlementDays`). La référence IRSAM est saisie avec sa définition de
+mesure et n'est comparée qu'une fois `VALIDE_UAR` (règle des quatre yeux,
+privilège `validateRef` réservé à l'Admin UAR). Le « 74 j » de la maquette
+n'est jamais utilisé.
 
-**Question** : La table de correspondance Art. 14 (B01 à B11 → quel type
-de sinistre/dommage) existe-t-elle dans un document non fourni ? Le code
-de barème est-il saisi par l'expert au moment de l'expertise, ou déduit
-automatiquement d'autres champs (nature des dommages, montant) ?
+**Construit** : `IrsamBenchmark`, `irsam`/`irsamStatus` sur
+`GET /stats/summary` ; KPI de l'écran 11 conditionnel.
 
-**Une fois répondu** : ajouter `claim.baremeCode`/`vehicleCategory`
-(nullable, jamais rempli rétroactivement par une valeur devinée) + la
-table de correspondance comme référentiel figé.
+**Reste à fournir** : valeur et période, à extraire d'E-Recours, et
+confirmation que la mesure part du même événement que pour IDA.
+
+---
+
+## 5. Statistiques de la place / dossiers — codes de barème Art. 14 — ✅ MÉCANISME CONSTRUIT (2026-10-19), table à publier
+
+**Décision** : l'assureur direct saisit circonstances et code de barème
+après le contrôle de l'Art. 13 ; ensuite seuls les rôles place
+(`matchDecide`) modifient. Barème versionné (`BROUILLON` → `VALIDE_UAR`
+immuable → `ARCHIVE`), catégories de véhicule en référentiel. Aucune
+déduction automatique du code, aucune reprise rétroactive des dossiers.
+
+**Construit** : référentiels `BaremeVersion`/`BaremeCase`/`VehicleCategory`
+(vides) ; champs nullables sur `Claim` ; `PATCH /claims/:id/responsabilite`
+(400 si code non publié, 403 compagnie adverse ou `RECOURS_OUVERT`) ;
+colonnes d'import 48-53 optionnelles (le modèle à 47 colonnes reste
+valide ; code non publié = avertissement, pas inéligibilité) ;
+confrontation de l'écran 2 (A/B côte à côte, `divergence`,
+`tauxSelonBareme`, `claimAId`/`claimBId` dans le détail) ; répartitions
+sur l'écran 11.
+
+**Reste à publier par l'UAR** : la table B01-B11 (codes, parts A/B), la
+correspondance circonstances → codes, la liste des catégories, et la règle
+d'arbitrage quand A et B déclarent des codes différents. Remarque du
+Testeur : une catégorie validée reste modifiable (elle repasse « saisie »)
+alors qu'une version de barème validée est immuable — à harmoniser si
+l'UAR le souhaite.
 
 ---
 
@@ -143,47 +142,52 @@ document serait relu plus tard.
 
 ---
 
-## 7. Commission — onglets "Adhésions & retraits" et "Plafond conventionnel"
+## 7. Commission — onglets "Adhésions & retraits" et "Plafond conventionnel" — ✅ ADHÉSIONS & RETRAITS CONSTRUITS (2026-10-19) · plafond reporté
 
-**Capture** : écran 7 "Commission de Suivi et de Conciliation" — 4
-onglets dans le guide : "Rôle des affaires", "Sanctions", "Adhésions &
-retraits", "Plafond conventionnel".
+**Base documentaire** (Guide pédagogique UAR, Chapitre VI, Art. 30-35) :
+adhésion par demande adressée à l'UAR par une société agréée pour la
+branche automobile ; retrait par dénonciation avec préavis d'au moins
+3 mois avant la fin de l'année civile ; obligations maintenues pour les
+sinistres antérieurs.
 
-**Pourquoi pas construit** : seuls les 2 premiers onglets existent
-(`CommissionCase`/`Sanction`, réels). Il n'existe aucune entité pour une
-**demande** d'adhésion/retrait d'une compagnie (seul le statut final
-`Company.status` existe, pas de workflow de demande avec instruction) ni
-pour une **demande** de révision du plafond conventionnel (Art.4).
+**Décisions du PO** : instruction par les rôles place (privilège
+`membership`) ; ADHESION `RECUE` → `ACCEPTEE` (agrément obligatoire) |
+`REJETEE` (motif obligatoire), sans création automatique de compagnie ;
+RETRAIT `RECUE` → `EFFECTIVE` | `ANNULEE` (droit unilatéral, pas de rejet),
+date d'effet calculée (reçu au plus tard le 30/09 → 31/12 de l'année, sinon
+31/12 suivant), constat possible seulement après cette date (la compagnie
+passe `EN_RETRAIT`).
 
-**Question** : Les demandes d'adhésion/retrait et de révision du plafond
-passent-elles réellement par un circuit documenté quelque part (courrier,
-réunion UAR, autre système) ? Si IDA Place doit les tracer, quelles sont
-les étapes exactes du workflow (qui initie, qui valide, délais) ?
+**Construit** : `MembershipRequest` + `/commission/membership-requests`,
+onglet sur l'écran 7. Vérifié par le Testeur.
 
-**Une fois répondu** : nouvelles entités `MembershipRequest`/
-`CeilingRevisionRequest` avec leur propre machine d'état — travail de
-modélisation complet, pas un ajout de champ.
+**Toujours reporté — Plafond conventionnel** : aucun document ne décrit de
+procédure (la Commission peut seulement « proposer une révision »,
+Art. 24-27).
 
 ---
 
-## 8. Compensation trimestrielle — pipeline "Avancement du lot"
+## 8. Compensation trimestrielle — pipeline "Avancement du lot" — ✅ RÉSOLU (2026-10-19)
 
-**Capture** : écran 6 — pipeline à 5 étapes nommées avec échéances
-(au-delà du cycle à 3 étapes déjà implémenté sur `/cockpit` :
-Saisie/Synthèse Annexe 7/Compensation).
+**Décision du Product Owner** : 5 étapes reconstituées à partir des
+Art. 16-18 (Diagramme d'activité + Guide pédagogique UAR), M = mois qui
+suit le trimestre :
+1. Saisie et validation des recours — 5ᵉ jour ouvré de M (Art. 16) ;
+2. Synthèse mensuelle automatisée, Annexe 7 — le 10 de M ;
+3. Insertion des règlements (Annexe 8) et transmission aux tiers — dernier
+   jour de M (« à la clôture du mois » : interprétation) ;
+4. Synthèse globale trimestrielle et réunion UAR — dernier jour de M ;
+5. Signature du PV (Annexe 9) et règlement — réunion + 8 jours (Art. 18).
 
-**Pourquoi pas construit** : `SettlementClosure` ne modélise qu'une
-clôture simple (une date, un auteur), pas un workflow multi-étapes avec
-échéances intermédiaires. Déjà tranché par le Product Owner (sprint 3 bis)
-comme "vraie nouvelle fonctionnalité, pas de la donnée déjà là".
+**Construit** : `SettlementPipelineStep`, `GET /settlement/quarter/:q/pipeline`,
+`POST …/pipeline/:step/complete` (`closeQuarter`, étapes 1-4 dans l'ordre).
+L'étape 5 = clôture trimestrielle, qui exige désormais les étapes 1-4
+(409 `PIPELINE_INCOMPLET` — trouvé par le Testeur). Écran 6 : section
+« Avancement du lot » et bouton « Clôturer le trimestre » (aucun accès
+écran à la clôture n'existait auparavant).
 
-**Question** : Quelles sont exactement les 5 étapes (noms, ordre,
-échéance de chacune par rapport à la date de clôture du trimestre) ? Qui
-est responsable de faire avancer chaque étape (rôle) ?
-
-**Une fois répondu** : modéliser un workflow `SettlementPipelineStep`
-(ou étendre `SettlementClosure`) — nécessite une vraie conception, pas un
-champ additif.
+**À confirmer** : l'échéance de l'étape 3 (interprétation) et le libellé
+exact des étapes de la maquette de l'écran 6, qui est une image.
 
 ---
 

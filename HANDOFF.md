@@ -624,6 +624,68 @@ de `QuarterlySettlementDto`/`RecoursViewDto` (contrats figés). Vérifié :
 283/283 tests unitaires (2 nouveaux cas), `tsc --noEmit` propre, build
 réussi.
 
+## Points UAR 1-5, 7, 8 — documents UAR + PO expert (2026-10-19, équipe 4 rôles + PO expert)
+
+**Origine** : le Product Owner réel a fourni 5 documents UAR (Note de
+cadrage, Expression de besoin, Diagramme d'activité + export PDF, Guide
+pédagogique). Lus intégralement : ils fondent les points 7 (Chapitre VI,
+Art. 30-35) et 8 (Art. 16-18), définissent IRSAM (diapo 3) et l'interdiction
+de motiver une opposition par la non-déclaration (diapo 10), mais ne
+contiennent aucune valeur pour les points 1-5. Le PO réel a alors délégué
+ces 5 points à un « PO expert métier assurance » simulé, avec une règle :
+la **structure** peut être décidée, une **valeur** n'est pré-remplie que si
+elle vient des documents ou d'un standard public vérifiable (sinon saisie
+par un rôle place, statut « à valider UAR »). Détail par point :
+`QUESTIONS_UAR.md` §1-5, §7, §8.
+
+**Construit (backend)** :
+- §7 `MembershipRequest` (`src/commission/membership.*`), privilège
+  `membership` ; `AdherentsService.markCompanyWithdrawn`.
+- §8 `SettlementPipelineStep` (`src/settlement/settlement-pipeline.*`),
+  `src/common/business-days.ts` (week-end vendredi-samedi + fériés fixes
+  MM-JJ + fériés supplémentaires), `src/common/clock.ts` (horloge
+  injectable). La clôture trimestrielle exige les étapes 1-4 (409
+  `PIPELINE_INCOMPLET`).
+- §1-4 référentiels de place (`src/adherents/convention-referential.service.ts`,
+  `place-metrics-referential.service.ts`, `place-referential.controller.ts`),
+  privilège `validateRef` (ADMIN_UAR seul, OPERATEUR_PLACE l'a perdu) et
+  règle des quatre yeux (`referential-rules.ts`), `reasonCode` sur
+  `opposer`, `per100k`/`irsam` dans `StatsService`. Fériés fixes générés
+  pour toute année (`algeriaFixedHolidays`), Yennayer ajouté.
+- §5 barème (`src/adherents/bareme-*`, `src/claims/claim-art14.ts`,
+  `claim-extension-columns.ts`, `src/matching/matching.bareme.ts`),
+  `PATCH /claims/:id/responsabilite`, `GET /claims/import/columns/v2`,
+  `GET /matching/:id` (avec `claimAId`/`claimBId`, absents de la file).
+- Migrations : `20261018020000_MembershipSettlementPipeline`,
+  `20261018030000_ReferentielPlace` (seed : 17 circonstances
+  `STANDARD_A_CONFIRMER` + motif `NON_DECLARATION` interdit, rien d'autre),
+  `20261019010000_BaremeArt14` (aucun seed).
+
+**Revue Tech Lead (corrections avant fusion)** : `per100k` à `null` sans
+`year` (un cumul pluriannuel rapporté à une seule année gonflait le taux) ;
+fériés mobiles branchés sur le 5ᵉ jour ouvré du pipeline ; id des dossiers
+exposés dans le détail d'appariement (l'écran retrouvait le dossier par
+recherche paginée).
+
+**Testeur (vérification réelle, mode dégradé)** : 2 bugs réels, corrigés —
+(1) la clôture trimestrielle par l'API ignorait l'ordre des étapes ;
+(2) fériés fixes figés sur 2026-2027. Remarques non bloquantes laissées en
+l'état et à trancher : motif d'opposition non validé déjà accepté ;
+catégorie de véhicule validée encore modifiable ; `fixedHolidays` de
+`GET /referential/calendar` sans bornes = année N-1 à N+1 ; import CSV des
+populations : une seule erreur par ligne ; préexistants hors périmètre :
+`POST /recours` accepte un `claimId` inexistant, file du matching en double
+(A↔B et B↔A), `createdAt` d'une compagnie recalculé à chaque lecture en
+mode dégradé.
+
+**Vérifié** : `npm run lint` OK, `npm test` 423/423, e2e 128/128 (le flake
+`claims-import` ECONNRESET passe ou échoue selon les exécutions), build OK.
+
+**Environnement** : dans un worktree neuf, `AUTH_PROVIDER=dev` doit être
+exporté pour les e2e (pas de `.env`). Le PostgreSQL du port 5432 sur cette
+machine appartient à un autre projet (`titra-postgres-1`) : ne pas y
+appliquer les migrations d'IDA Place.
+
 ## Todo-list restante, par priorité
 
 ### 1. Hypothèses métier à confirmer avec l'UAR/CNA (non tranchées par le dossier technique)
