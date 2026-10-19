@@ -87,6 +87,13 @@ describe('AdherentsService (mode dégradé)', () => {
     expect(caat.agencyCounts).toEqual({ DG: 1, DR: 0, AG: 1 });
   });
 
+  it('createdAt (repli mémoire) est stable d’une lecture à l’autre', async () => {
+    const first = (await service.listCompanies(1, 6)).items.find((c) => c.code === 'CAAT')!.createdAt;
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await service.getCompany('c-caat')).createdAt).toBe(first);
+    expect((await service.listCompanies(1, 6)).items.find((c) => c.code === 'CAAT')!.createdAt).toBe(first);
+  });
+
   it('getConventionParams réutilise les mêmes valeurs par défaut que RecoursModule/EligibilityModule (jamais une constante dupliquée divergente)', () => {
     const params = service.getConventionParams();
     expect(params).toEqual({ version: 'v2025.12', silenceDays: 30, oppositionDays: 15, forclusionMonths: 6, maxAmountDA: 300_000 });

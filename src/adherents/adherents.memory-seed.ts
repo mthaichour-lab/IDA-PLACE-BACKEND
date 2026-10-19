@@ -8,6 +8,8 @@ import { AgencyType } from './entities/agency.entity';
  */
 export interface MemoryCompany {
   id: string;
+  /** Fixée à la création (ou au démarrage pour le seed) : une lecture ne doit pas la modifier. */
+  createdAt?: string;
   code: string;
   name: string;
   nameAr?: string;
@@ -36,6 +38,9 @@ export interface MemoryAgency {
   address?: string;
   status: CompanyStatus;
 }
+
+/** Date de création des compagnies du seed mémoire : figée au chargement du module. */
+export const MEMORY_SEED_AT = new Date().toISOString();
 
 export const MEMORY_COMPANIES: MemoryCompany[] = [
   { id: 'c-caat', code: 'CAAT', name: 'CAAT Assurance', color: '#1F4FA3', kind: CompanyKind.INSURER, feedMode: FeedMode.API, apiKeyMasked: 'sk_live_•••••3f2a', status: CompanyStatus.ACTIF },

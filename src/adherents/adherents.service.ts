@@ -14,7 +14,7 @@ import { CompanyViewDto, CreateCompanyDto, UpdateCompanyDto } from './dto/compan
 import { Agency } from './entities/agency.entity';
 import { Company, CompanyStatus } from './entities/company.entity';
 import { Wilaya } from './entities/wilaya.entity';
-import { MEMORY_AGENCIES, MEMORY_COMPANIES } from './adherents.memory-seed';
+import { MEMORY_AGENCIES, MEMORY_COMPANIES, MEMORY_SEED_AT } from './adherents.memory-seed';
 import { algeriaFixedHolidays, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
 import { WilayaSeed } from './wilayas.data';
 import { CalendarHolidayView, ConventionReferentialService, OppositionMotifView } from './convention-referential.service';
@@ -175,7 +175,7 @@ export class AdherentsService {
         const page_ = paginateArray(MEMORY_COMPANIES, page, pageSize);
         return {
           ...page_,
-          items: page_.items.map((c) => ({ ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) }) as CompanyViewDto),
+          items: page_.items.map((c) => ({ ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) }) as CompanyViewDto),
         };
       },
     );
@@ -192,7 +192,7 @@ export class AdherentsService {
       () => {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
-        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
+        return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
   }
@@ -239,8 +239,9 @@ export class AdherentsService {
           correspondentPhone: dto.correspondentPhone,
           correspondentEmail: dto.correspondentEmail,
         };
-        MEMORY_COMPANIES.push(view as (typeof MEMORY_COMPANIES)[number]);
-        return { ...view, createdAt: new Date().toISOString(), agencyCounts: EMPTY_AGENCY_COUNTS } as CompanyViewDto;
+        const createdAt = new Date().toISOString();
+        MEMORY_COMPANIES.push({ ...view, createdAt } as (typeof MEMORY_COMPANIES)[number]);
+        return { ...view, createdAt, agencyCounts: EMPTY_AGENCY_COUNTS } as CompanyViewDto;
       },
     );
   }
@@ -272,7 +273,7 @@ export class AdherentsService {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
         Object.assign(c, dto);
-        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
+        return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
   }
@@ -296,7 +297,7 @@ export class AdherentsService {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
         c.status = CompanyStatus.EN_RETRAIT;
-        return { ...c, createdAt: new Date().toISOString(), agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
+        return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
   }
