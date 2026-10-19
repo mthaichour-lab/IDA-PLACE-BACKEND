@@ -13,6 +13,12 @@ export interface AuthenticatedUser {
   /** Compagnie de rattachement (CORRESPONDANT_IDA / TRESORIER). Absent pour les rôles "place". */
   companyId?: string;
   privileges: Privilege[];
+  /**
+   * Expiration du jeton porteur (epoch, millisecondes), si l'identité vient
+   * d'un jeton (`exp`). Utilisée par la passerelle temps réel pour fermer la
+   * connexion à l'expiration (SEC-07). Jamais renvoyée par `GET /me`.
+   */
+  expiresAt?: number;
 }
 
 /**
