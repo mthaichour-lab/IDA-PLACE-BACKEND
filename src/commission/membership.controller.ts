@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import {
   AcceptMembershipRequestDto,
@@ -18,17 +17,20 @@ import { MembershipService } from './membership.service';
 @ApiTags('commission')
 @ApiBearerAuth()
 @Controller('commission/membership-requests')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class MembershipController {
   constructor(private readonly service: MembershipService) {}
 
   @Get()
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: "Demandes d'adhésion/retrait, paginées, filtrables par type et état (B.7 : un utilisateur compagnie ne voit que celles de SA compagnie)" })
   list(@Query() q: ListMembershipRequestsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.list(q, user);
   }
 
   @Get(':id')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: "Fiche d'une demande d'adhésion/retrait (B.7 : scopée par compagnie)" })
   get(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.get(id, user);

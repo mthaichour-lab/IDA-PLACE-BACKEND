@@ -1,8 +1,6 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../common/decorators/roles.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 import { ListLedgerQueryDto } from './dto/ledger-query.dto';
 import { LedgerService } from './ledger.service';
@@ -21,7 +19,6 @@ import { LedgerService } from './ledger.service';
 @ApiTags('ledger')
 @ApiBearerAuth()
 @Controller('ledger')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class LedgerController {
   constructor(private readonly service: LedgerService) {}
 

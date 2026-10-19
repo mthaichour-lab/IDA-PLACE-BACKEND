@@ -1,8 +1,7 @@
-import { Controller, Get, Module, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AuthGuard } from '../common/guards/auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
 import { ClaimsModule } from '../claims/claims.module';
@@ -37,17 +36,20 @@ import { CompanyCodeParamDto, StrictQuery } from '../claims/dto/strict-query.pip
 @ApiTags('monitoring')
 @ApiBearerAuth()
 @Controller('monitoring')
-@UseGuards(AuthGuard, PrivilegesGuard)
 class MonitoringController {
   constructor(private readonly service: MonitoringService) {}
 
   @Get('scores')
+  // SEC-43 : classement inter-compagnies volontairement place-wide (écran 8, voir doc de classe)
+  @Authenticated()
   @ApiOperation({ summary: 'Scoring composite de conformité par compagnie — toutes composantes réelles (délais, silences, oppositions, qualité données, forclusions, demandes tardives, pénalités), hypothèses documentées (voir notes). Volontairement place-wide (classement documenté, voir doc de classe).' })
   scores(@CurrentUser() user: AuthenticatedUser) {
     return this.service.scores(user);
   }
 
   @Get('trajectories')
+  // SEC-43 : lecture scopée par compagnie dans le service (paires dont la compagnie est partie)
+  @Authenticated()
   @ApiOperation({ summary: 'Parcours inter-compagnies par dossier (réel, dérivé de la file de confrontation MatchingModule — B.7 : ne montre que les paires où la compagnie de l’appelant est partie)' })
   @StrictQuery(PaginationQueryDto)
   trajectories(@Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -55,6 +57,8 @@ class MonitoringController {
   }
 
   @Get('companies/:code/journeys')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Vue par dossier — parcours complet pour une compagnie (étapes réelles du recours, voir recours.rules.ts) — B.7 : scopée par compagnie' })
   @StrictQuery(PaginationQueryDto)
   journeys(@Param() p: CompanyCodeParamDto, @Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {

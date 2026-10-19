@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import {
   CreateCommissionCaseDto,
@@ -24,17 +23,20 @@ import { CommissionService } from './commission.service';
 @ApiTags('commission')
 @ApiBearerAuth()
 @Controller('commission')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class CommissionController {
   constructor(private readonly service: CommissionService) {}
 
   @Get('cases')
+  // SEC-43 : lecture scopée par compagnie partie au dossier dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'File de conciliation, paginée (6/p), filtrable par statut (B.7 : scopée par compagnie)' })
   listCases(@Query() q: ListCommissionCasesQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listCases(q, user);
   }
 
   @Get('cases/:id')
+  // SEC-43 : lecture scopée par compagnie partie au dossier dans le service
+  @Authenticated()
   @ApiOperation({ summary: "Fiche détail d'un dossier de commission (B.7 : scopée par compagnie)" })
   getCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.getCaseForUser(id, user);
@@ -90,12 +92,16 @@ export class CommissionController {
   }
 
   @Get('sanctions')
+  // SEC-43 : lecture scopée par compagnie partie au dossier dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Registre des pénalités/sanctions, paginé (6/p, 100 max), filtrable par compagnie et statut (B.7 : scopé par compagnie)' })
   listSanctions(@Query() q: ListSanctionsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listSanctions(q, user);
   }
 
   @Get('summary')
+  // SEC-43 : lecture scopée par compagnie partie au dossier dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'KPI de synthèse : dossiers pendants, hors délai 15j (Art.24), recours jugés fondés, oppositions fondées Art.12 (B.7 : scopé par compagnie)' })
   summary(@CurrentUser() user: AuthenticatedUser) {
     return this.service.summary(user);

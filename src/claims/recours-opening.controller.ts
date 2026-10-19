@@ -1,9 +1,7 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { CreateRecoursDto } from '../recours/dto/recours.dto';
 import { ClaimsService } from './claims.service';
@@ -12,7 +10,6 @@ import { ClaimsService } from './claims.service';
 @ApiTags('recours')
 @ApiBearerAuth()
 @Controller('recours')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class RecoursOpeningController {
   constructor(private readonly claims: ClaimsService) {}
 

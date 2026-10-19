@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { CompletePipelineStepDto } from './dto/settlement-pipeline.dto';
 import { CloseMonthlyDto } from './dto/settlement.dto';
@@ -18,7 +17,6 @@ import { SettlementService } from './settlement.service';
 @ApiTags('settlement')
 @ApiBearerAuth()
 @Controller('settlement')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class SettlementController {
   constructor(
     private readonly service: SettlementService,
@@ -26,18 +24,24 @@ export class SettlementController {
   ) {}
 
   @Get('monthly/:period')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Synthèse mensuelle par compagnie (ex: period=2026-01) — état d’avancement réel, à partir des recours (B.7 : scopée par compagnie)' })
   monthly(@Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.monthly(period, user);
   }
 
   @Get('monthly/:period/summary')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'KPI de synthèse du cycle mensuel : recours réglés intégrés, montant, oppositions exclues (RG-06), échéance de saisie (B.7 : scopée par compagnie)' })
   monthlySummary(@Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.monthlySummary(period, user);
   }
 
   @Get('monthly/:period/annexe7')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Synthèse Annexe 7 — regroupement des recours réglés du mois par paire créancier→débiteur, sans netting (B.7 : scopée par compagnie)' })
   annexe7(@Param('period') period: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.annexe7(period, user);
@@ -56,6 +60,8 @@ export class SettlementController {
   // spécifique n'est JAMAIS atteinte (même piège déjà trouvé et documenté
   // sur `metering.module.ts`, `place-summary/:period` vs `:company/:period`).
   @Get('quarter/closures')
+  // SEC-43 : calendrier des clôtures de place, auteur masqué aux rôles compagnie dans le service
+  @Authenticated()
   @ApiOperation({
     summary:
       'Liste de TOUTES les clôtures trimestrielles enregistrées (place entière, toutes périodes) — écran 4 "Échanges Annexes 2/3/4", pour distinguer côté frontend "Accepté/silence" (trimestre du recours réglé pas encore clôturé) de "Réglé/compensé" (trimestre déjà clôturé)',
@@ -65,24 +71,32 @@ export class SettlementController {
   }
 
   @Get('quarter/:q')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Compensation trimestrielle — positions bilatérales nettées et compensation multilatérale (ex: q=2026-Q1) (B.7 : scopée par compagnie)' })
   quarter(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.quarter(q, user);
   }
 
   @Get('quarter/:q/matrix')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Matrice brute créancier×débiteur du trimestre, avant tout netting — pour la carte thermique (B.7 : scopée par compagnie)' })
   matrix(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.matrix(q, user);
   }
 
   @Get('quarter/:q/summary')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'KPI de synthèse du trimestre : brut, net bilatéral, net multilatéral, réduction des flux, recours réglés/en opposition (B.7 : scopée par compagnie)' })
   summary(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.summary(q, user);
   }
 
   @Get('quarter/:q/pipeline')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Avancement du lot trimestriel (Diagramme 2, Art. 16-18) : 5 étapes, échéances, retards — mêmes droits de lecture que GET /settlement/quarter/:q (SEC-26 : sans auteur ni note pour les rôles compagnie)' })
   pipeline(@Param('q') q: string, @CurrentUser() user: AuthenticatedUser) {
     return this.pipelineService.pipeline(q, user);

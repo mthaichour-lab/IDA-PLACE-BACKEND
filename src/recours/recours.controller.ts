@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ListRecoursQueryDto, RecoursHistoryEntryDto, RecoursTransitionDto } from './dto/recours.dto';
 import { RecoursService } from './recours.service';
@@ -18,29 +17,36 @@ import { RecoursService } from './recours.service';
 @ApiTags('recours')
 @ApiBearerAuth()
 @Controller('recours')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class RecoursController {
   constructor(private readonly service: RecoursService) {}
 
   @Get()
+  // SEC-43 : lecture scopée par compagnie dans le service (créancière ou débitrice)
+  @Authenticated()
   @ApiOperation({ summary: 'Registre des recours (Annexes 2/3/4), paginé (6/p, 100 max), filtrable par état — countdownBar calculée serveur (Art.10/12/19) (B.7 : scopé par compagnie)' })
   list(@Query() q: ListRecoursQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.list(q, user);
   }
 
   @Get('counters')
+  // SEC-43 : lecture scopée par compagnie dans le service (créancière ou débitrice)
+  @Authenticated()
   @ApiOperation({ summary: 'Compteurs par onglet (tous / en attente / opposition / contestation / commission / forclos / réglé / rejeté) (B.7 : scopés par compagnie)' })
   counters(@CurrentUser() user: AuthenticatedUser) {
     return this.service.counters(user);
   }
 
   @Get(':id')
+  // SEC-43 : lecture scopée par compagnie dans le service (créancière ou débitrice)
+  @Authenticated()
   @ApiOperation({ summary: "Fiche détail d'un recours (B.7 : scopé par compagnie ; 404 hors périmètre)" })
   get(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.getForUser(id, user);
   }
 
   @Get(':id/history')
+  // SEC-43 : lecture scopée par compagnie dans le service (créancière ou débitrice)
+  @Authenticated()
   @ApiOperation({ summary: 'Historique des transitions (auteur, rôle, compagnie représentée, motif) — audit, réservé aux rôles place (404 sinon)' })
   history(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser): Promise<RecoursHistoryEntryDto[]> {
     return this.service.history(id, user);

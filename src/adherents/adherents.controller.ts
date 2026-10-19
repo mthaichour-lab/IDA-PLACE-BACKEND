@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 import { AdherentsService } from './adherents.service';
 import { CreateAgencyDto, ListAgenciesQueryDto, UpdateAgencyDto } from './dto/agency.dto';
 import { CreateCompanyDto, ReferentialPageQueryDto, UpdateCompanyDto, UpdateCompanyGovernanceDto } from './dto/company.dto';
@@ -22,17 +23,20 @@ import { CalendarQueryDto } from './dto/place-referential.dto';
 @ApiTags('referential')
 @ApiBearerAuth()
 @Controller('referential')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class AdherentsController {
   constructor(private readonly service: AdherentsService) {}
 
   @Get('companies')
+  // SEC-43 : lecture scopée dans le service (projection publique des concurrentes, SEC-26)
+  @Authenticated()
   @ApiOperation({ summary: 'Liste paginée des compagnies adhérentes (6/p, 100 max) — un rôle compagnie reçoit la projection publique de ses concurrentes (SEC-26)' })
   listCompanies(@Query() q: ReferentialPageQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listCompanies(q.page, q.pageSize, user);
   }
 
   @Get('companies/:id')
+  // SEC-43 : lecture scopée dans le service (projection publique des concurrentes, SEC-26)
+  @Authenticated()
   @ApiOperation({ summary: "Fiche compagnie (identité, code, couleur, mode d'alimentation, clé API masquée) — projection publique pour une concurrente (SEC-26)" })
   getCompany(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.getCompany(id, user);
@@ -57,6 +61,8 @@ export class AdherentsController {
   }
 
   @Get('companies/:id/governance-changes')
+  // SEC-43 : rôles de place (le service le vérifie aussi)
+  @Roles(...PLACE_LEVEL_ROLES)
   @ApiOperation({ summary: 'SEC-04 — demandes de changement de gouvernance d’une compagnie (rôles place)' })
   listGovernanceChanges(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listGovernanceChanges(id, user);
@@ -84,6 +90,8 @@ export class AdherentsController {
   }
 
   @Get('agencies')
+  // SEC-43 : lecture scopée par compagnie dans le service (SEC-26)
+  @Authenticated()
   @ApiOperation({ summary: 'Liste paginée des agences (filtrable par compagnie) — un rôle compagnie ne voit que SES agences (SEC-26)' })
   listAgencies(@Query() q: ListAgenciesQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.listAgencies(q.page, q.pageSize, q.companyId, user);
@@ -104,6 +112,8 @@ export class AdherentsController {
   }
 
   @Get('wilayas')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: '69 wilayas (référentiel, grille de tuiles 13×8 — écran 11)' })
   @ApiOkResponse()
   listWilayas() {
@@ -111,12 +121,16 @@ export class AdherentsController {
   }
 
   @Get('convention')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Paramètres réels de la convention (délais Art.10/12/19, plafond Art.4) — mêmes valeurs que RecoursModule/EligibilityModule, jamais dupliquées' })
   getConvention() {
     return this.service.getConventionParams();
   }
 
   @Get('calendar')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({
     summary:
       'Week-end légal algérien, fériés à date fixe et `holidays` : union fixes + mobiles (prévisionnels et confirmés) avec leur statut, bornée par from/to inclus (décision PO §2)',
@@ -126,6 +140,8 @@ export class AdherentsController {
   }
 
   @Get('motifs')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: "Catalogue réel des motifs d'inéligibilité (articles 3/4/5-6/13/19/28), extrait de eligibility.rules.ts" })
   getMotifs() {
     return this.service.getMotifs();

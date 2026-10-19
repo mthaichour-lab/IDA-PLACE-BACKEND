@@ -1,4 +1,4 @@
-import { Controller, Get, Module, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
@@ -7,8 +7,6 @@ import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { CacheService } from '../common/cache/cache.service';
 import { ClaimsModule } from '../claims/claims.module';
 import { ClaimsService } from '../claims/claims.service';
@@ -75,7 +73,6 @@ function currentQuarterPeriod(): string {
 @ApiTags('cockpit')
 @ApiBearerAuth()
 @Controller('cockpit')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class CockpitController {
   constructor(
     private readonly claims: ClaimsService,

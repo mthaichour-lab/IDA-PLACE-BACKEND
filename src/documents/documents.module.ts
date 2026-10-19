@@ -1,13 +1,12 @@
-import { BadRequestException, Body, Controller, Get, Header, Inject, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post, Query, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Header, Inject, Injectable, Module, NotFoundException, Param, ParseUUIDPipe, Post, Query, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { InjectRepository, MikroOrmModule } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { randomUUID } from 'crypto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
@@ -262,7 +261,6 @@ export class DocumentsService {
 @ApiTags('documents')
 @ApiBearerAuth()
 @Controller('documents')
-@UseGuards(AuthGuard, PrivilegesGuard)
 class DocumentsController {
   constructor(private readonly service: DocumentsService) {}
 
@@ -304,12 +302,16 @@ class DocumentsController {
   }
 
   @Get(':id')
+  // SEC-43 : visibilité vérifiée par le service (partie au dossier, 404 sinon)
+  @Authenticated()
   @ApiOperation({ summary: 'SEC-10 — métadonnées et URL de téléchargement d’un document, par identifiant (404 si hors périmètre)' })
   describe(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.describe(id, user);
   }
 
   @Get(':id/download')
+  // SEC-43 : visibilité vérifiée par le service (partie au dossier, 404 sinon)
+  @Authenticated()
   @ApiProduces('application/pdf', 'image/jpeg', 'image/png', 'image/webp')
   @Header('X-Content-Type-Options', 'nosniff')
   @Header('Cache-Control', 'private, no-store')

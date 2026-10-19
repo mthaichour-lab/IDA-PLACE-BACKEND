@@ -5,6 +5,8 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { buildMikroOrmConfig } from './common/config/database.config';
+import { AuthGuard } from './common/guards/auth.guard';
+import { PrivilegesGuard } from './common/guards/privileges.guard';
 import { AdherentsModule } from './adherents/adherents.module';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
@@ -40,6 +42,10 @@ import { StatsModule } from './stats/stats.module';
  *    chargement du `.env` par `ConfigModule` (auparavant la configuration
  *    était figée à l'import, avant le `.env`) ;
  *  - `ThrottlerGuard` global (SEC-13), réglé par `THROTTLE_*` ;
+ *  - `AuthGuard` puis `PrivilegesGuard` GLOBAUX (SEC-43), dans cet ordre et
+ *    après le throttler : toute route est authentifiée et doit déclarer son
+ *    accès (`@Privileges`, `@Roles`, `@Authenticated` ou `@Public`) — fermé
+ *    par défaut, même pour un contrôleur qui oublierait `@UseGuards` ;
  *  - `HealthModule` : sondes `/health/live` et `/health/ready` (SEC-08).
  */
 @Module({
@@ -84,6 +90,11 @@ import { StatsModule } from './stats/stats.module';
     // --- module agrégateur additionnel (écran 1) ---
     CockpitModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  // L'ordre compte : limitation de débit (y compris des requêtes non authentifiées), puis authentification, puis droits.
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: PrivilegesGuard },
+  ],
 })
 export class AppModule {}

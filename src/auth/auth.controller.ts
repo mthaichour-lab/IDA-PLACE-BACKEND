@@ -1,7 +1,7 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 
 /** Réponse exacte attendue par le front — C.4 : pilote l'affichage conditionnel. */
@@ -16,9 +16,10 @@ class MeResponseDto {
 @ApiBearerAuth()
 @ApiHeader({ name: 'x-dev-user', required: false, description: 'DEV ONLY — nom de rôle ou JSON utilisateur (voir DevAuthProvider).' })
 @Controller('me')
-@UseGuards(AuthGuard)
 export class AuthController {
   @Get()
+  // SEC-43 : identité de l'appelant uniquement
+  @Authenticated()
   @ApiOperation({ summary: "Identité courante, rôle et privilèges effectifs (C.4)" })
   @ApiOkResponse({ type: MeResponseDto })
   me(@CurrentUser() user: AuthenticatedUser): MeResponseDto {

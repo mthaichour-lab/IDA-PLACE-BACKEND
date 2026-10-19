@@ -1,8 +1,7 @@
-import { Controller, Get, Module, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdherentsModule } from '../adherents/adherents.module';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { ClaimsModule } from '../claims/claims.module';
 import { RecoursModule } from '../recours/recours.module';
 import { StatsService } from './stats.service';
@@ -17,11 +16,12 @@ import { StrictQuery, StatsWilayasQueryDto } from '../claims/dto/strict-query.pi
 @ApiTags('stats')
 @ApiBearerAuth()
 @Controller('stats')
-@UseGuards(AuthGuard, PrivilegesGuard)
 class StatsController {
   constructor(private readonly service: StatsService) {}
 
   @Get('wilayas')
+  // SEC-43 : agrégats de place (écran 11), sans donnée par compagnie
+  @Authenticated()
   @ApiOperation({
     summary:
       'Carte en tuiles des 69 wilayas (grille 13×8) — déclarations/montants réels, `per100k` seulement si une population valide est saisie (sinon null) ; `year` optionnel = année étudiée',
@@ -32,12 +32,16 @@ class StatsController {
   }
 
   @Get('monthly')
+  // SEC-43 : agrégats de place (écran 11), sans donnée par compagnie
+  @Authenticated()
   @ApiOperation({ summary: "Activité mensuelle réelle : déclarations (par mois d'accident), canal (e-constat vs autres canaux), Annexes 2 émises / oppositions / recours réglés (RecoursModule, réel)" })
   monthly() {
     return this.service.monthly();
   }
 
   @Get('summary')
+  // SEC-43 : agrégats de place (écran 11), sans donnée par compagnie
+  @Authenticated()
   @ApiOperation({ summary: 'KPI de synthèse : déclarations totales, taux d’opposition, montant compensé, délai moyen de règlement, comparatif IRSAM si une référence est validée UAR (sinon null)' })
   summary() {
     return this.service.summary();

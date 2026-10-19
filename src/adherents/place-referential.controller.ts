@@ -1,10 +1,9 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Post, Put, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { BaremeReferentialService } from './bareme-referential.service';
 import { ConventionReferentialService } from './convention-referential.service';
@@ -40,7 +39,6 @@ import { CodeParamPipe, WilayaCodePipe } from './referential-params';
 @ApiTags('referential')
 @ApiBearerAuth()
 @Controller('referential')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class PlaceReferentialController {
   constructor(
     private readonly convention: ConventionReferentialService,
@@ -51,12 +49,16 @@ export class PlaceReferentialController {
   // ---- Fériés mobiles (§2) ----------------------------------------------
 
   @Get('mobile-holiday-kinds')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Types de fériés mobiles (loi 63-278 modifiée) — aucune date pré-remplie' })
   mobileHolidayKinds() {
     return MOBILE_HOLIDAY_KINDS.map((kind) => ({ kind, label: MOBILE_HOLIDAY_KIND_LABELS[kind] }));
   }
 
   @Get('mobile-holidays')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Fériés mobiles saisis (une ligne par jour chômé), filtrables par année' })
   listHolidays(@Query() q: ListMobileHolidaysQueryDto) {
     return this.convention.listHolidays(q.year);
@@ -93,6 +95,8 @@ export class PlaceReferentialController {
   // ---- Circonstances du constat (§1) ------------------------------------
 
   @Get('constat-circumstances')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: '17 circonstances du constat amiable (libellé standard CEA, statut STANDARD_A_CONFIRMER tant que non validé UAR)' })
   listCircumstances() {
     return this.convention.listCircumstances();
@@ -115,6 +119,8 @@ export class PlaceReferentialController {
   // ---- Motifs d'opposition (§1) -----------------------------------------
 
   @Get('opposition-motifs')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Catalogue des motifs d’opposition (Annexe 3) ; `forbidden` = ne peut jamais motiver une opposition' })
   listMotifs() {
     return this.convention.listMotifs();
@@ -151,6 +157,8 @@ export class PlaceReferentialController {
   }
 
   @Get('wilaya-populations')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Populations de référence par wilaya et par année, avec leur validité au regard du périmètre actuel' })
   listPopulations(@Query() q: ListWilayaPopulationsQueryDto) {
     return this.metrics.listPopulations(q.wilayaCode);
@@ -190,6 +198,8 @@ export class PlaceReferentialController {
   // ---- Référence IRSAM (§4) ---------------------------------------------
 
   @Get('irsam-benchmarks')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Références IRSAM saisies (toutes, avec leur statut SAISI / VALIDE_UAR / ARCHIVE)' })
   listIrsam() {
     return this.metrics.listIrsam();
@@ -219,6 +229,8 @@ export class PlaceReferentialController {
   // ---- Barème Art. 14 et catégories de véhicule (§5) ----------------------
 
   @Get('bareme-versions')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Versions du barème Art. 14 et leurs cas (aucune pré-remplie) — BROUILLON / VALIDE_UAR / ARCHIVE' })
   listBaremeVersions() {
     return this.bareme.listVersions();
@@ -274,6 +286,8 @@ export class PlaceReferentialController {
   }
 
   @Get('vehicle-categories')
+  // SEC-43 : référentiel commun de la place (lecture, non confidentiel)
+  @Authenticated()
   @ApiOperation({ summary: 'Catégories de véhicule (aucune pré-remplie) — SAISI / VALIDE_UAR' })
   listVehicleCategories() {
     return this.bareme.listCategories();

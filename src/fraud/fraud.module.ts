@@ -1,9 +1,8 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { Controller, Get, Module, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Module, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AuthGuard } from '../common/guards/auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { PaginationQueryDto } from '../common/dto/pagination.dto';
 import { ClaimsModule } from '../claims/claims.module';
@@ -34,11 +33,12 @@ import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 @ApiTags('fraud')
 @ApiBearerAuth()
 @Controller('fraud')
-@UseGuards(AuthGuard, PrivilegesGuard)
 class FraudController {
   constructor(private readonly service: FraudService) {}
 
   @Get('cases')
+  // SEC-43 : lecture scopée par compagnie dans le service (partie au cas)
+  @Authenticated()
   @ApiOperation({ summary: 'File des cas suspects (réel : doublons, e-constat réutilisé, récurrence véhicule, montants calibrés, incohérences A/B), triée par score desc, paginée (6/p) — B.7 : scopée par compagnie partie au cas' })
   @StrictQuery(PaginationQueryDto)
   cases(@Query() q: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -57,6 +57,8 @@ class FraudController {
   }
 
   @Get('adherents/:company/signals')
+  // SEC-43 : lecture scopée par compagnie dans le service
+  @Authenticated()
   @ApiOperation({ summary: 'Signaux groupés par catégorie pour un adhérent (écran 9, panneau de détail) — Doublons & e-constat / Réseau-récurrence / Montants & plafond / Incohérences A/B / Vélocité — B.7 : scopée par compagnie' })
   signalsByAdherent(@Param() p: CompanyParamDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.signalsByAdherent(p.company, user);

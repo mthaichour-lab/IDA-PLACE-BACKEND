@@ -1,12 +1,10 @@
-import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthModule } from '../auth/auth.module';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { PlaceUserDirectory } from '../common/directory/place-user-directory.service';
 import { PlaceUserDirectoryModule } from '../common/directory/place-user-directory.module';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { RbacService } from '../common/rbac/rbac.service';
 import { ROLES, RoleMatrix } from '../common/rbac/roles-privileges';
@@ -71,7 +69,6 @@ function describeUserPatch(dto: UpdatePlaceUserDto): string {
 @ApiTags('admin')
 @ApiBearerAuth()
 @Controller('admin')
-@UseGuards(AuthGuard, PrivilegesGuard)
 class AdminController {
   constructor(
     private readonly rbac: RbacService,

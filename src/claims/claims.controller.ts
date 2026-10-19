@@ -1,11 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { StrictQuery } from './dto/strict-query.pipe';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ClaimsService } from './claims.service';
 import { ClaimImportReportDto, ImportClaimsQueryDto } from './dto/claim-import.dto';
@@ -18,17 +17,20 @@ import { ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from './dto/claim.dt
 @ApiTags('claims')
 @ApiBearerAuth()
 @Controller('claims')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class ClaimsController {
   constructor(private readonly service: ClaimsService) {}
 
   @Get('import/columns')
+  // SEC-43 : modèle de fichier d'import, non confidentiel
+  @Authenticated()
   @ApiOperation({ summary: "Modèle 47 colonnes (identification + éligibilité) — B.4" })
   columns() {
     return this.service.columns();
   }
 
   @Get('import/columns/v2')
+  // SEC-43 : modèle de fichier d'import, non confidentiel
+  @Authenticated()
   @ApiOperation({ summary: 'Modèle v2 : les 47 colonnes du v1 puis les colonnes 48-53 du barème Art. 14 (décision PO §5)' })
   columnsV2() {
     return this.service.columnsV2();
@@ -68,6 +70,8 @@ export class ClaimsController {
   }
 
   @Get()
+  // SEC-43 : lecture scopée par compagnie dans le service (B.7)
+  @Authenticated()
   @ApiOperation({ summary: 'Liste paginée des dossiers (6/p), filtrable par compagnie/état — scopée par compagnie (B.7)' })
   @StrictQuery(ListClaimsQueryDto)
   list(@Query() q: ListClaimsQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -75,6 +79,8 @@ export class ClaimsController {
   }
 
   @Get(':id')
+  // SEC-43 : lecture scopée par compagnie dans le service (B.7)
+  @Authenticated()
   @ApiOperation({ summary: "Détail d'un dossier — scopé par compagnie (B.7)" })
   get(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.service.get(id, user);

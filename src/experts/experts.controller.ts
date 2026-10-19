@@ -1,9 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ReferentialPageQueryDto } from '../adherents/dto/company.dto';
 import { CreateExpertDto, UpdateExpertDto } from './dto/expert.dto';
@@ -12,11 +11,12 @@ import { ExpertsService } from './experts.service';
 @ApiTags('referential')
 @ApiBearerAuth()
 @Controller('referential/experts')
-@UseGuards(AuthGuard, PrivilegesGuard)
 export class ExpertsController {
   constructor(private readonly service: ExpertsService) {}
 
   @Get()
+  // SEC-43 : lecture scopée par compagnie dans le service (experts rattachés à la compagnie)
+  @Authenticated()
   @ApiOperation({ summary: 'Registre des experts de place, paginé (6/p, 100 max) — un rôle compagnie ne voit que les experts qui la servent (SEC-26)' })
   list(@Query() q: ReferentialPageQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.list(q.page, q.pageSize, user);

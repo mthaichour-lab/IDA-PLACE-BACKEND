@@ -2,6 +2,7 @@ import { MikroORM } from '@mikro-orm/core';
 import { Controller, Get, HttpCode, Logger, Module, ServiceUnavailableException } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Public } from '../decorators/access.decorator';
 import { sanitizeForLog } from '../logging/sanitize-log';
 
 /** Délai maximal de la vérification de base pour la sonde de disponibilité. */
@@ -23,6 +24,8 @@ const READINESS_DB_TIMEOUT_MS = 2000;
  */
 @ApiTags('health')
 @Controller('health')
+// SEC-43 : sondes d'orchestrateur, seules routes publiques de l'API (aucune donnée métier).
+@Public()
 @SkipThrottle()
 export class HealthController {
   private readonly logger = new Logger('Health');

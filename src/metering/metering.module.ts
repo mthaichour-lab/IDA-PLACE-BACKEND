@@ -1,11 +1,10 @@
-import { Body, Controller, Get, Module, Param, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Module, Param, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { AuthGuard } from '../common/guards/auth.guard';
-import { PrivilegesGuard } from '../common/guards/privileges.guard';
+import { Authenticated } from '../common/decorators/access.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess } from '../common/rbac/tenant-scope';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
@@ -33,7 +32,6 @@ import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 @ApiTags('metering')
 @ApiBearerAuth()
 @Controller()
-@UseGuards(AuthGuard, PrivilegesGuard)
 class MeteringController {
   constructor(
     private readonly service: MeteringService,
@@ -66,6 +64,8 @@ class MeteringController {
   // seulement dans l'interface). SEC-37 : facture SIMULÉE (consommation
   // mockée) marquée `SIMULEE`, jamais `EMISE`, et refusée en production.
   @Get('metering/:company/:period')
+  // SEC-43 : `assertCompanyAccess` ci-dessous (une compagnie ne voit que SA facturation)
+  @Authenticated()
   @ApiOperation({ summary: 'Consommation + facture mensuelle SIMULÉE (grille en vigueur sur la période) — B.7 : scopée par compagnie ; 503 en production (SEC-37)' })
   async get(@Param() p: MeteringInvoiceParamsDto, @CurrentUser() user: AuthenticatedUser) {
     assertCompanyAccess(user, p.company);
@@ -83,6 +83,8 @@ class MeteringController {
   }
 
   @Get('metering/:company/:period/history/:metric')
+  // SEC-43 : `assertCompanyAccess` ci-dessous (une compagnie ne voit que SA consommation)
+  @Authenticated()
   @ApiOperation({
     summary:
       'Historique mensuel (10 mois) d’une métrique de consommation — SIMULÉ (rampe déterministe), métrique de la grille uniquement (400 sinon) — B.7 : scopée par compagnie ; 503 en production',
@@ -94,6 +96,8 @@ class MeteringController {
   }
 
   @Get('pricing/grid')
+  // SEC-43 : grille tarifaire en vigueur, commune à tous les adhérents
+  @Authenticated()
   @ApiOperation({ summary: 'Grille tarifaire en vigueur aujourd’hui (versionnée, SEC-37)' })
   getGrid() {
     return this.service.gridFor();

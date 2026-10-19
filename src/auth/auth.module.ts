@@ -64,7 +64,7 @@ export function selectAuthProvider(env: Record<string, string | undefined>, dev:
  * `KeycloakStrategy` y lit l'état du compte et les dérogations grant/revoke
  * (`PlaceUser`). Voir `common/directory/place-user-directory.service.ts`.
  *
- * `@Global()` : `AuthGuard`/`PrivilegesGuard` sont utilisés par la quasi-
+ * `@Global()` : `AuthGuard`/`PrivilegesGuard` (gardes globales, SEC-43) sont utilisés par la quasi-
  * totalité des modules (B.2 : "tous").
  */
 @Global()
