@@ -1,31 +1,35 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
-import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../common/dto/pagination.dto';
 import { PRIVILEGES, ROLES } from '../../common/rbac/roles-privileges';
+
+/** SEC-44 — code compagnie (même espace que `Claim.company`, ex. `CAAT`, `SAA`) : 2 à 16 caractères majuscules/chiffres. */
+const COMPANY_CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{1,15}$/;
+const COMPANY_CODE_MESSAGE = 'companyId doit être un code compagnie (2 à 16 caractères : majuscules, chiffres, _ ou -).';
 
 export class ListPlaceUsersQueryDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
-  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) pageSize: number = DEFAULT_PAGE_SIZE;
+  @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) pageSize: number = DEFAULT_PAGE_SIZE;
 }
 
 export class CreatePlaceUserDto {
-  @ApiProperty() @IsString() name!: string;
-  @ApiProperty() @IsEmail() email!: string;
+  @ApiProperty() @IsString() @MaxLength(255) name!: string;
+  @ApiProperty() @IsEmail() @MaxLength(255) email!: string;
   @ApiProperty({ enum: ROLES }) @IsIn(ROLES as unknown as string[]) role!: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() companyId?: string;
-  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @IsIn(PRIVILEGES as unknown as string[], { each: true }) grant?: string[];
-  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @IsIn(PRIVILEGES as unknown as string[], { each: true }) revoke?: string[];
+  @ApiPropertyOptional({ example: 'CAAT' }) @IsOptional() @IsString() @Matches(COMPANY_CODE_PATTERN, { message: COMPANY_CODE_MESSAGE }) companyId?: string;
+  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @ArrayMaxSize(PRIVILEGES.length) @IsIn(PRIVILEGES as unknown as string[], { each: true }) grant?: string[];
+  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @ArrayMaxSize(PRIVILEGES.length) @IsIn(PRIVILEGES as unknown as string[], { each: true }) revoke?: string[];
 }
 
 export class UpdatePlaceUserDto {
-  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
-  @ApiPropertyOptional() @IsOptional() @IsEmail() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsEmail() @MaxLength(255) email?: string;
   @ApiPropertyOptional({ enum: ROLES }) @IsOptional() @IsIn(ROLES as unknown as string[]) role?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() companyId?: string;
+  @ApiPropertyOptional({ example: 'CAAT' }) @IsOptional() @IsString() @Matches(COMPANY_CODE_PATTERN, { message: COMPANY_CODE_MESSAGE }) companyId?: string;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() active?: boolean;
-  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @IsIn(PRIVILEGES as unknown as string[], { each: true }) grant?: string[];
-  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @IsIn(PRIVILEGES as unknown as string[], { each: true }) revoke?: string[];
+  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @ArrayMaxSize(PRIVILEGES.length) @IsIn(PRIVILEGES as unknown as string[], { each: true }) grant?: string[];
+  @ApiPropertyOptional({ type: [String], enum: PRIVILEGES }) @IsOptional() @IsArray() @ArrayMaxSize(PRIVILEGES.length) @IsIn(PRIVILEGES as unknown as string[], { each: true }) revoke?: string[];
 }
 
 export class PlaceUserViewDto {

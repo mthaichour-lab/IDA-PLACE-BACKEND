@@ -45,3 +45,61 @@ describe('RbacService.setMatrix — validation (revue sécurité 2026-10-18)', (
     expect(after.TRESORIER.bill).toBe(true); // autre rôle totalement intact
   });
 });
+
+/**
+ * SEC-25 (revue sécurité 2026-10-19) — plancher de séparation des tâches :
+ * aucun privilège réservé à la place pour un rôle de compagnie.
+ */
+describe('RbacService — plancher des privilèges réservés à la place (SEC-25)', () => {
+  let service: RbacService;
+
+  beforeEach(() => {
+    service = new RbacService();
+  });
+
+  it('refuse (400 PRIVILEGE_RESERVE_PLACE) de donner "decide" ou "closeQuarter" à un rôle compagnie via la matrice', () => {
+    expect(() => service.setMatrix({ CORRESPONDANT_IDA: { decide: true } } as never)).toThrow();
+    let code: string | undefined;
+    try {
+      service.setMatrix({ TRESORIER: { closeQuarter: true } } as never);
+    } catch (e) {
+      code = (e as { response: { code: string } }).response.code;
+    }
+    expect(code).toBe('PRIVILEGE_RESERVE_PLACE');
+    expect(service.getMatrix().CORRESPONDANT_IDA.decide).toBe(false);
+    expect(service.getMatrix().TRESORIER.closeQuarter).toBe(false);
+  });
+
+  it("accepte de RETIRER un privilège (false) à un rôle compagnie, et d'accorder un privilège réservé à un rôle de place", () => {
+    expect(() => service.setMatrix({ CORRESPONDANT_IDA: { decide: false }, MEMBRE_COMMISSION: { seal: true } } as never)).not.toThrow();
+    expect(service.getMatrix().MEMBRE_COMMISSION.seal).toBe(true);
+  });
+
+  it("un patch refusé n'applique AUCUNE partie de la modification (validation avant fusion)", () => {
+    expect(() => service.setMatrix({ MEMBRE_COMMISSION: { seal: true }, TRESORIER: { sanction: true } } as never)).toThrow();
+    expect(service.getMatrix().MEMBRE_COMMISSION.seal).toBe(false);
+  });
+
+  it('previewMatrixChange renvoie les changements effectifs sans les appliquer (journalisation)', () => {
+    const changes = service.previewMatrixChange({ TRESORIER: { bill: false, pay: true } });
+    expect(changes).toEqual([{ role: 'TRESORIER', privilege: 'bill', from: true, to: false }]);
+    expect(service.getMatrix().TRESORIER.bill).toBe(true);
+  });
+
+  it('previewMatrixChange refuse un corps absent ou mal formé (400 et non 500)', () => {
+    expect(() => service.previewMatrixChange(undefined)).toThrow();
+    expect(() => service.previewMatrixChange([])).toThrow();
+  });
+
+  it('effectivePrivileges retire toute dérogation "grant" réservée à la place pour un rôle compagnie (défense en profondeur)', () => {
+    const privileges = service.effectivePrivileges('TRESORIER', ['closeQuarter', 'decide', 'admin', 'remind']);
+    expect(privileges).not.toContain('closeQuarter');
+    expect(privileges).not.toContain('decide');
+    expect(privileges).not.toContain('admin');
+    expect(privileges).toContain('remind');
+  });
+
+  it('effectivePrivileges ignore un privilège inconnu en dérogation', () => {
+    expect(service.effectivePrivileges('TRESORIER', ['inconnu' as never])).not.toContain('inconnu');
+  });
+});

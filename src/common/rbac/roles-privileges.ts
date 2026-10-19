@@ -92,3 +92,42 @@ export const PLACE_LEVEL_ROLES: Role[] = ['OPERATEUR_PLACE', 'ADMIN_UAR', 'MEMBR
 
 /** Rôles rattachés obligatoirement à une compagnie (scoping tenant). */
 export const COMPANY_SCOPED_ROLES: Role[] = ['CORRESPONDANT_IDA', 'TRESORIER'];
+
+/**
+ * SEC-25 (revue sécurité 2026-10-19) — privilèges RÉSERVÉS À LA PLACE :
+ * administration, gouvernance, décision/sanction de commission, clôtures,
+ * paramètres conventionnels, onboarding/adhésions, scellement. Plancher
+ * absolu : aucun rôle de `COMPANY_SCOPED_ROLES` ne peut les détenir, ni par
+ * la matrice (`RbacService.setMatrix`), ni par une dérogation `grant`
+ * individuelle (`PlaceUserDirectory`), ni au calcul des privilèges effectifs
+ * (`RbacService.effectivePrivileges`, défense en profondeur). Une compagnie
+ * ne peut donc jamais juger, sanctionner ou clôturer ses propres dossiers.
+ *
+ * Les autres privilèges (`matchDecide`, `exchange`, `insert`, `import`,
+ * `refedit`, `remind`, `synth`, `pay`, `bill`) sont des actions qu'une
+ * compagnie exerce sur SES propres données (scoping tenant des services).
+ */
+export const PLACE_RESERVED_PRIVILEGES: readonly Privilege[] = [
+  'admin',
+  'seal',
+  'pvSign',
+  'penaltyOrder',
+  'decide',
+  'sanction',
+  'params',
+  'grid',
+  'closeQuarter',
+  'onboardCompany',
+  'membership',
+  'validateRef',
+];
+
+export function isCompanyScopedRole(role: string): boolean {
+  return (COMPANY_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+/** Privilèges de `privileges` interdits au rôle `role` (vide si le rôle est un rôle de place). */
+export function forbiddenPrivilegesForRole(role: string, privileges: readonly string[]): Privilege[] {
+  if (!isCompanyScopedRole(role)) return [];
+  return privileges.filter((p): p is Privilege => (PLACE_RESERVED_PRIVILEGES as readonly string[]).includes(p));
+}
