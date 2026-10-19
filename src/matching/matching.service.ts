@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
-import { withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { RealtimeGateway } from '../realtime/realtime.module';
@@ -168,6 +168,19 @@ export class MatchingService {
    * (`claimAId`/`claimBId`) pour la saisie Art. 14 (`PATCH
    * /claims/:id/responsabilite`) ; la file, elle, ne les publie pas.
    */
+  /** Même raison que `CommissionService.loadCaseForMutation` : un 404 métier ne doit jamais déclencher le repli mémoire. */
+  private async loadForDecision(id: string): Promise<{ mode: 'db'; entity: MatchQueueItem } | { mode: 'memory'; row: MemoryMatchRow }> {
+    try {
+      const entity = await this.repo.findOne({ id });
+      if (entity) return { mode: 'db', entity };
+    } catch (err) {
+      logDegraded('MatchingService.loadForDecision', `base de données injoignable (${(err as Error).message}) — repli mémoire`);
+    }
+    const row = this.memory.find((r) => r.id === id);
+    if (row) return { mode: 'memory', row };
+    throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
+  }
+
   async getItem(id: string, user?: AuthenticatedUser): Promise<MatchItemDetailDto> {
     const row = (await this.findAllDtos()).find((r) => r.id === id);
     if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
@@ -254,32 +267,52 @@ export class MatchingService {
     };
   }
 
+  /**
+   * Une confirmation ou un rejet porte sur la PAIRE : il s'applique aussi à la
+   * ligne miroir (B↔A), si elle n'a pas déjà été tranchée. Un rattachement
+   * manuel (`link`) vise une autre déclaration et ne se propage pas.
+   * Lecture, puis contrôle de périmètre, puis écriture : un 404/403 levé dans
+   * la closure de `withDegradedFallback` serait pris pour une panne DB.
+   */
   async decide(id: string, dto: MatchDecisionDto, decidedBy: string, user?: AuthenticatedUser): Promise<MatchDecisionResultDto> {
-    const result = await withDegradedFallback(
-      'MatchingService.decide',
-      async () => {
-        const item = await this.repo.findOne({ id });
-        if (!item) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
-        if (!this.visibleToUser(item, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
-        item.status = nextStatusForAction(dto.action);
-        item.confirmedBy = decidedBy;
-        item.confirmedAt = new Date();
-        if (dto.action === 'reject') item.rejectReason = dto.reason;
-        if (dto.action === 'link' && dto.linkDeclId) item.linkedDeclId = dto.linkDeclId;
-        await this.repo.getEntityManager().flush();
-        return toDto(item);
-      },
-      () => {
-        const item = this.memory.find((r) => r.id === id);
-        if (!item) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable (mode dégradé).' });
-        if (!this.visibleToUser(item, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
-        item.status = nextStatusForAction(dto.action);
-        item.confirmedBy = decidedBy;
-        item.confirmedAt = new Date().toISOString();
-        if (dto.action === 'reject') item.rejectReason = dto.reason;
-        return toPublicDto(item);
-      },
-    );
+    const loaded = await this.loadForDecision(id);
+    const current = loaded.mode === 'db' ? loaded.entity : loaded.row;
+    if (!this.visibleToUser(current, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
+    const status = nextStatusForAction(dto.action);
+    const symmetric = dto.action === 'confirm' || dto.action === 'reject';
+    const now = new Date();
+
+    let result: MatchQueueItemDto;
+    let mirrorResult: MatchQueueItemDto | undefined;
+    if (loaded.mode === 'db') {
+      const item = loaded.entity;
+      const targets = [item];
+      const mirror = symmetric && item.declBId ? await this.repo.findOne({ declAId: item.declBId, declBId: item.declAId }) : null;
+      if (mirror && !isTerminal(mirror.status)) targets.push(mirror);
+      for (const t of targets) {
+        t.status = status;
+        t.confirmedBy = decidedBy;
+        t.confirmedAt = now;
+        if (dto.action === 'reject') t.rejectReason = dto.reason;
+      }
+      if (dto.action === 'link' && dto.linkDeclId) item.linkedDeclId = dto.linkDeclId;
+      await this.repo.getEntityManager().flush();
+      result = toDto(item);
+      if (targets.length > 1) mirrorResult = toDto(targets[1]);
+    } else {
+      const item = loaded.row;
+      const targets = [item];
+      const mirror = symmetric && item.declBId ? this.memory.find((r) => r.declAId === item.declBId && r.declBId === item.declAId) : undefined;
+      if (mirror && !isTerminal(mirror.status)) targets.push(mirror);
+      for (const t of targets) {
+        t.status = status;
+        t.confirmedBy = decidedBy;
+        t.confirmedAt = now.toISOString();
+        if (dto.action === 'reject') t.rejectReason = dto.reason;
+      }
+      result = toPublicDto(item);
+      if (targets.length > 1) mirrorResult = toPublicDto(targets[1]);
+    }
 
     const decision: MatchDecisionResultDto = {
       id: result.id,
@@ -289,6 +322,7 @@ export class MatchingService {
     };
     // B.12 — événement temps réel après toute décision de confrontation.
     this.realtime.emitEvent('match.updated', { item: result, decision });
+    if (mirrorResult) this.realtime.emitEvent('match.updated', { item: mirrorResult, decision: { ...decision, id: mirrorResult.id } });
     return decision;
   }
 
