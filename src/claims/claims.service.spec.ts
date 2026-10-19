@@ -79,11 +79,15 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
   let emitEvent: jest.Mock;
   let bareme: BaremeReferentialService;
   let recoursRows: Array<{ claimId: string }>;
+  let recoursCreate: jest.Mock;
+  let companyStatusByCode: jest.Mock;
 
   beforeEach(async () => {
     emitEvent = jest.fn();
     bareme = new BaremeReferentialService(failingRepo(), failingRepo(), failingRepo());
     recoursRows = [];
+    recoursCreate = jest.fn(async (dto: { claimId: string }) => ({ id: 'r-1', ...dto }));
+    companyStatusByCode = jest.fn(async () => undefined);
     const moduleRef = await Test.createTestingModule({
       providers: [
         ClaimsService,
@@ -93,10 +97,14 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
         { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
         { provide: ConfigService, useFactory: fakeConfigService },
         { provide: RealtimeGateway, useValue: { emitEvent } },
-        { provide: RecoursService, useValue: { listAll: jest.fn(async () => recoursRows) } },
+        { provide: RecoursService, useValue: { listAll: jest.fn(async () => recoursRows), create: recoursCreate } },
         {
           provide: AdherentsService,
-          useValue: { publishedBaremeCases: () => bareme.publishedCases(), publishedVehicleCategories: () => bareme.publishedCategories() },
+          useValue: {
+            publishedBaremeCases: () => bareme.publishedCases(),
+            publishedVehicleCategories: () => bareme.publishedCategories(),
+            companyStatusByCode,
+          },
         },
       ],
     }).compile();
@@ -186,6 +194,54 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     expect(matched.length).toBeGreaterThanOrEqual(1);
     expect(matched[0].level).toBe('AUTO');
     expect(matched[0].status).toBe('AUTO_CONFIRME');
+  });
+
+  describe('openRecours — statut compagnie (audit sécurité 2026-10-19)', () => {
+    const operateur: AuthenticatedUser = { id: 'op-1', name: 'Opérateur', email: 'op@test.dz', role: 'OPERATEUR_PLACE', privileges: ['insert'] };
+
+    async function importOne(numEconstat: string, accidentDate = '2026-01-10'): Promise<string> {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat, compagnieA: 'CAAT', compagnieB: 'SAA', dateAccident: accidentDate });
+      await service.importFile('import.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      const list = await service.list({ page: 1, pageSize: 6 });
+      return list.items.find((c) => c.numEconstat === numEconstat)!.id;
+    }
+
+    it('autorise un nouveau recours quand la compagnie est ACTIF (ou inconnue du référentiel appelé)', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'ACTIF' });
+      const claimId = await importOne('ECT-STATUS-ACTIF');
+      await expect(service.openRecours({ claimId, from: 'CAAT', to: 'SAA', amount: 1000 }, operateur)).resolves.toMatchObject({ id: 'r-1' });
+    });
+
+    it('refuse (403 COMPAGNIE_NON_ACTIVE) un nouveau recours pour une compagnie EXCLU, même pour un sinistre encore dans le délai', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'EXCLU' });
+      const claimId = await importOne('ECT-STATUS-EXCLU');
+      await expect(service.openRecours({ claimId, from: 'CAAT', to: 'SAA', amount: 1000 }, operateur)).rejects.toMatchObject({
+        response: { code: 'COMPAGNIE_NON_ACTIVE' },
+      });
+      expect(recoursCreate).not.toHaveBeenCalled();
+    });
+
+    it('refuse (403) un nouveau recours pour une compagnie SUSPENDU', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'SUSPENDU' });
+      const claimId = await importOne('ECT-STATUS-SUSPENDU');
+      await expect(service.openRecours({ claimId, from: 'CAAT', to: 'SAA', amount: 1000 }, operateur)).rejects.toMatchObject({
+        response: { code: 'COMPAGNIE_NON_ACTIVE' },
+      });
+    });
+
+    it('EN_RETRAIT : refuse un recours pour un sinistre postérieur à la date d’effet du retrait', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'EN_RETRAIT', withdrawalEffectiveDate: '2026-06-30' });
+      const claimId = await importOne('ECT-STATUS-RETRAIT-APRES', '2026-09-01');
+      await expect(service.openRecours({ claimId, from: 'CAAT', to: 'SAA', amount: 1000 }, operateur)).rejects.toMatchObject({
+        response: { code: 'COMPAGNIE_NON_ACTIVE' },
+      });
+    });
+
+    it('EN_RETRAIT : autorise un recours pour un sinistre antérieur à la date d’effet du retrait (obligations maintenues, Art. 30-35)', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'EN_RETRAIT', withdrawalEffectiveDate: '2026-06-30' });
+      const claimId = await importOne('ECT-STATUS-RETRAIT-AVANT', '2026-03-01');
+      await expect(service.openRecours({ claimId, from: 'CAAT', to: 'SAA', amount: 1000 }, operateur)).resolves.toMatchObject({ id: 'r-1' });
+    });
   });
 
   describe('scoping tenant (B.7, §5 de la mission)', () => {

@@ -142,7 +142,7 @@ describe('MembershipService (mode dégradé — adhésions et retraits, Art. 30-
       now = new Date('2027-01-01T08:00:00Z');
       const effective = await service.markEffective(r.id, 'Courrier du 30/09', OPERATEUR);
       expect(effective).toMatchObject({ state: 'EFFECTIVE', decisionNote: 'Courrier du 30/09' });
-      expect(adherents.markCompanyWithdrawn).toHaveBeenCalledWith('c-saa');
+      expect(adherents.markCompanyWithdrawn).toHaveBeenCalledWith('c-saa', r.effectiveDate);
       await expect(service.cancel(r.id, undefined, OPERATEUR)).rejects.toMatchObject({ status: 409 });
     });
 

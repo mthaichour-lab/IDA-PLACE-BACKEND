@@ -283,13 +283,14 @@ export class AdherentsService {
    * `MembershipService` (CommissionModule) après ses propres contrôles
    * d'autorisation — aucune vérification de périmètre ici.
    */
-  async markCompanyWithdrawn(id: string): Promise<CompanyViewDto> {
+  async markCompanyWithdrawn(id: string, effectiveDate: string): Promise<CompanyViewDto> {
     return withDegradedFallback(
       'AdherentsService.markCompanyWithdrawn',
       async () => {
         const c = await this.companies.findOne({ id });
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
         c.status = CompanyStatus.EN_RETRAIT;
+        c.withdrawalEffectiveDate = effectiveDate;
         await this.companies.getEntityManager().flush();
         return toCompanyView(c, await this.agencyCountsFor(c.id));
       },
@@ -297,7 +298,28 @@ export class AdherentsService {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
         c.status = CompanyStatus.EN_RETRAIT;
+        c.withdrawalEffectiveDate = effectiveDate;
         return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
+      },
+    );
+  }
+
+  /**
+   * Statut réel d'une compagnie par son CODE (pas son id) — utilisé par
+   * `ClaimsService.openRecours` pour refuser un nouveau recours d'une
+   * compagnie qui n'est plus ACTIF (audit sécurité 2026-10-19). `undefined`
+   * si le code est inconnu : laissé à l'appelant plutôt que fabriqué ici.
+   */
+  async companyStatusByCode(code: string): Promise<{ status: CompanyStatus; withdrawalEffectiveDate?: string } | undefined> {
+    return withDegradedFallback(
+      'AdherentsService.companyStatusByCode',
+      async () => {
+        const c = await this.companies.findOne({ code });
+        return c ? { status: c.status, withdrawalEffectiveDate: c.withdrawalEffectiveDate } : undefined;
+      },
+      () => {
+        const c = MEMORY_COMPANIES.find((m) => m.code === code);
+        return c ? { status: c.status, withdrawalEffectiveDate: c.withdrawalEffectiveDate } : undefined;
       },
     );
   }

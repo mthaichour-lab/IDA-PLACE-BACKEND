@@ -178,6 +178,22 @@ export class ClaimsService {
     if (claim.eligibilityVerdict !== 'ELIGIBLE_IDA') {
       throw new BadRequestException({ code: 'DOSSIER_HORS_IDA', message: 'Dossier hors IDA : pas de recours conventionnel dans le cadre de la convention.' });
     }
+    // Audit sécurité 2026-10-19 : une compagnie qui n'est plus ACTIF ne peut
+    // plus ouvrir de NOUVEAU recours — sauf pour un sinistre antérieur à sa
+    // date d'effet de retrait (Chapitre VI Art. 30-35 : « les obligations
+    // restent dues pour tous les sinistres antérieurs à la sortie »). Un
+    // statut EXCLU/SUSPENDU n'a pas cette exception : la compagnie n'exerce
+    // plus aucun droit conventionnel.
+    const company = await this.adherents.companyStatusByCode(dto.from);
+    if (company && company.status !== 'ACTIF') {
+      const antérieurAuRetrait = company.status === 'EN_RETRAIT' && company.withdrawalEffectiveDate && !!claim.accidentDate && claim.accidentDate < company.withdrawalEffectiveDate;
+      if (!antérieurAuRetrait) {
+        throw new ForbiddenException({
+          code: 'COMPAGNIE_NON_ACTIVE',
+          message: `${dto.from} n'est plus une compagnie active (statut ${company.status}) : aucun nouveau recours ne peut être ouvert en son nom.`,
+        });
+      }
+    }
     if ((await this.recours.listAll()).some((r) => r.claimId === claim.id)) {
       throw new ConflictException({ code: 'RECOURS_EXISTANT', message: 'Un recours existe déjà pour ce dossier.' });
     }

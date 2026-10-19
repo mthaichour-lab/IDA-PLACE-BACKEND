@@ -18,6 +18,7 @@ export interface MemoryCompany {
   feedMode: FeedMode;
   apiKeyMasked: string;
   status: CompanyStatus;
+  withdrawalEffectiveDate?: string;
   delayOverrides?: Record<string, unknown>;
   correspondentName?: string;
   correspondentPhone?: string;

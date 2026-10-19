@@ -216,7 +216,7 @@ export class MembershipService {
         message: `Le retrait ne peut être constaté qu'après sa date d'effet (${current.effectiveDate ?? 'inconnue'}).`,
       });
     }
-    await this.adherents.markCompanyWithdrawn(current.companyId!);
+    await this.adherents.markCompanyWithdrawn(current.companyId!, current.effectiveDate!);
     return this.persistDecision(loaded, { state, decidedAt: now.toISOString(), decidedBy: user.name, decisionNote: decisionNote?.trim() || undefined });
   }
 

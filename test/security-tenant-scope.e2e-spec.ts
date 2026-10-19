@@ -421,6 +421,47 @@ describe('Revue sécurité (B.7) — régression des failles de scoping tenant t
           .expect(201);
       }
     });
+
+    /**
+     * Audit sécurité 2026-10-19 : une fois le retrait constaté (compagnie
+     * EN_RETRAIT), plus aucun NOUVEAU recours ne doit pouvoir être ouvert en
+     * son nom pour un sinistre postérieur à la date d'effet. Compagnie
+     * jetable (jamais CAAT/SAA, partagées par toute la suite) pour ne pas
+     * polluer l'état des autres tests de ce fichier.
+     */
+    it("un retrait constaté (EN_RETRAIT) bloque l'ouverture d'un nouveau recours pour cette compagnie (403 COMPAGNIE_NON_ACTIVE)", async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/referential/companies')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ code: 'WDR1', name: 'Compagnie Retirée E2E', color: '#445566', kind: 'INSURER', feedMode: 'API' })
+        .expect(201);
+
+      const claimId = await importEligibleClaim(app, 'E2E-SEC-WITHDRAWN', 'WDR1', 'SAA');
+      const companies = await request(app.getHttpServer()).get('/api/v1/referential/companies?pageSize=200').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      const wd1 = (companies.body.items as { id: string; code: string }[]).find((c) => c.code === 'WDR1');
+      expect(wd1).toBeDefined();
+
+      // receivedAt largement passé : la date d'effet (31/12 de l'année de réception, préavis ≥ 3 mois) est déjà révolue.
+      const retrait = await request(app.getHttpServer())
+        .post('/api/v1/commission/membership-requests')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ type: 'RETRAIT', receivedAt: '2025-01-01', companyId: wd1!.id })
+        .expect(201);
+      expect(retrait.body.effectiveDate).toBe('2025-12-31');
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/commission/membership-requests/${retrait.body.id}/effective`)
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({})
+        .expect(201);
+
+      const refused = await request(app.getHttpServer())
+        .post('/api/v1/recours')
+        .set('x-dev-user', 'OPERATEUR_PLACE')
+        .send({ claimId, from: 'WDR1', to: 'SAA', amount: 10_000 })
+        .expect(403);
+      expect(refused.body.code).toBe('COMPAGNIE_NON_ACTIVE');
+    });
   });
 
   /** Avancement du lot trimestriel (Diagramme 2) — pipeline place-entière, privilège `closeQuarter`. */

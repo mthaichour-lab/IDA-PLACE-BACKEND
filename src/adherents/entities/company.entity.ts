@@ -54,6 +54,15 @@ export class Company {
   @Enum(() => CompanyStatus)
   status: CompanyStatus = CompanyStatus.ACTIF;
 
+  /**
+   * Date d'effet du retrait (AAAA-MM-JJ), posée par `markCompanyWithdrawn`
+   * en même temps que `status = EN_RETRAIT`. Permet de distinguer un
+   * sinistre antérieur (obligations maintenues, Chapitre VI Art. 30-35)
+   * d'un nouveau recours après la sortie (refusé, voir `ClaimsService.openRecours`).
+   */
+  @Property({ type: 'date', nullable: true })
+  withdrawalEffectiveDate?: string;
+
   /** Délais dérogatoires par compagnie (jsonb) — ex: {"recoursDays": 45}. */
   @Property({ type: 'json', nullable: true })
   delayOverrides?: Record<string, unknown>;
