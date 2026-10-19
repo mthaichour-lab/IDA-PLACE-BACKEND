@@ -1,7 +1,8 @@
 import * as ExcelJS from 'exceljs';
 import { isValidCircumstance } from '../adherents/bareme-rules';
 import { CLAIM_IMPORT_COLUMNS, ClaimColumnDef } from './claim-47-columns';
-import { CLAIM_IMPORT_EXTENSION_COLUMNS, ClaimExtensionColumnDef } from './claim-extension-columns';
+import { CLAIM_IMPORT_COLUMNS_V2, CLAIM_IMPORT_EXTENSION_COLUMNS, ClaimExtensionColumnDef } from './claim-extension-columns';
+import { assertImportFileAcceptable, assertRowCount, DEFAULT_IMPORT_LIMITS, ImportLimits } from './import-file-guard';
 
 /**
  * Parsing du fichier d'import (47 colonnes, B.4) — Excel (.xlsx/.xls) ou
@@ -52,11 +53,6 @@ export interface ClaimImportWarning {
 
 export type ParsedFileFormat = 'xlsx' | 'csv';
 
-export function detectFormat(fileName: string): ParsedFileFormat {
-  const ext = fileName.toLowerCase().split('.').pop();
-  return ext === 'csv' || ext === 'txt' ? 'csv' : 'xlsx';
-}
-
 /** Découpe une ligne CSV en champs, en gérant les guillemets (échappement `""`) et `,`/`;`. */
 export function splitCsvLine(line: string, delimiter: string): string[] {
   const fields: string[] = [];
@@ -102,16 +98,20 @@ function parseCsvBuffer(buffer: Buffer): string[][] {
   return lines.map((l) => splitCsvLine(l, delimiter));
 }
 
-async function parseXlsxBuffer(buffer: Buffer): Promise<string[][]> {
+async function parseXlsxBuffer(buffer: Buffer, limits: Pick<ImportLimits, 'maxRows'>): Promise<string[][]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   const sheet = workbook.worksheets[0];
   if (!sheet) return [];
+  // SEC-12 : plafond de lignes vérifié avant de matérialiser la feuille
+  // (en-tête compris dans `actualRowCount`).
+  assertRowCount(Math.max(0, sheet.actualRowCount - 1), limits);
   const rows: string[][] = [];
   sheet.eachRow((row) => {
     const values: string[] = [];
     // `row.values[0]` est toujours vide (ExcelJS indexe les cellules à partir de 1).
-    const cellCount = Math.max(row.cellCount, CLAIM_IMPORT_COLUMNS.length);
+    // SEC-12 : seules les colonnes du modèle (53 au plus) sont lues.
+    const cellCount = Math.max(Math.min(row.cellCount, CLAIM_IMPORT_COLUMNS_V2.length), CLAIM_IMPORT_COLUMNS.length);
     for (let c = 1; c <= cellCount; c++) {
       const cell = row.getCell(c);
       const v = cell.value;
@@ -231,11 +231,14 @@ export function mapExtensionRow(cells: string[]): { extension: ClaimExtensionVal
 
 /**
  * Parse un fichier d'import (buffer) et renvoie les lignes typées
- * (en-tête ignoré). Format déduit de l'extension du nom de fichier.
+ * (en-tête ignoré). SEC-12 : le fichier passe d'abord les garde-fous de
+ * `import-file-guard.ts` (extension ET signature des octets, archive XLSX
+ * saine et bornée, `.xls` refusé, plafond de lignes) — 400 sinon.
  */
-export async function parseClaimFile(buffer: Buffer, fileName: string): Promise<ParsedClaimRow[]> {
-  const format = detectFormat(fileName);
-  const rawRows = format === 'xlsx' ? await parseXlsxBuffer(buffer) : parseCsvBuffer(buffer);
+export async function parseClaimFile(buffer: Buffer, fileName: string, limits: ImportLimits = DEFAULT_IMPORT_LIMITS): Promise<ParsedClaimRow[]> {
+  const format = assertImportFileAcceptable(fileName, buffer, limits);
+  const rawRows = format === 'xlsx' ? await parseXlsxBuffer(buffer, limits) : parseCsvBuffer(buffer);
+  assertRowCount(Math.max(0, rawRows.length - 1), limits);
   const dataRows = rawRows.slice(1); // ligne 1 = en-tête (modèle téléchargeable, B.4)
 
   return dataRows.map((cells, i) => {

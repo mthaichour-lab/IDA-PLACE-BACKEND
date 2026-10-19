@@ -37,6 +37,9 @@ export class ClaimsController {
   // (DoS par fichier géant, type arbitraire accepté). Limite et extensions
   // CSV/Excel RAISONNABLES mais provisoires — à valider avec le métier (pas
   // de valeur officielle dans le dossier technique), voir QUESTIONS_UAR.md.
+  // SEC-12 : `.xls` passe ce filtre pour recevoir un 400 explicite ; le
+  // contenu réel (signature, archive, nombre de lignes) est vérifié par
+  // `import-file-guard.ts` avant tout parsing.
   @Post('import')
   @Privileges('import')
   @ApiConsumes('multipart/form-data')

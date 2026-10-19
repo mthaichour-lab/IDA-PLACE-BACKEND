@@ -18,6 +18,7 @@ import { CLAIM_IMPORT_COLUMNS } from './claim-47-columns';
 import { ClaimArt14Fields, resolveImportedArt14 } from './claim-art14';
 import { CLAIM_IMPORT_COLUMNS_V2 } from './claim-extension-columns';
 import { parseClaimFile } from './claim-parser';
+import { ImportLimits, importLimitsFromEnv } from './import-file-guard';
 import { Claim } from './entities/claim.entity';
 import { ClaimImportReportDto, ClaimImportRowResultDto, ClaimImportWarningDto } from './dto/claim-import.dto';
 import { ClaimViewDto, ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from './dto/claim.dto';
@@ -115,6 +116,8 @@ function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
 @Injectable()
 export class ClaimsService {
   private readonly logger = new Logger('ClaimsService');
+  /** SEC-12 : plafonds d'import lus une fois au démarrage (valeur illisible = échec au démarrage, jamais un plafond levé). */
+  private readonly importLimits: ImportLimits = importLimitsFromEnv();
 
   constructor(
     @InjectRepository(Claim) private readonly repo: EntityRepository<Claim>,
@@ -353,7 +356,7 @@ export class ClaimsService {
 
   async importFile(fileName: string, buffer: Buffer, user: AuthenticatedUser, requestedCompany?: string): Promise<ClaimImportReportDto> {
     const company = await this.resolveImportingCompany(user, requestedCompany, fileName);
-    const parsedRows = await parseClaimFile(buffer, fileName);
+    const parsedRows = await parseClaimFile(buffer, fileName, this.importLimits);
     const rows: ClaimImportRowResultDto[] = [];
     const created: ClaimViewDto[] = [];
     const warnings: ClaimImportWarningDto[] = [];

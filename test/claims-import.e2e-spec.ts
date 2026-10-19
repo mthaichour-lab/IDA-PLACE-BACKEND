@@ -38,10 +38,12 @@ describe('Import des dossiers — POST /api/v1/claims/import (e2e)', () => {
   });
 
   it("exige le privilège 'import' (CORRESPONDANT_IDA l'a, TRESORIER ne l'a pas)", async () => {
+    // Sans pièce jointe : la garde répond 403 avant toute lecture du corps
+    // multipart (avec un fichier en flux, le serveur coupait la connexion
+    // pendant l'envoi → ECONNRESET intermittent côté client).
     await request(app.getHttpServer())
       .post('/api/v1/claims/import')
       .set('x-dev-user', 'TRESORIER')
-      .attach('file', path.join(__dirname, 'fixtures/import-eligible-ineligible.csv'))
       .expect(403);
   });
 

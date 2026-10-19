@@ -63,6 +63,27 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     return res.body.items;
   }
 
+  describe('SEC-12 — import : déni de service par fichier', () => {
+    const asCaat = () => http().post('/api/v1/claims/import').set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT'));
+
+    it('un faux XLSX (texte renommé) est refusé (400 FORMAT_INVALIDE)', async () => {
+      const res = await asCaat().attach('file', Buffer.from('a;b;c\n1;2;3\n'), 'faux.xlsx').expect(400);
+      expect(res.body.code).toBe('FORMAT_INVALIDE');
+    });
+
+    it('un .xls (Excel 97-2003) est refusé proprement (400)', async () => {
+      const res = await asCaat().attach('file', Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), 'ancien.xls').expect(400);
+      expect(res.body.code).toBe('FORMAT_XLS_NON_PRIS_EN_CHARGE');
+    });
+
+    it('un fichier au-delà de IMPORT_MAX_ROWS (5 000 par défaut) est refusé sans créer de dossier', async () => {
+      const row = csvRow({ numEconstat: 'E2E-SEC12-FLOOD', compagnieA: 'CAAT' });
+      const res = await asCaat().attach('file', csvFile(...Array.from({ length: 5001 }, () => row)), 'flood.csv').expect(400);
+      expect(res.body.code).toBe('IMPORT_TROP_DE_LIGNES');
+      expect((await allClaims()).some((c) => c.numEconstat === 'E2E-SEC12-FLOOD')).toBe(false);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(
