@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  assertEligibilityConfig,
   DEFAULT_ELIGIBILITY_CONFIG,
   EligibilityConfig,
   EligibilityInputRow,
@@ -21,7 +22,8 @@ export class EligibilityService {
   private readonly config: EligibilityConfig;
 
   constructor(configService: ConfigService) {
-    this.config = {
+    // SEC-27 : valeur illisible = échec au démarrage, jamais un plafond neutralisé.
+    this.config = assertEligibilityConfig({
       version: configService.get<string>('ELIGIBILITY_GRID_VERSION') ?? DEFAULT_ELIGIBILITY_CONFIG.version,
       maxAmountDA: Number(
         configService.get<string>('ELIGIBILITY_MAX_AMOUNT_DA') ?? DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA,
@@ -30,7 +32,7 @@ export class EligibilityService {
         configService.get<string>('ELIGIBILITY_RECOURS_MAX_MONTHS') ?? DEFAULT_ELIGIBILITY_CONFIG.recoursMaxMonths,
       ),
       requiredPieces: DEFAULT_ELIGIBILITY_CONFIG.requiredPieces,
-    };
+    });
   }
 
   getConfig(): EligibilityConfig {

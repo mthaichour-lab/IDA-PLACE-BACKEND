@@ -59,6 +59,9 @@ function toClaimView(c: Claim): ClaimViewDto {
     eligibilityReasons: c.eligibilityReasons,
     dateDemandeRecours: c.dateDemandeRecours,
     canalDeclaration: c.canalDeclaration,
+    nombreVehicules: c.nombreVehicules,
+    territoire: c.territoire,
+    dommagesCorporelsDeclares: c.dommagesCorporelsDeclares,
     // Additif (2026-10-18) — lu depuis `raw` (colonne 44, jamais promue en
     // colonne typée : voir `ClaimViewDto.assureIdentite`, aucune migration).
     assureIdentite: c.raw.assureAIdentite as string | undefined,
@@ -470,6 +473,9 @@ export class ClaimsService {
           eligibilityReasons: reasons,
           dateDemandeRecours: values.dateDemandeRecours as string | undefined,
           canalDeclaration: values.canalDeclaration as string | undefined,
+          nombreVehicules: values.nombreVehicules as number | undefined,
+          territoire: values.territoire as string | undefined,
+          dommagesCorporelsDeclares: values.dommagesCorporelsDeclares as boolean | undefined,
           // Additif (2026-10-18) — même donnée que `toClaimView` (colonne 44),
           // ici lue directement sur `values` (pas de `raw` dans ce repli mémoire).
           assureIdentite: values.assureAIdentite as string | undefined,
@@ -523,6 +529,24 @@ export class ClaimsService {
       ? await Promise.all([this.adherents.publishedBaremeCases(), this.adherents.publishedVehicleCategories()])
       : [[], []];
 
+    // SEC-27 : statut des compagnies adverses lu une fois par code et par date.
+    const adverseCache = new Map<string, Promise<{ adherente: boolean; active: boolean }>>();
+    const adverseStatus = (code: string | undefined, accidentDate: string | undefined) => {
+      const normalized = code?.trim().toUpperCase();
+      if (!normalized) return Promise.resolve({ adherente: false, active: false });
+      const key = `${normalized}|${accidentDate ?? ''}`;
+      if (!adverseCache.has(key)) {
+        adverseCache.set(
+          key,
+          (async () => {
+            if (!(await this.adherents.companyStatusByCode(normalized))) return { adherente: false, active: false };
+            return { adherente: true, active: !(await this.adherents.companyInactiveReason(normalized, accidentDate)) };
+          })(),
+        );
+      }
+      return adverseCache.get(key)!;
+    };
+
     for (const row of parsedRows) {
       const v = row.values;
       // SEC-02 : colonne « Compagnie A » vide → compagnie déclarante ;
@@ -539,6 +563,23 @@ export class ClaimsService {
         continue;
       }
       v.compagnieA = company;
+      // SEC-27 : adhésion et activité de la partie adverse (Art. 3/28) lues
+      // au référentiel, jamais auto-déclarées ; une déclaration contraire est
+      // corrigée et signalée (DECLARATION_CORRIGEE), la valeur déclarée reste dans `raw`.
+      const declaredAdverse = { adversePartieAdherente: v.adversePartieAdherente, adversePartieActive: v.adversePartieActive };
+      const adverse = await adverseStatus(v.compagnieB as string | undefined, v.dateAccident as string | undefined);
+      for (const [key, column, actual] of [['adversePartieAdherente', 36, adverse.adherente], ['adversePartieActive', 37, adverse.active]] as const) {
+        if (v[key] !== undefined && v[key] !== actual) {
+          warnings.push({
+            rowNumber: row.rowNumber,
+            column,
+            columnKey: key,
+            code: 'DECLARATION_CORRIGEE',
+            message: `Valeur déclarée (${String(v[key])}) contredite par le référentiel des adhérents pour « ${String(v.compagnieB ?? '—')} » : ${String(actual)} retenu.`,
+          });
+        }
+        v[key] = actual;
+      }
       const eligibility = this.eligibility.evaluate({
         nombreVehicules: v.nombreVehicules as number | undefined,
         territoire: v.territoire as string | undefined,
@@ -575,7 +616,7 @@ export class ClaimsService {
       const art14 = resolveImportedArt14(v, row.extension, publishedCases, publishedCategories);
       warnings.push(...[...row.warnings, ...art14.warnings].map((w) => ({ rowNumber: row.rowNumber, ...w })));
       // `raw` garde la ligne source entière, y compris une valeur d'extension ignorée.
-      const view = await this.persistClaim(v, verdict, reasons, fileName, art14.fields, { ...v, ...row.extension });
+      const view = await this.persistClaim(v, verdict, reasons, fileName, art14.fields, { ...v, ...row.extension, declare: declaredAdverse });
       created.push(view);
       rows.push({ rowNumber: row.rowNumber, verdict, reasons, data: v });
     }

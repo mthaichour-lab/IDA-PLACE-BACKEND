@@ -1,4 +1,5 @@
 import {
+  divergentCriteria,
   detectAbInconsistencies,
   detectCalibratedAmounts,
   detectDuplicates,
@@ -206,5 +207,28 @@ describe('fraud.detection (fonctions pures)', () => {
       expect(detectVelocity(claims, 2)).toHaveLength(1);
       expect(detectVelocity(claims, 3)).toHaveLength(0);
     });
+  });
+});
+
+describe('SEC-27 — critères d’éligibilité auto-déclarés rapprochés de la contrepartie', () => {
+  it('signale une paire dont A et B déclarent des dommages corporels ou un nombre de véhicules différents', () => {
+    const [c] = detectAbInconsistencies([
+      {
+        claimAId: 'a',
+        claimBId: 'b',
+        companyA: 'CAAT',
+        companyB: 'SAA',
+        amountA: 100000,
+        amountB: 100000,
+        criteresA: { nombreVehicules: 2, dommagesCorporelsDeclares: false, territoire: 'ALGERIE' },
+        criteresB: { nombreVehicules: 3, dommagesCorporelsDeclares: true, territoire: 'ALGERIE' },
+      },
+    ]);
+    expect(c).toMatchObject({ type: 'INCOHERENCE_AB', score: 25, details: { criteresEligibiliteDivergents: ['nombreVehicules', 'dommagesCorporelsDeclares'] } });
+  });
+
+  it('critères concordants ou non renseignés d’un côté : aucun signal', () => {
+    expect(divergentCriteria({ nombreVehicules: 2 }, { nombreVehicules: 2, territoire: 'ALGERIE' })).toEqual([]);
+    expect(detectAbInconsistencies([{ claimAId: 'a', claimBId: 'b', companyA: 'CAAT', companyB: 'SAA', amountA: 1, amountB: 1, criteresA: { nombreVehicules: 2 } }])).toEqual([]);
   });
 });

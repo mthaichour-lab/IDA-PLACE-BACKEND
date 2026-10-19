@@ -349,6 +349,8 @@ export class FraudService implements OnApplicationBootstrap {
         wilayaB: b.wilaya,
         dateA: a.accidentDate,
         dateB: b.accidentDate,
+        criteresA: { nombreVehicules: a.nombreVehicules, territoire: a.territoire, dommagesCorporelsDeclares: a.dommagesCorporelsDeclares },
+        criteresB: { nombreVehicules: b.nombreVehicules, territoire: b.territoire, dommagesCorporelsDeclares: b.dommagesCorporelsDeclares },
       });
     }
     candidates.push(...detectAbInconsistencies(pairAmounts));

@@ -201,6 +201,22 @@ export interface MatchedPairAmounts {
   wilayaB?: string;
   dateA?: string;
   dateB?: string;
+  /** SEC-27 : critères d'éligibilité déclarés par chaque partie (rapprochés entre A et B). */
+  criteresA?: EligibilityCriteria;
+  criteresB?: EligibilityCriteria;
+}
+
+/** Critères d'éligibilité auto-déclarés comparables entre les deux déclarations d'un même accident (B.6). */
+export interface EligibilityCriteria {
+  nombreVehicules?: number;
+  territoire?: string;
+  dommagesCorporelsDeclares?: boolean;
+}
+
+/** SEC-27 — critères déclarés différemment par A et B (seulement quand les deux les renseignent). */
+export function divergentCriteria(a?: EligibilityCriteria, b?: EligibilityCriteria): string[] {
+  if (!a || !b) return [];
+  return (['nombreVehicules', 'territoire', 'dommagesCorporelsDeclares'] as const).filter((k) => a[k] !== undefined && b[k] !== undefined && a[k] !== b[k]);
 }
 
 /** 6. Vélocité adhérent — rafale de déclarations du même adhérent le même jour d'ingestion. */
@@ -230,18 +246,19 @@ export function detectVelocity(claims: FraudClaimInput[], sameDayThreshold = 3):
 export function detectAbInconsistencies(pairs: MatchedPairAmounts[], amountDiffThreshold = 0.4): FraudCaseCandidate[] {
   const cases: FraudCaseCandidate[] = [];
   for (const p of pairs) {
-    if (p.amountA === undefined || p.amountB === undefined) continue;
-    const maxAmount = Math.max(p.amountA, p.amountB);
-    if (maxAmount <= 0) continue;
-    const diffRatio = Math.abs(p.amountA - p.amountB) / maxAmount;
+    const hasAmounts = p.amountA !== undefined && p.amountB !== undefined && Math.max(p.amountA, p.amountB) > 0;
+    const diffRatio = hasAmounts ? Math.abs(p.amountA! - p.amountB!) / Math.max(p.amountA!, p.amountB!) : 0;
     const wilayaMismatch = !!p.wilayaA && !!p.wilayaB && p.wilayaA !== p.wilayaB;
     const dateMismatch = !!p.dateA && !!p.dateB && p.dateA !== p.dateB;
-    if (diffRatio <= amountDiffThreshold && !wilayaMismatch && !dateMismatch) continue;
+    // SEC-27 : éligibilité auto-déclarée rapprochée de la contrepartie.
+    const criteres = divergentCriteria(p.criteresA, p.criteresB);
+    if (diffRatio <= amountDiffThreshold && !wilayaMismatch && !dateMismatch && criteres.length === 0) continue;
 
     let score = 0;
     if (diffRatio > amountDiffThreshold) score += 50;
     if (wilayaMismatch) score += 25;
     if (dateMismatch) score += 25;
+    if (criteres.length > 0) score += 25;
     score = Math.min(100, score);
 
     cases.push({
@@ -250,7 +267,7 @@ export function detectAbInconsistencies(pairs: MatchedPairAmounts[], amountDiffT
       companiesInvolved: [p.companyA, p.companyB],
       score,
       severity: severityForScore(score),
-      details: { amountA: p.amountA, amountB: p.amountB, diffRatio: Math.round(diffRatio * 1000) / 1000, wilayaMismatch, dateMismatch },
+      details: { amountA: p.amountA, amountB: p.amountB, diffRatio: Math.round(diffRatio * 1000) / 1000, wilayaMismatch, dateMismatch, ...(criteres.length > 0 ? { criteresEligibiliteDivergents: criteres } : {}) },
     });
   }
   return cases;

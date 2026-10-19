@@ -75,6 +75,10 @@ export class ClaimViewDto {
   @ApiPropertyOptional() vehicleCategoryB?: string;
   @ApiPropertyOptional({ description: 'Responsabilité déclarée A (%), colonne 32 du fichier importé' }) responsabiliteDeclareeA?: number;
   @ApiPropertyOptional({ description: 'Responsabilité déclarée B (%), colonne 33 du fichier importé' }) responsabiliteDeclareeB?: number;
+  // --- Additif (SEC-27) : critères d'éligibilité déclarés (non nominatifs), rapprochés de la contrepartie par FraudModule.
+  @ApiPropertyOptional() nombreVehicules?: number;
+  @ApiPropertyOptional({ enum: ['ALGERIE', 'ETRANGER'] }) territoire?: string;
+  @ApiPropertyOptional() dommagesCorporelsDeclares?: boolean;
   /** Additif (SEC-26) : vrai si les champs nominatifs de la compagnie déclarante sont masqués (« •••• ») pour le lecteur. */
   @ApiPropertyOptional() masked?: boolean;
 }

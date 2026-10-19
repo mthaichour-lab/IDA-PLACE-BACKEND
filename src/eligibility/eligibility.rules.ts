@@ -78,6 +78,23 @@ export function addMonthsUtc(date: Date, months: number): Date {
   return d;
 }
 
+/** SEC-27 — montant recevable : fini, > 0, deux décimales au plus. */
+export function isValidAmount(value: number): boolean {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return false;
+  return Math.abs(Math.round(value * 100) - value * 100) < 1e-6;
+}
+
+/** SEC-27 — configuration lue de l'environnement : refusée au démarrage si illisible (un plafond `NaN` neutralisait le contrôle). */
+export function assertEligibilityConfig(config: EligibilityConfig): EligibilityConfig {
+  if (!Number.isFinite(config.maxAmountDA) || config.maxAmountDA <= 0) {
+    throw new Error(`ELIGIBILITY_MAX_AMOUNT_DA invalide (${config.maxAmountDA}) : montant strictement positif attendu.`);
+  }
+  if (!Number.isInteger(config.recoursMaxMonths) || config.recoursMaxMonths <= 0) {
+    throw new Error(`ELIGIBILITY_RECOURS_MAX_MONTHS invalide (${config.recoursMaxMonths}) : entier strictement positif attendu.`);
+  }
+  return config;
+}
+
 function normalizePiece(p: string): string {
   return p.trim().toUpperCase().replace(/\s+/g, '_');
 }
@@ -119,12 +136,22 @@ export function evaluateEligibility(
     reasons.push('Partie adverse non active (suspendue, en retrait ou exclue) — Art. 28');
   }
 
+  // SEC-27 — tout montant fourni doit être un nombre fini, strictement
+  // positif, à deux décimales au plus : un `NaN` neutralisait la comparaison
+  // au plafond, un négatif passait sous le plafond.
+  const invalidAmounts = (['montantEstime', 'montantExpertise'] as const).filter((k) => row[k] !== null && row[k] !== undefined && !isValidAmount(row[k] as number));
+  for (const k of invalidAmounts) {
+    reasons.push(`Montant ${k === 'montantEstime' ? 'estimé' : 'expertisé'} invalide (${String(row[k])}) : nombre fini, strictement positif, deux décimales au plus — Art. 4`);
+  }
+
   // Art. 4 — montant ≤ plafond. On retient le montant expertisé s'il est
   // disponible (plus fiable), sinon le montant estimé déclaré.
   const amount = row.montantExpertise ?? row.montantEstime;
   if (amount === null || amount === undefined) {
     reasons.push('Montant (estimé ou expertisé) non renseigné — Art. 4');
-  } else if (amount > config.maxAmountDA) {
+  } else if (invalidAmounts.length > 0) {
+    // Motif déjà porté ci-dessus ; jamais « sous le plafond » par défaut.
+  } else if (!(amount <= config.maxAmountDA)) {
     reasons.push(
       `Montant (${amount.toLocaleString('fr-FR')} DA) > plafond ${config.maxAmountDA.toLocaleString('fr-FR')} DA (${config.version}) — Art. 4`,
     );

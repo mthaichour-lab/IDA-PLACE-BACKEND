@@ -9,7 +9,7 @@ import { FraudCaseViewDto } from './dto/fraud.dto';
  */
 
 /** Indicateurs agrégés sans donnée d'une autre compagnie. */
-const AGGREGATE_DETAIL_KEYS = ['count', 'companiesCount', 'windowDays', 'datesDistinctes', 'wilayasDistinctes', 'diffRatio', 'wilayaMismatch', 'dateMismatch', 'day', 'bandMin', 'bandMax'];
+const AGGREGATE_DETAIL_KEYS = ['count', 'companiesCount', 'windowDays', 'datesDistinctes', 'wilayasDistinctes', 'diffRatio', 'wilayaMismatch', 'dateMismatch', 'criteresEligibiliteDivergents', 'day', 'bandMin', 'bandMax'];
 /** Détails qui décrivent un dossier de la compagnie elle-même (plaque, e-constat, date) : publiés seulement si elle a un dossier dans le cas. */
 const OWN_DETAIL_KEYS = ['plateA', 'numEconstat', 'accidentDate'];
 

@@ -278,6 +278,37 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     });
   });
 
+  describe('SEC-27 — éligibilité : partie adverse lue au référentiel, montants invalides', () => {
+    it('une partie adverse inconnue du référentiel déclarée « adhérente et active » est corrigée et la ligne devient HORS_IDA', async () => {
+      companyStatusByCode.mockImplementation(async (code: string) => (code === 'FAKE' ? undefined : { status: 'ACTIF' }));
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC27-FAKE', compagnieA: 'CAAT', compagnieB: 'FAKE' });
+      const report = await importAs('f.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      expect(report.rows[0].verdict).toBe('HORS_IDA');
+      expect(report.rows[0].reasons.join(' ')).toMatch(/non adhérente/);
+      expect(report.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ columnKey: 'adversePartieAdherente', code: 'DECLARATION_CORRIGEE' }),
+          expect.objectContaining({ columnKey: 'adversePartieActive', code: 'DECLARATION_CORRIGEE' }),
+        ]),
+      );
+    });
+
+    it('une partie adverse suspendue déclarée active est corrigée (Art. 28)', async () => {
+      companyStatusByCode.mockImplementation(async (code: string) => (code === 'SAA' ? { status: 'SUSPENDU' } : { status: 'ACTIF' }));
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC27-SUSP', compagnieA: 'CAAT', compagnieB: 'SAA' });
+      const report = await importAs('s.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      expect(report.rows[0].verdict).toBe('HORS_IDA');
+      expect(report.rows[0].reasons.join(' ')).toMatch(/Art\. 28/);
+    });
+
+    it('un montant négatif importé n’est jamais éligible', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC27-NEG', compagnieA: 'CAAT', compagnieB: 'SAA', montantEstime: '-150000', montantExpertise: '' });
+      const report = await importAs('n.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      expect(report.rows[0].verdict).toBe('HORS_IDA');
+      expect(report.rows[0].reasons.join(' ')).toMatch(/invalide/);
+    });
+  });
+
   describe('openRecours — statut compagnie (audit sécurité 2026-10-19)', () => {
     const operateur: AuthenticatedUser = { id: 'op-1', name: 'Opérateur', email: 'op@test.dz', role: 'OPERATEUR_PLACE', privileges: ['insert'] };
 

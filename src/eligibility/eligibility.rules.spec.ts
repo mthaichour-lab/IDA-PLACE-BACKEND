@@ -1,4 +1,4 @@
-import { addMonthsUtc, DEFAULT_ELIGIBILITY_CONFIG, EligibilityInputRow, evaluateEligibility } from './eligibility.rules';
+import { addMonthsUtc, assertEligibilityConfig, DEFAULT_ELIGIBILITY_CONFIG, EligibilityInputRow, evaluateEligibility, isValidAmount } from './eligibility.rules';
 
 /** Ligne "idéale" satisfaisant toutes les règles B.6 — base pour les tests de cas limites. */
 function eligibleRow(overrides: Partial<EligibilityInputRow> = {}): EligibilityInputRow {
@@ -137,5 +137,40 @@ describe('evaluateEligibility (B.6)', () => {
     );
     expect(verdict.verdict).toBe('HORS_IDA');
     expect(verdict.reasons.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('SEC-27 — montants et configuration', () => {
+  const base = {
+    nombreVehicules: 2,
+    territoire: 'ALGERIE',
+    dommagesCorporelsDeclares: false,
+    adversePartieAdherente: true,
+    adversePartieActive: true,
+    dateAccident: '2026-01-10',
+    dateDemandeRecours: '2026-01-20',
+    piecesFournies: ['CONSTAT_AMIABLE', 'CARTE_GRISE', 'PERMIS_CONDUIRE', 'ATTESTATION_ASSURANCE'],
+    constatAmiableSigneDeuxParties: true,
+  };
+
+  it.each([NaN, -150000, 0, Infinity, -Infinity, 1234.567])('montant %p refusé (jamais « sous le plafond »)', (montant) => {
+    const v = evaluateEligibility({ ...base, montantEstime: montant });
+    expect(v.verdict).toBe('HORS_IDA');
+    expect(v.reasons.join(' ')).toMatch(/invalide/);
+  });
+
+  it('un montant expertisé invalide n’est pas couvert par un montant estimé valide', () => {
+    expect(evaluateEligibility({ ...base, montantEstime: 100000, montantExpertise: NaN }).verdict).toBe('HORS_IDA');
+  });
+
+  it('montant valide à deux décimales sous le plafond : éligible', () => {
+    expect(evaluateEligibility({ ...base, montantEstime: 150000.25 }).verdict).toBe('ELIGIBLE_IDA');
+    expect(isValidAmount(150000.25)).toBe(true);
+  });
+
+  it('configuration illisible refusée au démarrage (plafond NaN, délai non entier)', () => {
+    expect(() => assertEligibilityConfig({ ...DEFAULT_ELIGIBILITY_CONFIG, maxAmountDA: NaN })).toThrow(/ELIGIBILITY_MAX_AMOUNT_DA/);
+    expect(() => assertEligibilityConfig({ ...DEFAULT_ELIGIBILITY_CONFIG, recoursMaxMonths: 1.5 })).toThrow(/ELIGIBILITY_RECOURS_MAX_MONTHS/);
+    expect(assertEligibilityConfig(DEFAULT_ELIGIBILITY_CONFIG)).toBe(DEFAULT_ELIGIBILITY_CONFIG);
   });
 });

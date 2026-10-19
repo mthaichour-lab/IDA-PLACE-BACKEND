@@ -33,7 +33,7 @@ export class ClaimImportWarningDto {
   @ApiProperty() rowNumber!: number;
   @ApiProperty({ description: 'N° de colonne dans le fichier (48 à 53)' }) column!: number;
   @ApiProperty() columnKey!: string;
-  @ApiProperty({ enum: ['BAREME_NON_PUBLIE', 'CIRCONSTANCE_INVALIDE', 'FORMULE_NEUTRALISEE'] }) code!: 'BAREME_NON_PUBLIE' | 'CIRCONSTANCE_INVALIDE' | 'FORMULE_NEUTRALISEE';
+  @ApiProperty({ enum: ['BAREME_NON_PUBLIE', 'CIRCONSTANCE_INVALIDE', 'FORMULE_NEUTRALISEE', 'DECLARATION_CORRIGEE'] }) code!: 'BAREME_NON_PUBLIE' | 'CIRCONSTANCE_INVALIDE' | 'FORMULE_NEUTRALISEE' | 'DECLARATION_CORRIGEE';
   @ApiProperty() message!: string;
 }
 
