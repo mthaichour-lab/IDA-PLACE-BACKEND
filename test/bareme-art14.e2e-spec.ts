@@ -117,9 +117,11 @@ describe('Barème Art. 14 — décision PO §5 (e2e)', () => {
       const item = queue.body.items.find((i: { refA: string }) => i.refA === 'E2E-BAR-OWN');
       const detail = await http().get(`/api/v1/matching/${item.id}`).set('x-dev-user', 'CORRESPONDANT_IDA').expect(200);
       expect(detail.body).toMatchObject({
+        claimAId: own.id,
         divergence: false,
         responsabiliteA: { baremeCode: 'E2E01', responsabiliteDeclareeA: 100, tauxSelonBareme: { partA: 75, partB: 25 } },
       });
+      expect(item).not.toHaveProperty('claimAId');
 
       const summary = await http().get('/api/v1/stats/summary').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
       expect(summary.body.baremeCodes.items).toContainEqual({ code: 'E2E01', count: 1 });

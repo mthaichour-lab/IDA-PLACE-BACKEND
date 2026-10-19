@@ -12,6 +12,7 @@ import { RealtimeGateway } from '../realtime/realtime.module';
 import {
   MatchDecisionDto,
   MatchDecisionResultDto,
+  MatchItemDetailDto,
   MatchQueueItemDto,
   MatchQueueQueryDto,
   MatchThresholdsDto,
@@ -162,11 +163,28 @@ export class MatchingService {
   }
 
   /** Détail d'un appariement (écran 2), avec les deux saisies Art. 14 côte à côte. */
-  async getItem(id: string, user?: AuthenticatedUser): Promise<MatchQueueItemDto> {
+  /**
+   * Le détail, déjà scopé par compagnie, expose les id des deux dossiers
+   * (`claimAId`/`claimBId`) pour la saisie Art. 14 (`PATCH
+   * /claims/:id/responsabilite`) ; la file, elle, ne les publie pas.
+   */
+  async getItem(id: string, user?: AuthenticatedUser): Promise<MatchItemDetailDto> {
     const row = (await this.findAllDtos()).find((r) => r.id === id);
     if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Élément de confrontation introuvable.' });
     if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
-    return (await this.withBareme([row]))[0];
+    const ids = await withDegradedFallback(
+      'MatchingService.getItem',
+      async () => {
+        const e = await this.repo.findOne({ id });
+        return { claimAId: e?.declAId, claimBId: e?.declBId ?? undefined };
+      },
+      () => {
+        const m = this.memory.find((r) => r.id === id);
+        return { claimAId: m?.declAId, claimBId: m?.declBId };
+      },
+    );
+    const [withBareme] = await this.withBareme([row]);
+    return { ...withBareme, claimAId: ids.claimAId ?? '', claimBId: ids.claimBId };
   }
 
   /** Taux selon barème calculé à la lecture : une version archivée entre-temps n'est plus citée. */

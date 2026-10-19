@@ -87,6 +87,12 @@ export class MatchQueueItemDto {
   @ApiProperty({ description: 'Vrai si A et B ont chacune un code de barème et que ces codes diffèrent' }) divergence!: boolean;
 }
 
+/** `GET /matching/:id` : la ligne de file + les id des dossiers, cible de `PATCH /claims/:id/responsabilite`. */
+export class MatchItemDetailDto extends MatchQueueItemDto {
+  @ApiProperty({ description: 'Id du dossier de la déclaration A' }) claimAId!: string;
+  @ApiPropertyOptional({ description: 'Id du dossier de la contrepartie B, absent tant que rien n’est apparié' }) claimBId?: string;
+}
+
 export class MatchDecisionDto {
   @ApiProperty({ enum: MATCH_DECISIONS })
   @IsIn(MATCH_DECISIONS as unknown as string[])
