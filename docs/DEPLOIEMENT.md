@@ -70,8 +70,8 @@ Règles :
   environnement) :
   `docker build --build-arg NEXT_PUBLIC_API_URL=https://api.<domaine> --build-arg NEXT_PUBLIC_KEYCLOAK_URL=https://auth.<domaine> -t ida-place-frontend:<version> .`
   Le build échoue si la configuration n'est pas en Keycloak + https.
-- Épingler les images de base par empreinte (`node:24-alpine@sha256:…` pour
-  l'API, `node:22-alpine@sha256:…` pour le frontend), les reconstruire à
+- Épingler les images de base par empreinte (`node:22-alpine@sha256:…` pour
+  l'API comme pour le frontend), les reconstruire à
   chaque correctif de sécurité de Node/Alpine, et scanner les images
   (Trivy/Grype) avant publication dans le registre privé.
 - Le système de fichiers des conteneurs peut être monté en lecture seule
@@ -87,10 +87,10 @@ Règles :
   `migration:down` et le seeder sont refusés en production sans
   `ALLOW_PRODUCTION_DESTRUCTIVE=true` posé explicitement pour l'opération.
 
-> Note : le `package-lock.json` actuel de l'API n'est accepté en `npm ci`
-> que par npm 11 (Node 24) ; le npm 10 de Node 22 le rejette
-> (« Missing: webpack@5.112.0 from lock file »). L'image et la CI de l'API
-> utilisent donc Node 24 (LTS, conforme à `engines.node >= 22`).
+> Note : le `package-lock.json` de l'API a été régénéré avec npm 10 le
+> 2026-10-20 (une seule entrée ajoutée, aucune version de dépendance
+> modifiée) : `npm ci` passe avec le npm 10 de Node 22 comme avec npm 11.
+> L'image et la CI de l'API sont revenues sur Node 22 LTS (`engines.node >= 22`).
 
 ## 3. Secrets
 

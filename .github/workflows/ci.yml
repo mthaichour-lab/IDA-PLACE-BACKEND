@@ -43,11 +43,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Node 24 (npm 11) : le npm 10 de Node 22 refuse le package-lock.json
-      # actuel en `npm ci` (voir Dockerfile).
+      # Node 22 LTS, comme l'image Docker : le package-lock.json est accepté
+      # par le npm 10 de Node 22 (régénéré le 2026-10-20, voir Dockerfile).
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       # Aucun script d'installation tiers exécuté (télémétrie comprise).

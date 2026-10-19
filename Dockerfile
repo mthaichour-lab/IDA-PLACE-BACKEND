@@ -13,13 +13,13 @@
 # Aucune variable d'environnement ni secret n'est intégré à l'image : tout est
 # injecté au démarrage par l'orchestrateur / le coffre de secrets (voir
 # docs/DEPLOIEMENT.md). En production, épingler l'image de base par empreinte
-# (node:24-alpine@sha256:…).
+# (node:22-alpine@sha256:…).
 #
-# Node 24 (LTS, compatible `engines.node >= 22`) : son npm 11 accepte le
-# package-lock.json actuel, que le npm 10 livré avec Node 22 refuse en
-# `npm ci` (« Missing: webpack@5.112.0 from lock file », dépendance pair
-# optionnelle) — à régénérer côté backend pour revenir à Node 22 si souhaité.
-ARG NODE_IMAGE=node:24-alpine
+# Node 22 LTS (`engines.node >= 22`, `@types/node` 22) : le package-lock.json
+# a été régénéré avec npm 10 (2026-10-20) et passe `npm ci` avec le npm 10 de
+# Node 22 comme avec le npm 11 de Node 24 (auparavant : « Missing:
+# webpack@5.112.0 from lock file »).
+ARG NODE_IMAGE=node:22-alpine
 
 # ---------- 1. Dépendances complètes (build, migrations) ----------
 FROM ${NODE_IMAGE} AS deps
