@@ -1,8 +1,9 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PRIVILEGES_KEY } from '../decorators/privileges.decorator';
+import { ROLES_KEY } from '../decorators/roles.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
-import { Privilege } from '../rbac/roles-privileges';
+import { Privilege, Role } from '../rbac/roles-privileges';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -34,6 +35,11 @@ export class PrivilegesGuard implements CanActivate {
         code: 'FORBIDDEN',
         message: 'AUDITEUR_CSA est en lecture seule.',
       });
+    }
+
+    const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [ctx.getHandler(), ctx.getClass()]);
+    if (roles && roles.length > 0 && !roles.includes(user.role)) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Rôle non autorisé pour cette ressource.' });
     }
 
     if (!required || required.length === 0) return true;

@@ -1,24 +1,25 @@
-import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+import { Entity, OptionalProps, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
 
 /**
  * LedgerEntry — écran 13 "Journal scellé", B.2/B.3. Chaînage d'empreintes
- * SHA-256 (`hash(n) = f(événement, hash(n-1))`) — voir `ledger.service.ts`.
+ * (`hash(n) = f(événement, hash(n-1))`) — voir `ledger.service.ts`.
  *
- * Append-only : `LedgerService` n'expose jamais de méthode `update`/
- * `delete` au niveau applicatif. `seq` (entier auto-incrémenté) fixe
- * l'ordre total strict de la chaîne — `id` (uuid) n'est qu'un identifiant
- * d'adressage externe, jamais utilisé pour l'ordre (deux entrées pourraient
- * en théorie partager le même timestamp `at`).
+ * Append-only, garanti en base depuis SEC-15 (migration
+ * `Migration20261020000100_LedgerIntegrity`) : trigger refusant `UPDATE`,
+ * `DELETE` et `TRUNCATE`, `UNIQUE(prev_hash)` (aucune fourche possible),
+ * `REVOKE` documenté pour le rôle applicatif. `seq` (entier auto-incrémenté)
+ * fixe l'ordre total strict de la chaîne.
  *
- * TODO(backend-agent) : renforcer l'immuabilité au niveau base (REVOKE
- * UPDATE/DELETE sur `ledger_entry` pour le rôle applicatif) une fois les
- * rôles PostgreSQL de production définis — non fait ici car aucune instance
- * PostgreSQL n'est disponible dans cet environnement pour valider une telle
- * contrainte sans casser le rôle unique `ida_place` utilisé en dev.
+ * `hashVersion` (SEC-15) : 1 = ancienne empreinte SHA-256 sans secret sur une
+ * concaténation `|` (entrées antérieures à la migration, vérifiées telles
+ * quelles et signalées comme « héritées ») ; 2 = HMAC-SHA256 (clé
+ * `LEDGER_HMAC_KEY`, hors base) sur un encodage canonique JSON.
  */
 @Entity({ tableName: 'ledger_entry' })
 export class LedgerEntry {
+  [OptionalProps]?: 'seq' | 'id' | 'at' | 'hashVersion';
+
   @PrimaryKey({ type: 'integer', autoincrement: true })
   seq!: number;
 
@@ -40,9 +41,12 @@ export class LedgerEntry {
   @Property()
   at: Date = new Date();
 
-  @Property({ length: 64 })
+  @Property({ length: 64, unique: true })
   prevHash!: string;
 
   @Property({ length: 64 })
   hash!: string;
+
+  @Property({ type: 'smallint' })
+  hashVersion: number = 2;
 }
