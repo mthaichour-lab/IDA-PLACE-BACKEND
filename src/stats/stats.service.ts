@@ -101,13 +101,17 @@ export class StatsService {
 
   /**
    * `year` : année étudiée (optionnelle). Fournie, seules les déclarations de
-   * cette année (date d'accident, à défaut de création) sont comptées ; sinon
-   * toutes, et la population de référence est cherchée jusqu'à l'année en cours.
+   * cette année (date d'accident, à défaut de création) sont comptées. Sans
+   * `year`, toutes les années sont cumulées : `per100k` reste alors `null`,
+   * car rapporter un cumul pluriannuel à la population d'une seule année
+   * gonflerait le taux.
    */
   async wilayas(year?: number): Promise<WilayaStatDto[]> {
     const { items: allClaims } = await this.claims.list({ page: 1, pageSize: 100_000 });
-    const studiedYear = year ?? new Date().getUTCFullYear();
-    const [wilayas, populations] = await Promise.all([this.adherents.listWilayas(), this.adherents.populationReferences(studiedYear)]);
+    const [wilayas, populations] = await Promise.all([
+      this.adherents.listWilayas(),
+      year === undefined ? Promise.resolve<Record<string, PopulationReference>>({}) : this.adherents.populationReferences(year),
+    ]);
     const byWilaya = new Map<string, { count: number; amount: number }>();
     for (const c of allClaims) {
       if (!c.wilaya) continue;

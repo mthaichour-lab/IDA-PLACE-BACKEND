@@ -130,10 +130,27 @@ describe('StatsService', () => {
 
     it('per100k est calculé à partir de la population de référence (source et année exposées)', async () => {
       const ref: PopulationReference = { population: 200_000, referenceYear: 2024, sourceType: 'ESTIMATION_ONS', sourceRef: 'ONS 2024' };
-      const service = new StatsService(fakeClaims([{ wilaya: '16' }, { wilaya: '16' }, { wilaya: '31' }]), fakeRecours([]), fakeAdherents({ '16': ref }));
-      const tiles = await service.wilayas();
+      const service = new StatsService(
+        fakeClaims([
+          { wilaya: '16', accidentDate: '2025-02-01' },
+          { wilaya: '16', accidentDate: '2025-06-01' },
+          { wilaya: '31', accidentDate: '2025-04-01' },
+        ]),
+        fakeRecours([]),
+        fakeAdherents({ '16': ref }),
+      );
+      const tiles = await service.wilayas(2025);
       expect(tiles.find((w) => w.code === '16')).toMatchObject({ declarations: 2, per100k: 1, populationRef: ref });
       expect(tiles.find((w) => w.code === '31')).toMatchObject({ declarations: 1, per100k: null });
+    });
+
+    it('sans year (cumul toutes années), per100k reste null même si une population existe', async () => {
+      const ref: PopulationReference = { population: 200_000, referenceYear: 2024, sourceType: 'ESTIMATION_ONS', sourceRef: 'ONS 2024' };
+      const adherents = fakeAdherents({ '16': ref });
+      const service = new StatsService(fakeClaims([{ wilaya: '16' }, { wilaya: '16' }]), fakeRecours([]), adherents);
+      const tiles = await service.wilayas();
+      expect(tiles.find((w) => w.code === '16')).toMatchObject({ declarations: 2, per100k: null, populationRef: null });
+      expect(adherents.populationReferences).not.toHaveBeenCalled();
     });
 
     it('year : ne compte que les déclarations de l’année étudiée et demande la population de cette année', async () => {

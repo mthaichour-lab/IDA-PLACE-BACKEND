@@ -7,7 +7,7 @@ import { CLOCK, Clock, systemClock } from '../common/clock';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { QuarterlyPipelineDto } from './dto/settlement-pipeline.dto';
 import { SettlementPipelineStep } from './entities/settlement-pipeline-step.entity';
-import { buildPipeline, canCompleteStep, PIPELINE_STEPS, PipelineCompletion, PipelineStep } from './settlement-pipeline.rules';
+import { buildPipeline, canCompleteStep, monthFollowingQuarter, PIPELINE_STEPS, PipelineCompletion, PipelineStep } from './settlement-pipeline.rules';
 import { parsePeriodQuarter, PeriodQuarter } from './settlement.rules';
 import { SettlementService } from './settlement.service';
 
@@ -17,7 +17,9 @@ type StepRecord = PipelineCompletion & { period: string; step: PipelineStep; com
  * Avancement du lot trimestriel (écran 6, Diagramme 2) : étapes 1 à 4
  * réalisées à la main dans l'ordre, étape 5 dérivée de la clôture
  * trimestrielle existante (`POST /settlement/quarter/:q/close`, inchangée).
- * Le calendrier ouvré vient d'`AdherentsService.getCalendar()`.
+ * Le calendrier ouvré vient d'`AdherentsService` : `getCalendar()` (week-end,
+ * fériés fixes) + `extraHolidays()` (fériés mobiles saisis, prévisionnels
+ * compris), relus à chaque lecture.
  */
 @Injectable()
 export class SettlementPipelineService {
@@ -68,7 +70,11 @@ export class SettlementPipelineService {
     const period = this.parseQuarterOrThrow(q);
     const completions = await this.completionsFor(q);
     const calendar = this.adherents.getCalendar();
-    return { quarter: q, steps: buildPipeline(period, completions, this.now(), calendar) };
+    const m = monthFollowingQuarter(period);
+    const monthStart = `${m.year}-${String(m.month).padStart(2, '0')}-01`;
+    const monthEnd = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10);
+    const extraHolidays = await this.adherents.extraHolidays(monthStart, monthEnd);
+    return { quarter: q, steps: buildPipeline(period, completions, this.now(), calendar, extraHolidays) };
   }
 
   async completeStep(q: string, step: string, completedBy: string, note?: string): Promise<QuarterlyPipelineDto> {

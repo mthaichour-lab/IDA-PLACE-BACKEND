@@ -27,7 +27,8 @@ function throwingRepo() {
   };
 }
 
-async function build(stepRepo: unknown) {
+async function build(stepRepo: unknown, mobileHolidays: string[] = []) {
+  const extraHolidays = jest.fn(async () => mobileHolidays);
   const moduleRef = await Test.createTestingModule({
     providers: [
       SettlementPipelineService,
@@ -38,11 +39,14 @@ async function build(stepRepo: unknown) {
       { provide: getRepositoryToken(Recours), useFactory: throwingRepo },
       { provide: ConfigService, useValue: { get: () => undefined } },
       { provide: RealtimeGateway, useValue: { emitEvent: jest.fn() } },
-      { provide: AdherentsService, useValue: { getCalendar: () => ({ weekendDays: ALGERIA_WEEKEND_DAYS, fixedHolidays: ALGERIA_FIXED_HOLIDAYS }) } },
+      {
+        provide: AdherentsService,
+        useValue: { getCalendar: () => ({ weekendDays: ALGERIA_WEEKEND_DAYS, fixedHolidays: ALGERIA_FIXED_HOLIDAYS }), extraHolidays },
+      },
       { provide: CLOCK, useValue: () => new Date('2026-10-12T09:00:00Z') },
     ],
   }).compile();
-  return { pipeline: moduleRef.get(SettlementPipelineService), settlement: moduleRef.get(SettlementService) };
+  return { pipeline: moduleRef.get(SettlementPipelineService), settlement: moduleRef.get(SettlementService), extraHolidays };
 }
 
 describe('SettlementPipelineService (mode dégradé — avancement du lot trimestriel)', () => {
@@ -63,6 +67,13 @@ describe('SettlementPipelineService (mode dégradé — avancement du lot trimes
       ['SYNTHESE_GLOBALE_REUNION', 'A_VENIR', '2026-10-31', false],
       ['PV_REGLEMENT', 'A_VENIR', '2026-11-08', false],
     ]);
+  });
+
+  it('un férié mobile saisi dans le mois M décale le 5e jour ouvré (étape SAISIE)', async () => {
+    const built = await build(throwingRepo(), ['2026-10-05']);
+    const res = await built.pipeline.pipeline('2026-Q3');
+    expect(built.extraHolidays).toHaveBeenCalledWith('2026-10-01', '2026-10-31');
+    expect(res.steps[0]).toMatchObject({ step: 'SAISIE', dueDate: '2026-10-08' });
   });
 
   it('400 sur un trimestre ou une étape invalides', async () => {
