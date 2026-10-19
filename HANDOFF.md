@@ -689,13 +689,16 @@ populations : une seule erreur par ligne.
   (`link` et `complement` ne se propagent pas) ; `decide()` ne lève plus
   son 403 dans la closure de repli.
 - `createdAt` d'une compagnie figé en mode dégradé.
+- Import CSV des populations : chaque ligne rapporte désormais TOUTES ses
+  erreurs indépendantes (code, année, population, source_type, source_ref),
+  pas seulement la première (la chaîne `else if` masquait les suivantes).
 
 **Décisions PO du 2026-10-19 (après le Testeur)** : seul un motif
 d'opposition `VALIDE_UAR` est accepté (`MOTIF_NON_VALIDE`) ; une catégorie
 de véhicule validée est figée (`CATEGORIE_IMMUABLE`) ; échéance de l'étape 3
 = dernier jour du mois M, confirmée.
 
-**Vérifié** : `npm run lint` OK, `npm test` 433/433, e2e 129/129 (le flake
+**Vérifié** : `npm run lint` OK, `npm test` 434/434, e2e 129/129 (le flake
 `claims-import` ECONNRESET passe ou échoue selon les exécutions), build OK.
 
 **Environnement** : dans un worktree neuf, `AUTH_PROVIDER=dev` doit être
