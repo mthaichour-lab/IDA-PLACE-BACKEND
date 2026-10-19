@@ -6,6 +6,18 @@ import { AUTH_PROVIDER, AuthProvider } from '../common/interfaces/authenticated-
 
 export type RealtimeEvent = 'claim.ingested' | 'match.updated' | 'recours.timer' | 'metering.tick' | 'ledger.appended';
 
+/** Salon réservé aux rôles de place (SEC-07). */
+export const PLACE_ROOM = 'tenant:place';
+/** Salon d'une compagnie adhérente (SEC-07). */
+export const tenantRoom = (companyCode: string): string => `tenant:${companyCode}`;
+
+export interface EmitOptions {
+  /** Salons destinataires ; `PLACE_ROOM` par défaut. */
+  rooms?: string | string[];
+  /** Payload relayé aux abonnés internes (`onEvent`) ; `payload` par défaut. */
+  internalPayload?: unknown;
+}
+
 /**
  * RealtimeModule — B.2/B.12 : passerelle WebSocket pour les dashboards
  * temps réel (écrans 1, 2, 10). Abonnement par salon tenant
@@ -82,9 +94,18 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(`Client déconnecté: ${client.id}`);
   }
 
-  emitEvent(event: RealtimeEvent, payload: unknown, room = 'tenant:place'): void {
-    this.server?.to(room).emit(event, payload);
-    this.internalEmitter.emit(event, payload);
+  /**
+   * Diffuse `payload` aux salons `opts.rooms` (par défaut le seul salon de
+   * place) et relaie `opts.internalPayload ?? payload` aux abonnés internes.
+   * SEC-07 : le payload WebSocket doit rester minimal (`{ id, état }`, sans
+   * donnée nominative) et viser les seules compagnies parties
+   * (`tenantRoom(code)`) plus `PLACE_ROOM` ; les abonnés internes (Fraud…)
+   * reçoivent le payload complet via `internalPayload`.
+   */
+  emitEvent(event: RealtimeEvent, payload: unknown, opts: string | EmitOptions = {}): void {
+    const { rooms = PLACE_ROOM, internalPayload = payload } = typeof opts === 'string' ? { rooms: opts } : opts;
+    this.server?.to(rooms).emit(event, payload);
+    this.internalEmitter.emit(event, internalPayload);
   }
 
   /** Abonnement interne (process local) à un événement de place — voir doc de classe. */
