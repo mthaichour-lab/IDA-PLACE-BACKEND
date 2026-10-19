@@ -283,6 +283,36 @@ refactoring.
 
 ---
 
+## 15. Recours — qui peut « lever » une opposition ? (SEC-18, revue sécurité 2026-10-19) — ❓ À CONFIRMER
+
+**Constat** (plan de remédiation sécurité, SEC-18) : l'action
+`lever_opposition` est aujourd'hui exécutée par la compagnie
+**demanderesse** (`from`) et fait passer le recours directement en
+`REGLE` (`recours.rules.ts`, `RecoursService.assertActionAllowed`), sans
+intervention de la commission. Concrètement : la débitrice s'oppose, la
+demanderesse « lève » aussitôt l'opposition, et le recours devient dû et
+entre en compensation.
+
+**Pourquoi ce n'est pas modifié** : la règle relève de la convention IDA ;
+la revue de sécurité a demandé de ne pas la changer sans confirmation de
+l'UAR. Le code est inchangé (seule la traçabilité a été renforcée :
+auteur, rôle, compagnie représentée et motif de chaque transition sont
+désormais conservés et scellés au journal, SEC-17).
+
+**Question** : selon la convention IDA, la levée d'une opposition est-elle
+(a) le **retrait de son opposition par la compagnie débitrice** (`to`),
+(b) un acte de la **demanderesse** soumis à une pièce justificative ou à
+un délai, ou (c) une décision qui doit passer par la **commission** (la
+demanderesse ne pouvant alors que contester puis transmettre) ?
+
+**Une fois répondu** : (a) réserver `lever_opposition` à la compagnie `to`
+dans `RecoursService.assertActionAllowed` ; (c) supprimer `lever_opposition`
+de `ALLOWED_ACTIONS_BY_STATE.OPPOSITION` (seuls `contester` →
+`transmettre_commission` restent) ; dans tous les cas, ajouter le test de
+transition par partie correspondant (`recours.service.spec.ts`).
+
+---
+
 ## Comment utiliser ce document
 
 Chaque section est indépendante : répondre à une seule suffit à
