@@ -7,7 +7,7 @@ function daysFromNow(days: number): string {
   return new Date(Date.now() + days * 24 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-/** Importe une déclaration éligible IDA (modèle 47 colonnes, valeurs de `fixtures/import-eligible-ineligible.csv`) et renvoie l'id du dossier créé. */
+/** Importe (rôle place, au nom de `company` — SEC-02) une déclaration éligible IDA (modèle 47 colonnes, valeurs de `fixtures/import-eligible-ineligible.csv`) et renvoie l'id du dossier créé. */
 export async function importEligibleClaim(app: INestApplication, numEconstat: string, company: string, counterparty: string): Promise<string> {
   const values: Record<string, string> = {
     numEconstat,
@@ -48,10 +48,11 @@ export async function importEligibleClaim(app: INestApplication, numEconstat: st
   const row = CLAIM_IMPORT_COLUMNS.map((c) => values[c.key] ?? '').join(';');
   await request(app.getHttpServer())
     .post('/api/v1/claims/import')
+    .query({ company })
     .set('x-dev-user', 'OPERATEUR_PLACE')
     .attach('file', Buffer.from(`${header}\n${row}\n`, 'utf-8'), `${numEconstat}.csv`)
     .expect(201);
-  const list = await request(app.getHttpServer()).get('/api/v1/claims').query({ pageSize: 1000 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+  const list = await request(app.getHttpServer()).get('/api/v1/claims').query({ pageSize: 100 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
   const claim = list.body.items.find((c: { numEconstat: string }) => c.numEconstat === numEconstat);
   if (!claim) throw new Error(`Dossier ${numEconstat} non importé`);
   if (claim.eligibilityVerdict !== 'ELIGIBLE_IDA') throw new Error(`Dossier ${numEconstat} non éligible : ${JSON.stringify(claim.eligibilityReasons)}`);

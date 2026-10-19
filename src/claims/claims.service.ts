@@ -1,6 +1,6 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
 import { normalizeCircumstances, normalizeReferenceCode, resolvePublishedBaremeCase } from '../adherents/bareme-rules';
@@ -114,6 +114,8 @@ function toMatchInput(c: ClaimViewDto): ClaimMatchInput {
  */
 @Injectable()
 export class ClaimsService {
+  private readonly logger = new Logger('ClaimsService');
+
   constructor(
     @InjectRepository(Claim) private readonly repo: EntityRepository<Claim>,
     private readonly eligibility: EligibilityService,
@@ -248,7 +250,7 @@ export class ClaimsService {
       async () => {
         const entity = this.repo.create({
           numEconstat: values.numEconstat as string | undefined,
-          company: (values.compagnieA as string) ?? 'INCONNU',
+          company: values.compagnieA as string,
           counterpartyCompany: values.compagnieB as string | undefined,
           accidentDate: values.dateAccident as string | undefined,
           accidentTime: values.heureAccident as string | undefined,
@@ -287,7 +289,7 @@ export class ClaimsService {
         const view: ClaimViewDto = {
           id: randomUUID(),
           numEconstat: (values.numEconstat as string) ?? '',
-          company: (values.compagnieA as string) ?? 'INCONNU',
+          company: values.compagnieA as string,
           counterpartyCompany: (values.compagnieB as string) ?? '',
           accidentDate: (values.dateAccident as string) ?? '',
           wilaya: (values.wilaya as string) ?? '',
@@ -324,7 +326,33 @@ export class ClaimsService {
    * (B.3), déclenche le calcul d'appariement (B.5) et émet `claim.ingested`
    * (B.12). Conserve EXACTEMENT la forme de `ClaimImportReportDto`.
    */
-  async importFile(fileName: string, buffer: Buffer): Promise<ClaimImportReportDto> {
+  /**
+   * SEC-02 — compagnie au nom de laquelle l'import crée les dossiers. Jamais
+   * lue dans le fichier : rôle compagnie → SA compagnie (un paramètre
+   * `company` différent est refusé, 403) ; rôle place → paramètre `company`
+   * OBLIGATOIRE (400 sinon), journalisé. Le code doit exister au
+   * référentiel (400 sinon) : plus aucun dossier « INCONNU ».
+   */
+  private async resolveImportingCompany(user: AuthenticatedUser, requested: string | undefined, fileName: string): Promise<string> {
+    const tenant = resolveTenantFilter(user);
+    if (tenant && requested && requested !== tenant) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Import refusé : une compagnie ne peut déclarer qu’en son propre nom.' });
+    }
+    const company = tenant ?? requested;
+    if (!company) {
+      throw new BadRequestException({ code: 'COMPAGNIE_REQUISE', message: 'Rôle de place : préciser la compagnie déclarante (paramètre « company »).' });
+    }
+    if (!(await this.adherents.companyStatusByCode(company))) {
+      throw new BadRequestException({ code: 'COMPAGNIE_INCONNUE', message: `Compagnie « ${company} » inconnue du référentiel.` });
+    }
+    if (!tenant) {
+      this.logger.log(`Import « ${fileName} » au nom de ${company} par un rôle de place (${user.role}, ${user.id}).`);
+    }
+    return company;
+  }
+
+  async importFile(fileName: string, buffer: Buffer, user: AuthenticatedUser, requestedCompany?: string): Promise<ClaimImportReportDto> {
+    const company = await this.resolveImportingCompany(user, requestedCompany, fileName);
     const parsedRows = await parseClaimFile(buffer, fileName);
     const rows: ClaimImportRowResultDto[] = [];
     const created: ClaimViewDto[] = [];
@@ -336,6 +364,20 @@ export class ClaimsService {
 
     for (const row of parsedRows) {
       const v = row.values;
+      // SEC-02 : colonne « Compagnie A » vide → compagnie déclarante ;
+      // renseignée et différente → ligne refusée, aucun dossier créé.
+      const declared = typeof v.compagnieA === 'string' ? v.compagnieA.trim().toUpperCase() : undefined;
+      if (declared && declared !== company) {
+        rows.push({
+          rowNumber: row.rowNumber,
+          verdict: 'HORS_IDA',
+          reasons: [`Ligne refusée : la compagnie A du fichier (${declared}) n’est pas la compagnie déclarante (${company}).`],
+          data: v,
+          rejected: true,
+        });
+        continue;
+      }
+      v.compagnieA = company;
       const eligibility = this.eligibility.evaluate({
         nombreVehicules: v.nombreVehicules as number | undefined,
         territoire: v.territoire as string | undefined,
@@ -361,8 +403,7 @@ export class ClaimsService {
       // de nouveau dossier (même règle que ClaimsService.openRecours) — une
       // ligne rejetée reste HORS_IDA avec son motif, jamais un échec de tout
       // le fichier : c'est le contrat de ce rapport ligne par ligne.
-      const companyCode = v.compagnieA as string | undefined;
-      const inactiveReason = companyCode ? await this.adherents.companyInactiveReason(companyCode, v.dateAccident as string | undefined) : undefined;
+      const inactiveReason = await this.adherents.companyInactiveReason(company, v.dateAccident as string | undefined);
       const verdict: 'ELIGIBLE_IDA' | 'HORS_IDA' = hasParseErrors || inactiveReason ? 'HORS_IDA' : eligibility.verdict;
       const reasons = [
         ...(hasParseErrors ? row.errors.map((e) => `Erreur de format : ${e}`) : []),
@@ -395,6 +436,8 @@ export class ClaimsService {
       totalRows: rows.length,
       eligibleCount,
       ineligibleCount: rows.length - eligibleCount,
+      rejectedCount: rows.filter((r) => r.rejected).length,
+      company,
       rows,
       warnings,
     };

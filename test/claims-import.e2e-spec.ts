@@ -48,6 +48,7 @@ describe('Import des dossiers — POST /api/v1/claims/import (e2e)', () => {
   it('retourne un rapport ligne à ligne avec verdict ELIGIBLE_IDA / HORS_IDA (B.6)', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/claims/import')
+      .query({ company: 'CAAT' })
       .set('x-dev-user', 'OPERATEUR_PLACE')
       .attach('file', path.join(__dirname, 'fixtures/import-eligible-ineligible.csv'))
       .expect(201);
@@ -81,6 +82,7 @@ describe('Import des dossiers — POST /api/v1/claims/import (e2e)', () => {
   it('les dossiers importés apparaissent ensuite dans GET /claims', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/claims/import')
+      .query({ company: 'CAAT' })
       .set('x-dev-user', 'OPERATEUR_PLACE')
       .attach('file', path.join(__dirname, 'fixtures/import-eligible-ineligible.csv'))
       .expect(201);

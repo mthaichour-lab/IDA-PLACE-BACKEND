@@ -46,6 +46,14 @@ describe('Cockpit de place — GET /api/v1/cockpit/summary (e2e)', () => {
 
     await request(app.getHttpServer())
       .post('/api/v1/claims/import')
+      .query({ company: 'CAAT' })
+      .set('x-dev-user', 'OPERATEUR_PLACE')
+      .attach('file', path.join(__dirname, 'fixtures/import-matching-shared-econstat.csv'))
+      .expect(201);
+    // SEC-02 : chaque compagnie importe sa propre déclaration (la ligne de l'autre est refusée).
+    await request(app.getHttpServer())
+      .post('/api/v1/claims/import')
+      .query({ company: 'SAA' })
       .set('x-dev-user', 'OPERATEUR_PLACE')
       .attach('file', path.join(__dirname, 'fixtures/import-matching-shared-econstat.csv'))
       .expect(201);

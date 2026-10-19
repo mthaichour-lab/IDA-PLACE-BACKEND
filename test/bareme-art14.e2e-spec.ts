@@ -42,10 +42,11 @@ describe('Barème Art. 14 — décision PO §5 (e2e)', () => {
     const row = [...CLAIM_IMPORT_COLUMNS.map((c) => base[c.key] ?? ''), ...CLAIM_IMPORT_EXTENSION_COLUMNS.map((c) => extension[c.key] ?? '')].join(';');
     const res = await http()
       .post('/api/v1/claims/import')
+      .query({ company })
       .set('x-dev-user', 'OPERATEUR_PLACE')
       .attach('file', Buffer.from(`${header}\n${row}\n`, 'utf-8'), 'bareme.csv')
       .expect(201);
-    const list = await http().get('/api/v1/claims').query({ pageSize: 1000 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+    const list = await http().get('/api/v1/claims').query({ pageSize: 100 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
     return { id: list.body.items.find((c: { numEconstat: string }) => c.numEconstat === numEconstat).id, warnings: res.body.warnings };
   }
 
@@ -113,7 +114,7 @@ describe('Barème Art. 14 — décision PO §5 (e2e)', () => {
         .expect(200);
       expect(patched.body).toMatchObject({ baremeCode: 'E2E01', baremeVersionId: version.body.id, circonstancesA: [8], responsabiliteDeclareeA: 100 });
 
-      const queue = await http().get('/api/v1/matching/queue').query({ pageSize: 1000 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      const queue = await http().get('/api/v1/matching/queue').query({ pageSize: 100 }).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
       const item = queue.body.items.find((i: { refA: string }) => i.refA === 'E2E-BAR-OWN');
       const detail = await http().get(`/api/v1/matching/${item.id}`).set('x-dev-user', 'CORRESPONDANT_IDA').expect(200);
       expect(detail.body).toMatchObject({

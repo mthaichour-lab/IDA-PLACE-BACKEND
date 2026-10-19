@@ -73,6 +73,9 @@ const BASE_ROW: Record<string, string> = {
   canalDeclaration: 'IMPORT',
 };
 
+/** SEC-02 : un rôle place importe au nom d'une compagnie désignée explicitement. */
+const placeImporter: AuthenticatedUser = { id: 'op-import', name: 'Opérateur import', email: 'op@test.dz', role: 'OPERATEUR_PLACE', privileges: ['import'] };
+
 describe('ClaimsService (mode dégradé — import, éligibilité, appariement)', () => {
   let service: ClaimsService;
   let matchingService: MatchingService;
@@ -87,7 +90,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     bareme = new BaremeReferentialService(failingRepo(), failingRepo(), failingRepo());
     recoursRows = [];
     recoursCreate = jest.fn(async (dto: { claimId: string }) => ({ id: 'r-1', ...dto }));
-    companyStatusByCode = jest.fn(async () => undefined);
+    companyStatusByCode = jest.fn(async (_code: string): Promise<{ status: string; withdrawalEffectiveDate?: string } | undefined> => ({ status: 'ACTIF' }));
     const companyInactiveReason = jest.fn(async (code: string, eventDate: string | undefined) => {
       const company = await companyStatusByCode(code);
       if (!company || company.status === 'ACTIF') return undefined;
@@ -125,6 +128,11 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     matchingService = moduleRef.get(MatchingService);
   });
 
+  /** Import par un rôle place au nom de `company` (SEC-02). */
+  function importAs(fileName: string, buffer: Buffer, company = 'CAAT') {
+    return service.importFile(fileName, buffer, placeImporter, company);
+  }
+
   it('importe un fichier CSV valide : rapport ELIGIBLE_IDA, persistance en mode dégradé, événement claim.ingested', async () => {
     const row = buildCsvRow({
       ...BASE_ROW,
@@ -136,7 +144,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     });
     const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
 
-    const report = await service.importFile('import.csv', buffer);
+    const report = await importAs('import.csv', buffer);
 
     expect(report.fileName).toBe('import.csv');
     expect(report.totalRows).toBe(1);
@@ -160,7 +168,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'CAAT', compagnieB: 'SAA', nombreVehicules: '1' });
     const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
 
-    const report = await service.importFile('import.csv', buffer);
+    const report = await importAs('import.csv', buffer);
 
     expect(report.rows[0].verdict).toBe('HORS_IDA');
     expect(report.rows[0].reasons.some((r) => r.includes('Art. 4'))).toBe(true);
@@ -173,7 +181,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'CAAT', compagnieB: 'SAA', montantEstime: 'abc', montantExpertise: 'abc' });
     const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
 
-    const report = await service.importFile('import.csv', buffer);
+    const report = await importAs('import.csv', buffer);
 
     expect(report.rows[0].verdict).toBe('HORS_IDA');
     expect(report.rows[0].reasons.some((r) => r.startsWith('Erreur de format'))).toBe(true);
@@ -196,9 +204,9 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
       immatriculationA: '31-200000-31',
       immatriculationB: '16-100000-16',
     });
-    const buffer = Buffer.from(`${header}\n${rowA}\n${rowB}\n`, 'utf-8');
-
-    await service.importFile('import.csv', buffer);
+    // SEC-02 : chaque compagnie importe ses propres déclarations.
+    await importAs('a.csv', Buffer.from(`${header}\n${rowA}\n`, 'utf-8'), 'CAAT');
+    await importAs('b.csv', Buffer.from(`${header}\n${rowB}\n`, 'utf-8'), 'SAA');
 
     const queue = await matchingService.queue({ filter: 'TOUS', page: 1, pageSize: 6 });
     expect(queue.items.length).toBeGreaterThanOrEqual(2);
@@ -206,6 +214,62 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     expect(matched.length).toBeGreaterThanOrEqual(1);
     expect(matched[0].level).toBe('AUTO');
     expect(matched[0].status).toBe('AUTO_CONFIRME');
+  });
+
+  describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
+    const correspondantX: AuthenticatedUser = { id: 'c-x', name: 'Correspondant CAAT', email: 'c@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', privileges: ['import'] };
+
+    it('la compagnie X qui importe des lignes de Y : lignes refusées, aucun dossier créé au nom de Y', async () => {
+      const own = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-OWN', compagnieA: 'CAAT', compagnieB: 'SAA' });
+      const forged = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-FORGED', compagnieA: 'SAA', compagnieB: 'CASH' });
+      const report = await service.importFile('mix.csv', Buffer.from(`${header}\n${own}\n${forged}\n`, 'utf-8'), correspondantX);
+
+      expect(report).toMatchObject({ company: 'CAAT', totalRows: 2, rejectedCount: 1, eligibleCount: 1 });
+      expect(report.rows[1]).toMatchObject({ rowNumber: 2, verdict: 'HORS_IDA', rejected: true });
+      expect(report.rows[1].reasons[0]).toContain('SAA');
+      const all = (await service.list({ page: 1, pageSize: 100 })).items;
+      expect(all.some((c) => c.numEconstat === 'SEC02-FORGED')).toBe(false);
+      expect(all.find((c) => c.numEconstat === 'SEC02-OWN')?.company).toBe('CAAT');
+    });
+
+    it('colonne « Compagnie A » vide : le dossier est créé au nom de la compagnie déclarante, jamais « INCONNU »', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-EMPTY', compagnieB: 'SAA' });
+      await service.importFile('empty.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'), correspondantX);
+      const all = (await service.list({ page: 1, pageSize: 100 })).items;
+      expect(all.find((c) => c.numEconstat === 'SEC02-EMPTY')?.company).toBe('CAAT');
+      expect(all.some((c) => c.company === 'INCONNU')).toBe(false);
+    });
+
+    it('un rôle compagnie ne peut pas désigner une autre compagnie (403)', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-PARAM', compagnieA: 'SAA' });
+      await expect(service.importFile('p.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'), correspondantX, 'SAA')).rejects.toThrow(ForbiddenException);
+    });
+
+    it('un rôle place doit désigner explicitement la compagnie (400 COMPAGNIE_REQUISE)', async () => {
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-PLACE', compagnieA: 'CAAT' });
+      await expect(service.importFile('p.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'), placeImporter)).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'COMPAGNIE_REQUISE' },
+      });
+    });
+
+    it('un code compagnie inconnu du référentiel est refusé (400 COMPAGNIE_INCONNUE), rien n’est créé', async () => {
+      companyStatusByCode.mockResolvedValue(undefined);
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-UNKNOWN', compagnieA: 'ZZZZ' });
+      await expect(service.importFile('u.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'), placeImporter, 'ZZZZ')).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'COMPAGNIE_INCONNUE' },
+      });
+      expect((await service.list({ page: 1, pageSize: 100 })).items.some((c) => c.numEconstat === 'SEC02-UNKNOWN')).toBe(false);
+    });
+
+    it('compagnie déclarante suspendue : ses lignes restent HORS_IDA avec le motif', async () => {
+      companyStatusByCode.mockResolvedValue({ status: 'SUSPENDU' });
+      const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'SEC02-SUSP', compagnieA: 'CAAT', compagnieB: 'SAA' });
+      const report = await service.importFile('s.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'), correspondantX);
+      expect(report.rows[0].verdict).toBe('HORS_IDA');
+      expect(report.rows[0].reasons.join(' ')).toContain('SUSPENDU');
+    });
   });
 
   describe('openRecours — statut compagnie (audit sécurité 2026-10-19)', () => {
@@ -216,7 +280,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     async function importOne(numEconstat: string, accidentDate = '2026-01-10'): Promise<string> {
       companyStatusByCode.mockResolvedValue({ status: 'ACTIF' });
       const row = buildCsvRow({ ...BASE_ROW, numEconstat, compagnieA: 'CAAT', compagnieB: 'SAA', dateAccident: accidentDate });
-      await service.importFile('import.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      await importAs('import.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
       const list = await service.list({ page: 1, pageSize: 6 });
       return list.items.find((c) => c.numEconstat === numEconstat)!.id;
     }
@@ -260,7 +324,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     it('import : une compagnie EXCLU marque la ligne HORS_IDA avec son motif (jamais le fichier entier en échec)', async () => {
       companyStatusByCode.mockResolvedValue({ status: 'EXCLU' });
       const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'ECT-IMPORT-EXCLU', compagnieA: 'CAAT', compagnieB: 'SAA' });
-      const report = await service.importFile('import.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      const report = await importAs('import.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
       expect(report.rows[0].verdict).toBe('HORS_IDA');
       expect(report.rows[0].reasons.some((r) => r.includes("n'est plus une compagnie active"))).toBe(true);
     });
@@ -277,7 +341,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     it('un CORRESPONDANT_IDA ne voit que les dossiers où sa compagnie est émettrice ou adverse déclarée', async () => {
       const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'XXAA', compagnieB: 'YYBB', numEconstat: 'ECT-SCOPE-1' });
       const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
-      await service.importFile('import.csv', buffer);
+      await importAs('import.csv', buffer, 'XXAA');
 
       const asXXAA = await service.list({ page: 1, pageSize: 100 }, correspondant('XXAA'));
       expect(asXXAA.items.some((c) => c.numEconstat === 'ECT-SCOPE-1')).toBe(true);
@@ -297,7 +361,7 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
     it("get() lève un 403 pour un CORRESPONDANT_IDA hors périmètre de la compagnie", async () => {
       const row = buildCsvRow({ ...BASE_ROW, compagnieA: 'XXAA', compagnieB: 'YYBB', numEconstat: 'ECT-SCOPE-2' });
       const buffer = Buffer.from(`${header}\n${row}\n`, 'utf-8');
-      await service.importFile('import.csv', buffer);
+      await importAs('import.csv', buffer, 'XXAA');
       const list = await service.list({ page: 1, pageSize: 100 }, correspondant('XXAA'));
       const claim = list.items.find((c) => c.numEconstat === 'ECT-SCOPE-2')!;
 
@@ -331,14 +395,14 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
 
     async function importOne(numEconstat: string, company = 'CAAT', counterparty = 'SAA', extension: Record<string, string> = {}) {
       const row = buildV2Row({ ...BASE_ROW, numEconstat, compagnieA: company, compagnieB: counterparty, responsabiliteDeclareeA: '100', responsabiliteDeclareeB: '0' }, extension);
-      const report = await service.importFile('v2.csv', Buffer.from(`${headerV2}\n${row}\n`, 'utf-8'));
+      const report = await importAs('v2.csv', Buffer.from(`${headerV2}\n${row}\n`, 'utf-8'), company);
       const claim = (await service.list({ page: 1, pageSize: 1000 })).items.find((c) => c.numEconstat === numEconstat)!;
       return { report, claim };
     }
 
     it('un fichier à 47 colonnes reste valide : aucun avertissement, aucun champ Art. 14 sauf la responsabilité déclarée (colonnes 32-33)', async () => {
       const row = buildCsvRow({ ...BASE_ROW, numEconstat: 'ECT-47', compagnieA: 'CAAT', compagnieB: 'SAA', responsabiliteDeclareeA: '25', responsabiliteDeclareeB: '75' });
-      const report = await service.importFile('v1.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
+      const report = await importAs('v1.csv', Buffer.from(`${header}\n${row}\n`, 'utf-8'));
       expect(report.rows[0].verdict).toBe('ELIGIBLE_IDA');
       expect(report.warnings).toEqual([]);
       const claim = (await service.list({ page: 1, pageSize: 1000 })).items.find((c) => c.numEconstat === 'ECT-47')!;
@@ -396,7 +460,8 @@ describe('ClaimsService (mode dégradé — import, éligibilité, appariement)'
       const shared = { ...BASE_ROW, numEconstat: 'ECT-DIV', immatriculationA: '16-1-16', immatriculationB: '31-2-31' };
       const rowA = buildV2Row({ ...shared, compagnieA: 'CAAT', compagnieB: 'SAA' }, { circonstancesA: '8' });
       const rowB = buildV2Row({ ...shared, compagnieA: 'SAA', compagnieB: 'CAAT', immatriculationA: '31-2-31', immatriculationB: '16-1-16' }, {});
-      await service.importFile('pair.csv', Buffer.from(`${headerV2}\n${rowA}\n${rowB}\n`, 'utf-8'));
+      await importAs('pair-a.csv', Buffer.from(`${headerV2}\n${rowA}\n`, 'utf-8'), 'CAAT');
+      await importAs('pair-b.csv', Buffer.from(`${headerV2}\n${rowB}\n`, 'utf-8'), 'SAA');
       const claims = (await service.list({ page: 1, pageSize: 1000 })).items.filter((c) => c.numEconstat === 'ECT-DIV');
       const a = claims.find((c) => c.company === 'CAAT')!;
       const b = claims.find((c) => c.company === 'SAA')!;

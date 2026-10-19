@@ -7,7 +7,7 @@ import { AuthGuard } from '../common/guards/auth.guard';
 import { PrivilegesGuard } from '../common/guards/privileges.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { ClaimsService } from './claims.service';
-import { ClaimImportReportDto } from './dto/claim-import.dto';
+import { ClaimImportReportDto, ImportClaimsQueryDto } from './dto/claim-import.dto';
 import { ListClaimsQueryDto, UpdateClaimResponsabiliteDto } from './dto/claim.dto';
 
 /**
@@ -50,11 +50,16 @@ export class ClaimsController {
       },
     }),
   )
-  async importFile(@UploadedFile() file?: { originalname?: string; buffer?: Buffer; size?: number }): Promise<ClaimImportReportDto> {
+  async importFile(
+    @Query() q: ImportClaimsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file?: { originalname?: string; buffer?: Buffer; size?: number },
+  ): Promise<ClaimImportReportDto> {
     if (!file?.buffer) {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Fichier manquant (champ "file", multipart/form-data).' });
     }
-    return this.service.importFile(file.originalname ?? 'import.xlsx', file.buffer);
+    // SEC-02 : la compagnie déclarante vient de l'utilisateur (ou du paramètre explicite d'un rôle place), jamais du fichier.
+    return this.service.importFile(file.originalname ?? 'import.xlsx', file.buffer, user, q.company);
   }
 
   @Get()
