@@ -1,6 +1,6 @@
-import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+import { DecimalType, Entity, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
-import { ContestationInfo, OppositionInfo, ResolutionInfo } from '../recours.rules';
+import { ContestationInfo, OppositionInfo, RecoursHistoryEntry, ResolutionInfo } from '../recours.rules';
 
 /**
  * Recours — B.3, écran 4 "Échanges Annexes 2/3/4". Une ligne = un recours
@@ -20,8 +20,8 @@ export class Recours {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
-  /** Id du `Claim` (ClaimsModule) à l'origine de ce recours. */
-  @Property({ length: 36 })
+  /** Id du `Claim` (ClaimsModule) à l'origine de ce recours — un seul recours par dossier (SEC-20, contrainte `UNIQUE` en base). */
+  @Property({ length: 36, unique: true })
   claimId!: string;
 
   /** Compagnie demanderesse (assureur IDA de l'assuré indemnisé). */
@@ -57,12 +57,21 @@ export class Recours {
   @Property({ nullable: true })
   settledAt?: Date;
 
-  @Property({ type: 'float' })
+  /** SEC-06/SEC-34 : `numeric(18,2)`, lu en `number` ; toute arithmétique se fait en centimes (`recours/money.ts`). */
+  @Property({ type: new DecimalType('number'), precision: 18, scale: 2 })
   amount!: number;
 
   /** Forme `ResolutionInfo` (recours.rules.ts) — comment le recours s'est conclu. */
   @Property({ type: 'json', nullable: true })
   resolution?: ResolutionInfo;
+
+  /** SEC-17 : historique des transitions (auteur, rôle, compagnie représentée, motif), jamais réécrit. */
+  @Property({ type: 'json' })
+  history: RecoursHistoryEntry[] = [];
+
+  /** SEC-33 : verrouillage optimiste — deux transitions concurrentes ne peuvent pas toutes deux réussir. */
+  @Property({ version: true })
+  version!: number;
 
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();

@@ -1,9 +1,11 @@
-import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+import { DecimalType, Entity, PrimaryKey, Property } from '@mikro-orm/core';
 import { v4 } from 'uuid';
 
 export interface CommissionDecisionInfo {
   outcome: 'RECOURS_FONDE' | 'RECOURS_REJETE';
   motif?: string;
+  /** SEC-32 : identifiant de l'auteur du prononcé (le PV doit être signé par une autre personne). */
+  decidedBy?: string;
 }
 
 export interface CommissionPvInfo {
@@ -30,7 +32,8 @@ export class CommissionCase {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
-  @Property({ length: 36 })
+  /** SEC-20 : un seul dossier de commission par recours (`UNIQUE(recours_id)`). */
+  @Property({ length: 36, unique: true })
   recoursId!: string;
 
   @Property({ length: 36 })
@@ -42,7 +45,7 @@ export class CommissionCase {
   @Property({ length: 4 })
   companyB!: string;
 
-  @Property({ type: 'float' })
+  @Property({ type: new DecimalType('number'), precision: 18, scale: 2 })
   amount!: number;
 
   @Property()
@@ -66,4 +69,8 @@ export class CommissionCase {
 
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();
+
+  /** SEC-33 : verrouillage optimiste des transitions du dossier. */
+  @Property({ version: true })
+  version!: number;
 }

@@ -104,6 +104,58 @@ export const DEFAULT_RECOURS_TIMER_CONFIG: RecoursTimerConfig = {
   forclusionMonths: 6,
 };
 
+/**
+ * SEC-48 — lecture STRICTE d'un entier de configuration : une valeur absente
+ * prend le défaut, une valeur présente mais invalide (non entière, `NaN`,
+ * hors bornes) lève une erreur, ce qui fait échouer le démarrage de Nest au
+ * lieu de désactiver silencieusement une échéance conventionnelle (un
+ * `Number('abc')` donnait `NaN`, donc aucune échéance jamais atteinte).
+ * Les bornes sont techniques (cohérence), pas des valeurs conventionnelles.
+ */
+export function parseIntSetting(name: string, raw: string | undefined, fallback: number, min: number, max: number): number {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const text = String(raw).trim();
+  if (!/^-?\d+$/.test(text)) throw new Error(`Configuration invalide : ${name}="${text}" n'est pas un entier.`);
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`Configuration invalide : ${name}=${text} hors bornes [${min}, ${max}].`);
+  }
+  return value;
+}
+
+/** Délais Art.10/12/19 lus de l'environnement et validés (SEC-48) — partagé par RecoursService et le référentiel (écran 12). */
+export function parseRecoursTimerConfig(get: (key: string) => string | undefined): RecoursTimerConfig {
+  return {
+    silenceDays: parseIntSetting('RECOURS_SILENCE_DAYS', get('RECOURS_SILENCE_DAYS'), DEFAULT_RECOURS_TIMER_CONFIG.silenceDays, 1, 365),
+    oppositionDays: parseIntSetting('RECOURS_OPPOSITION_DAYS', get('RECOURS_OPPOSITION_DAYS'), DEFAULT_RECOURS_TIMER_CONFIG.oppositionDays, 1, 365),
+    forclusionMonths: parseIntSetting('ELIGIBILITY_RECOURS_MAX_MONTHS', get('ELIGIBILITY_RECOURS_MAX_MONTHS'), DEFAULT_RECOURS_TIMER_CONFIG.forclusionMonths, 1, 120),
+  };
+}
+
+/**
+ * SEC-17 — trace d'une transition, persistée dans `Recours.history` et
+ * scellée au journal : qui (id stable, jamais le nom affiché), avec quel
+ * rôle, au nom de quelle compagnie, quand, pourquoi.
+ */
+export interface RecoursHistoryEntry {
+  at: string;
+  action: RecoursAction | 'creation' | 'automatique';
+  fromState?: RecoursState;
+  toState: RecoursState;
+  actorId: string;
+  actorRole: string;
+  /** Compagnie partie au nom de laquelle l'acte est accompli (rôle compagnie), absent pour un acte de la place ou du système. */
+  onBehalfOf?: string;
+  reason?: string;
+  /** Transition automatique : résolution conventionnelle appliquée (Art. 10/12/19). */
+  resolutionKind?: ResolutionKind;
+  /** Clôture en commission : dossier et PV qui la fondent (SEC-32). */
+  commissionCaseId?: string;
+  pvRef?: string;
+}
+
+export const SYSTEM_ACTOR = { actorId: 'system', actorRole: 'SYSTEME' } as const;
+
 function addDaysUtc(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 86_400_000);
 }
@@ -199,43 +251,49 @@ export function applyAutomaticTransitions(
 
   const sentAt = new Date(snapshot.requestSentAt);
   const forclusionDeadline = addMonthsUtc(sentAt, config.forclusionMonths);
-  const nowIso = now.toISOString();
 
-  // Art. 19 — priorité absolue : dépassé, peu importe le sous-état courant.
-  if (now.getTime() > forclusionDeadline.getTime()) {
+  // SEC-35 : toute date d'effet d'une transition automatique est l'ÉCHÉANCE
+  // conventionnelle calculée, jamais l'instant de la lecture qui la constate —
+  // sinon le trimestre de compensation (dérivé de `settledAt`) dépendrait du
+  // moment où quelqu'un consulte l'écran.
+  const silenceDeadline = snapshot.state === 'EN_ATTENTE' ? addDaysUtc(sentAt, config.silenceDays) : undefined;
+  const oppositionDeadline =
+    snapshot.state === 'OPPOSITION' && snapshot.opposition?.status === 'EN_COURS' ? addDaysUtc(new Date(snapshot.opposition.raisedAt), config.oppositionDays) : undefined;
+
+  // Le délai propre à l'état (Art. 10/12) échu AVANT la forclusion l'emporte :
+  // un recours tacitement accepté au jour J n'est pas forclos au jour J+n.
+  if (silenceDeadline && now.getTime() > silenceDeadline.getTime() && silenceDeadline.getTime() <= forclusionDeadline.getTime()) {
+    const at = silenceDeadline.toISOString();
     return {
       changed: true,
-      snapshot: { ...snapshot, state: 'FORCLOS', resolution: { kind: 'FORCLUSION_ART19', at: nowIso } },
+      snapshot: {
+        ...snapshot,
+        state: 'REGLE',
+        responseAt: snapshot.responseAt ?? at,
+        resolution: { kind: 'ACCEPTATION_TACITE_ART10', at },
+        settledAt: at,
+      },
+    };
+  }
+  if (oppositionDeadline && snapshot.opposition && now.getTime() > oppositionDeadline.getTime() && oppositionDeadline.getTime() <= forclusionDeadline.getTime()) {
+    const at = oppositionDeadline.toISOString();
+    return {
+      changed: true,
+      snapshot: {
+        ...snapshot,
+        state: 'REJETE',
+        opposition: { ...snapshot.opposition, status: 'FONDEE_TACITE', decidedAt: at },
+        resolution: { kind: 'OPPOSITION_FONDEE_ART12', at },
+      },
     };
   }
 
-  if (snapshot.state === 'EN_ATTENTE') {
-    const silenceDeadline = addDaysUtc(sentAt, config.silenceDays);
-    if (now.getTime() > silenceDeadline.getTime()) {
-      return {
-        changed: true,
-        snapshot: {
-          ...snapshot,
-          state: 'REGLE',
-          responseAt: snapshot.responseAt ?? nowIso,
-          resolution: { kind: 'ACCEPTATION_TACITE_ART10', at: nowIso },
-          settledAt: nowIso,
-        },
-      };
-    }
-  } else if (snapshot.state === 'OPPOSITION' && snapshot.opposition?.status === 'EN_COURS') {
-    const oppositionDeadline = addDaysUtc(new Date(snapshot.opposition.raisedAt), config.oppositionDays);
-    if (now.getTime() > oppositionDeadline.getTime()) {
-      return {
-        changed: true,
-        snapshot: {
-          ...snapshot,
-          state: 'REJETE',
-          opposition: { ...snapshot.opposition, status: 'FONDEE_TACITE', decidedAt: nowIso },
-          resolution: { kind: 'OPPOSITION_FONDEE_ART12', at: nowIso },
-        },
-      };
-    }
+  // Art. 19 — forclusion globale, datée de son échéance.
+  if (now.getTime() > forclusionDeadline.getTime()) {
+    return {
+      changed: true,
+      snapshot: { ...snapshot, state: 'FORCLOS', resolution: { kind: 'FORCLUSION_ART19', at: forclusionDeadline.toISOString() } },
+    };
   }
 
   return { changed: false, snapshot };

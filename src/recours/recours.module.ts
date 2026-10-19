@@ -1,6 +1,7 @@
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Module } from '@nestjs/common';
 import { AdherentsModule } from '../adherents/adherents.module';
+import { LedgerModule } from '../ledger/ledger.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { Recours } from './entities/recours.entity';
 import { RecoursController } from './recours.controller';
@@ -16,7 +17,8 @@ import { RecoursService } from './recours.service';
  */
 @Module({
   // AdherentsModule : catalogue des motifs d'opposition (contrôle du `reasonCode`).
-  imports: [MikroOrmModule.forFeature([Recours]), RealtimeModule, AdherentsModule],
+  // LedgerModule : scellement de chaque transition (SEC-17) — n'importe aucun module métier, pas de cycle.
+  imports: [MikroOrmModule.forFeature([Recours]), RealtimeModule, AdherentsModule, LedgerModule],
   controllers: [RecoursController],
   providers: [RecoursService],
   exports: [RecoursService],

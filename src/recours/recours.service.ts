@@ -1,14 +1,27 @@
+import { LockMode, OptimisticLockError, RequestContext } from '@mikro-orm/core';
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { EntityManager, EntityRepository } from '@mikro-orm/postgresql';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
-import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
+import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { AdherentsService } from '../adherents/adherents.service';
-import { RealtimeGateway } from '../realtime/realtime.module';
+import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
+import { LedgerService } from '../ledger/ledger.service';
+import { PLACE_ROOM, RealtimeGateway, tenantRoom } from '../realtime/realtime.module';
 import {
   CreateRecoursDto,
   ListRecoursQueryDto,
@@ -17,19 +30,25 @@ import {
   RecoursViewDto,
 } from './dto/recours.dto';
 import { Recours } from './entities/recours.entity';
+import { isValidMoney, MAX_TECHNICAL_AMOUNT_DA } from './money';
+import { isPlaceUser } from './place-role';
 import {
   applyAutomaticTransitions,
   applyManualTransition,
   computeTimerState,
-  DEFAULT_RECOURS_TIMER_CONFIG,
+  parseIntSetting,
+  parseRecoursTimerConfig,
   RECOURS_ACTIONS,
   RecoursAction,
+  RecoursHistoryEntry,
   RecoursSnapshot,
   RecoursState,
   RecoursTimerConfig,
+  SYSTEM_ACTOR,
 } from './recours.rules';
+import { isUniqueViolation, toConflict, withStrictFallback } from './strict-persistence';
 
-/** Repli mémoire — mode dégradé. Une ligne = base + snapshot (voir recours.rules.ts). */
+/** Repli mémoire — mode dégradé (hors production). Une ligne = base + snapshot (voir recours.rules.ts). */
 type MemoryRecoursRow = RecoursSnapshot & {
   id: string;
   claimId: string;
@@ -37,7 +56,24 @@ type MemoryRecoursRow = RecoursSnapshot & {
   to: string;
   amount: number;
   createdAt: string;
+  history: RecoursHistoryEntry[];
+  version: number;
 };
+
+/** Décision de commission rattachée à un recours (SEC-32) — fournie par `CommissionModule`, qui dépend de ce module (jamais l'inverse). */
+export interface CommissionDecisionForRecours {
+  caseId: string;
+  status: string;
+  outcome?: 'RECOURS_FONDE' | 'RECOURS_REJETE';
+  pvRef?: string;
+  pvSigned: boolean;
+}
+
+export type CommissionDecisionLookup = (recoursId: string) => Promise<CommissionDecisionForRecours | undefined>;
+
+const NOT_FOUND = () => new NotFoundException({ code: 'NOT_FOUND', message: 'Recours introuvable.' });
+const CONCURRENT = () => new ConflictException({ code: 'CONFLIT_CONCURRENT', message: 'Le recours a été modifié entre-temps : rechargez-le avant de recommencer.' });
+const DUPLICATE = () => new ConflictException({ code: 'RECOURS_EXISTANT', message: 'Un recours existe déjà pour ce dossier.' });
 
 function snapshotOf(e: Recours): RecoursSnapshot {
   return {
@@ -62,29 +98,52 @@ function applySnapshotToEntity(e: Recours, snap: RecoursSnapshot): void {
   e.resolution = snap.resolution;
 }
 
+function baseOf(e: Recours) {
+  return { id: e.id, claimId: e.claimId, from: e.from, to: e.to, amount: Number(e.amount), createdAt: e.createdAt.toISOString() };
+}
+
 function toView(base: { id: string; claimId: string; from: string; to: string; amount: number; createdAt: string }, snap: RecoursSnapshot, now: Date, config: RecoursTimerConfig): RecoursViewDto {
   return { ...base, ...snap, timer: computeTimerState(snap, now, config) };
+}
+
+/** Plafond conventionnel d'un recours (SEC-06) : le plafond Art. 4 déjà paramétré pour l'éligibilité — une seule source, jamais une 2e constante. */
+function parseAmountCap(raw: string | undefined): number {
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA;
+  const text = String(raw).trim();
+  const value = Number(text);
+  if (!/^\d+(\.\d{1,2})?$/.test(text) || !Number.isFinite(value) || value <= 0 || value > MAX_TECHNICAL_AMOUNT_DA) {
+    throw new Error(`Configuration invalide : ELIGIBILITY_MAX_AMOUNT_DA="${text}" (montant positif, 2 décimales au plus, ≤ ${MAX_TECHNICAL_AMOUNT_DA}).`);
+  }
+  return value;
 }
 
 /**
  * RecoursModule — B.2/B.3, écran 4 "Échanges Annexes 2/3/4". Machine d'état
  * + timers conventionnels (Art.10 silence, Art.12 opposition, Art.19
- * forclusion) en fonctions PURES et testées (`recours.rules.ts`,
- * `recours.rules.spec.ts`) ; ce service n'ajoute que la persistance
- * (`Recours`, repli mémoire en mode dégradé) et l'orchestration : évaluation
- * PARESSEUSE des transitions automatiques (silence/opposition/forclusion) à
- * chaque lecture/écriture, faute d'ordonnanceur dédié dans ce sprint (voir
- * HANDOFF.md).
+ * forclusion) en fonctions PURES et testées (`recours.rules.ts`) ; ce service
+ * ajoute la persistance et l'orchestration.
  *
- * Contrat stable : `GET /recours?filter&page` et `POST /recours/{id}/transition`
- * (B.11) conservent leurs routes ; la forme du corps/réponse, auparavant un
- * mock libre, est désormais la forme réelle documentée ci-dessus.
+ * Revue sécurité 2026-10-19 :
+ *  - SEC-06 : montant borné (plafond conventionnel, 2 décimales, fini) ;
+ *  - SEC-07 : événements temps réel limités aux compagnies parties + place, payload `{ id, state }` ;
+ *  - SEC-17 : chaque transition persiste auteur (`user.id`), rôle, compagnie représentée et motif, et est scellée au journal ;
+ *  - SEC-20 : un seul recours par dossier (contrainte `UNIQUE` + 409) ;
+ *  - SEC-32 : la clôture en commission exige une décision PRONONCÉE au PV signé ;
+ *  - SEC-33 : transitions sous verrou (`SELECT … FOR UPDATE` + version) — deux transitions concurrentes : l'une reçoit 409 ;
+ *  - SEC-35 : les transitions automatiques sont datées de leur échéance et appliquées aussi par une tâche périodique ;
+ *  - SEC-46 : hors périmètre, réponse 404 identique à un recours inexistant, messages sans code de compagnie ;
+ *  - SEC-48 : configuration des délais validée au démarrage.
  */
 @Injectable()
-export class RecoursService {
-  /** Repli mémoire — mode dégradé. Persistant pour la durée du process (voir README "Mode dégradé"). */
+export class RecoursService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger('RecoursService');
+  /** Repli mémoire — mode dégradé (développement/test uniquement). */
   private readonly memory: MemoryRecoursRow[] = [];
   private readonly timerConfig: RecoursTimerConfig;
+  private readonly amountCap: number;
+  private readonly sweepIntervalMs: number;
+  private sweepTimer?: NodeJS.Timeout;
+  private commissionLookup?: CommissionDecisionLookup;
 
   constructor(
     @InjectRepository(Recours) private readonly repo: EntityRepository<Recours>,
@@ -92,54 +151,101 @@ export class RecoursService {
     private readonly realtime: RealtimeGateway,
     // Optionnel : les specs d'autres modules instancient RecoursService sans référentiel ; un `reasonCode` exige alors sa présence.
     @Optional() private readonly adherents?: AdherentsService,
+    // Toujours fourni par RecoursModule (LedgerModule importé) ; optionnel pour les specs d'autres modules.
+    @Optional() private readonly ledger?: LedgerService,
   ) {
-    // Art.10/Art.12 : hypothèses documentées (dossier technique silencieux
-    // sur la durée exacte), paramétrables. Art.19 : réutilise la MÊME
-    // variable d'environnement que EligibilityModule (cohérence demandée
-    // par la mission), plutôt qu'une variable dupliquée.
-    this.timerConfig = {
-      silenceDays: Number(this.configService.get<string>('RECOURS_SILENCE_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.silenceDays),
-      oppositionDays: Number(this.configService.get<string>('RECOURS_OPPOSITION_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.oppositionDays),
-      forclusionMonths: Number(
-        this.configService.get<string>('ELIGIBILITY_RECOURS_MAX_MONTHS') ?? DEFAULT_RECOURS_TIMER_CONFIG.forclusionMonths,
-      ),
-    };
+    const get = (key: string) => this.configService.get<string>(key);
+    // SEC-48 : une valeur invalide fait échouer le démarrage (voir parseIntSetting).
+    this.timerConfig = parseRecoursTimerConfig(get);
+    this.amountCap = parseAmountCap(get('ELIGIBILITY_MAX_AMOUNT_DA'));
+    this.sweepIntervalMs = parseIntSetting('RECOURS_SWEEP_INTERVAL_MINUTES', get('RECOURS_SWEEP_INTERVAL_MINUTES'), 60, 0, 1440) * 60_000;
   }
 
   getTimerConfig(): RecoursTimerConfig {
     return this.timerConfig;
   }
 
+  getAmountCap(): number {
+    return this.amountCap;
+  }
+
+  /** SEC-32 : `CommissionModule` fournit la décision de commission d'un recours (évite un cycle Recours → Commission). */
+  registerCommissionDecisionLookup(lookup: CommissionDecisionLookup): void {
+    this.commissionLookup = lookup;
+  }
+
+  /** SEC-35 : applique périodiquement les transitions automatiques, sans attendre qu'un écran soit consulté. */
+  onModuleInit(): void {
+    if (this.sweepIntervalMs <= 0) return;
+    this.sweepTimer = setInterval(() => {
+      void this.sweep().catch((err) => this.logger.error(`Balayage des échéances en échec : ${(err as Error).message}`));
+    }, this.sweepIntervalMs);
+    this.sweepTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+  }
+
+  /** Applique les transitions automatiques échues (Art. 10/12/19) — appelé par la tâche périodique, hors requête HTTP. */
+  async sweep(now = new Date()): Promise<void> {
+    await RequestContext.create(this.repo.getEntityManager(), () => this.computeAllViews(now));
+  }
+
+  private emitState(id: string, state: string, from: string, to: string, internal?: Record<string, unknown>): void {
+    // SEC-07 : payload WebSocket minimal (aucun nom, aucun auteur), diffusé aux seules parties + place.
+    this.realtime.emitEvent('recours.timer', { id, state }, { rooms: [PLACE_ROOM, tenantRoom(from), tenantRoom(to)], internalPayload: { id, state, from, to, ...internal } });
+  }
+
+  private async seal(type: string, id: string, actorId: string, summary: Record<string, unknown>): Promise<void> {
+    if (!this.ledger) return;
+    await this.ledger.append(type, id, actorId, JSON.stringify(summary));
+  }
+
+  private automaticEntry(before: RecoursSnapshot, after: RecoursSnapshot): RecoursHistoryEntry {
+    return {
+      at: after.resolution?.at ?? new Date().toISOString(),
+      action: 'automatique',
+      fromState: before.state,
+      toState: after.state,
+      ...SYSTEM_ACTOR,
+      resolutionKind: after.resolution?.kind,
+    };
+  }
+
   /**
-   * Charge tous les recours, applique paresseusement les transitions
-   * automatiques (Art.10/12/19) et persiste celles qui ont effectivement
-   * changé l'état — émet `recours.timer` (B.12) pour chacune.
+   * Charge tous les recours, applique les transitions automatiques échues et
+   * persiste celles qui ont effectivement changé l'état (verrou optimiste :
+   * une transition concurrente gagne, la lecture se contente de recharger).
    */
   private async computeAllViews(now: Date): Promise<RecoursViewDto[]> {
     return withDegradedFallback(
       'RecoursService.computeAllViews',
       async () => {
-        const rows = await this.repo.findAll({ orderBy: { requestSentAt: 'DESC' } });
+        // Contexte dédié : aucune entité « recours » ne reste gérée (et potentiellement périmée) dans l'EntityManager de la requête.
+        const em = this.freshEm();
+        const rows = await em.find(Recours, {}, { orderBy: { requestSentAt: 'DESC' } });
         const views: RecoursViewDto[] = [];
         for (const e of rows) {
           const current = snapshotOf(e);
           const { changed, snapshot } = applyAutomaticTransitions(current, now, this.timerConfig);
-          if (changed) {
-            applySnapshotToEntity(e, snapshot);
-            await this.repo.getEntityManager().flush();
-            this.realtime.emitEvent('recours.timer', { id: e.id, state: snapshot.state, resolution: snapshot.resolution });
-          }
-          views.push(toView({ id: e.id, claimId: e.claimId, from: e.from, to: e.to, amount: e.amount, createdAt: e.createdAt.toISOString() }, snapshot, now, this.timerConfig));
+          let effective = snapshot;
+          if (changed) effective = await this.persistAutomatic(em, e, current, snapshot);
+          views.push(toView(baseOf(e), effective, now, this.timerConfig));
         }
         return views;
       },
-      () => {
+      async () => {
         const views: RecoursViewDto[] = [];
         for (const row of this.memory) {
-          const { changed, snapshot } = applyAutomaticTransitions(row, now, this.timerConfig);
+          const before: RecoursSnapshot = { ...row };
+          const { changed, snapshot } = applyAutomaticTransitions(before, now, this.timerConfig);
           if (changed) {
             Object.assign(row, snapshot);
-            this.realtime.emitEvent('recours.timer', { id: row.id, state: snapshot.state, resolution: snapshot.resolution });
+            row.version += 1;
+            row.history.push(this.automaticEntry(before, snapshot));
+            this.emitState(row.id, snapshot.state, row.from, row.to, { resolution: snapshot.resolution });
+            await this.seal('RECOURS_TRANSITION', row.id, SYSTEM_ACTOR.actorId, { action: 'automatique', from: before.state, to: snapshot.state, resolution: snapshot.resolution?.kind, at: snapshot.resolution?.at });
           }
           views.push(toView(row, snapshot, now, this.timerConfig));
         }
@@ -148,7 +254,34 @@ export class RecoursService {
     );
   }
 
-  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les recours où sa compagnie est `from` ou `to` ; les rôles "place" voient tout. Comblé en revue Product Owner, sprint 3 — absent jusqu'ici. */
+  /** EntityManager isolé (identité vierge) : chaque lecture/écriture de recours part de l'état réel de la base. */
+  private freshEm(): EntityManager {
+    return (this.repo.getEntityManager() as EntityManager).fork({ clear: true });
+  }
+
+  private async persistAutomatic(em: EntityManager, e: Recours, before: RecoursSnapshot, after: RecoursSnapshot): Promise<RecoursSnapshot> {
+    const seenVersion = e.version;
+    try {
+      await em.transactional(async (tem) => {
+        // SEC-33 : verrou + relecture ; si l'état a changé depuis la lecture, une transition concurrente a gagné.
+        const locked = await tem.findOne(Recours, { id: e.id }, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
+        if (!locked || locked.version !== seenVersion) throw new OptimisticLockError(`Recours ${e.id} modifié entre-temps`);
+        applySnapshotToEntity(locked, after);
+        locked.history = [...(locked.history ?? []), this.automaticEntry(before, after)];
+        await tem.flush();
+        await this.seal('RECOURS_TRANSITION', e.id, SYSTEM_ACTOR.actorId, { action: 'automatique', from: before.state, to: after.state, resolution: after.resolution?.kind, at: after.resolution?.at });
+      });
+    } catch (err) {
+      if (!(err instanceof OptimisticLockError)) throw err;
+      // Une transition concurrente a gagné : on affiche l'état réel, sans rien écraser.
+      const fresh = await this.freshEm().findOne(Recours, { id: e.id });
+      return fresh ? snapshotOf(fresh) : before;
+    }
+    this.emitState(e.id, after.state, e.from, e.to, { resolution: after.resolution });
+    return after;
+  }
+
+  /** B.7 — un `CORRESPONDANT_IDA`/`TRESORIER` ne voit que les recours où sa compagnie est `from` ou `to` ; les rôles "place" voient tout. */
   private visibleToUser(r: { from: string; to: string }, user?: AuthenticatedUser): boolean {
     if (!user) return true;
     const tenant = resolveTenantFilter(user);
@@ -181,35 +314,93 @@ export class RecoursService {
     return counters;
   }
 
+  /**
+   * Interface inter-modules historique (DocumentsModule…) : 404 si inexistant,
+   * 403 si hors périmètre. Les routes de ce module utilisent `getForUser`
+   * (404 uniforme, SEC-46).
+   */
   async get(id: string, user?: AuthenticatedUser): Promise<RecoursViewDto> {
     const rows = await this.computeAllViews(new Date());
     const row = rows.find((r) => r.id === id);
-    if (!row) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Recours introuvable.' });
+    if (!row) throw NOT_FOUND();
     if (!this.visibleToUser(row, user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
     return row;
   }
 
-  /** Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` ajouté — avant, `dto.from` venait du corps sans vérification, un `CORRESPONDANT_IDA` pouvait créer un recours au nom d'une AUTRE compagnie (`from`). */
-  async create(dto: CreateRecoursDto, user?: AuthenticatedUser): Promise<RecoursViewDto> {
-    if (user) assertCompanyAccess(user, dto.from);
-    const now = new Date();
+  /** SEC-46 — hors périmètre, la réponse est identique à celle d'un recours inexistant (404 générique). */
+  async getForUser(id: string, user: AuthenticatedUser): Promise<RecoursViewDto> {
+    const row = (await this.computeAllViews(new Date())).find((r) => r.id === id);
+    if (!row || !this.visibleToUser(row, user)) throw NOT_FOUND();
+    return row;
+  }
+
+  /** SEC-17 — historique des transitions (auteurs, rôles, motifs) : réservé aux rôles place (audit), 404 sinon. */
+  async history(id: string, user: AuthenticatedUser): Promise<RecoursHistoryEntry[]> {
+    if (!isPlaceUser(user)) throw NOT_FOUND();
     return withDegradedFallback(
-      'RecoursService.create',
+      'RecoursService.history',
       async () => {
-        const entity = this.repo.create({
-          claimId: dto.claimId,
-          from: dto.from,
-          to: dto.to,
-          amount: dto.amount,
-          state: 'EN_ATTENTE',
-          requestSentAt: now,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-        await this.repo.getEntityManager().persistAndFlush(entity);
-        const snap = snapshotOf(entity);
-        return toView({ id: entity.id, claimId: entity.claimId, from: entity.from, to: entity.to, amount: entity.amount, createdAt: entity.createdAt.toISOString() }, snap, now, this.timerConfig);
+        const e = await this.freshEm().findOne(Recours, { id });
+        if (!e) throw NOT_FOUND();
+        return e.history ?? [];
       },
       () => {
+        const row = this.memory.find((r) => r.id === id);
+        if (!row) throw NOT_FOUND();
+        return [...row.history];
+      },
+    );
+  }
+
+  /**
+   * Revue sécurité 2026-10-18 (B.7) : `dto.from` doit être la compagnie de l'appelant (sauf rôle place).
+   * SEC-06 : montant fini, > 0, deux décimales, ≤ plafond conventionnel (le rapprochement avec le montant du
+   * dossier est fait par `ClaimsService.openRecours`, seul à connaître le dossier).
+   * SEC-20 : un seul recours par dossier — contrainte `UNIQUE(claim_id)` en base, 409 `RECOURS_EXISTANT`.
+   */
+  async create(dto: CreateRecoursDto, user?: AuthenticatedUser): Promise<RecoursViewDto> {
+    if (user) assertCompanyAccess(user, dto.from);
+    if (!isValidMoney(dto.amount)) {
+      throw new BadRequestException({ code: 'MONTANT_INVALIDE', message: 'Montant invalide : nombre fini, strictement positif, deux décimales au plus.' });
+    }
+    if (dto.amount > this.amountCap) {
+      throw new BadRequestException({ code: 'RECOURS_MONTANT_PLAFOND', message: `Montant supérieur au plafond conventionnel (${this.amountCap} DA).` });
+    }
+    if (dto.from === dto.to) {
+      throw new BadRequestException({ code: 'BAD_REQUEST', message: 'La compagnie adverse doit être différente de la compagnie demanderesse.' });
+    }
+    const now = new Date();
+    const actor = user ? { actorId: user.id, actorRole: user.role, ...(user.companyId ? { onBehalfOf: user.companyId } : {}) } : SYSTEM_ACTOR;
+    const creation: RecoursHistoryEntry = { at: now.toISOString(), action: 'creation', toState: 'EN_ATTENTE', ...actor };
+    const sealSummary = { action: 'creation', claimId: dto.claimId, from: dto.from, to: dto.to, amount: dto.amount, role: actor.actorRole };
+
+    const view = await withStrictFallback(
+      'RecoursService.create',
+      async () => {
+        try {
+          return await this.freshEm().transactional(async (tem) => {
+            if (await tem.findOne(Recours, { claimId: dto.claimId })) throw DUPLICATE();
+            const entity = tem.create(Recours, {
+              claimId: dto.claimId,
+              from: dto.from,
+              to: dto.to,
+              amount: dto.amount,
+              state: 'EN_ATTENTE',
+              requestSentAt: now,
+              history: [creation],
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any);
+            await tem.flush();
+            await this.seal('RECOURS_OUVERT', entity.id, actor.actorId, sealSummary);
+            return toView(baseOf(entity), snapshotOf(entity), now, this.timerConfig);
+          });
+        } catch (err) {
+          throw isUniqueViolation(err) ? DUPLICATE() : err;
+        }
+      },
+      async () => {
+        // Section synchrone : vérification + insertion atomiques dans le process (mode dégradé).
+        if (this.memory.some((r) => r.claimId === dto.claimId)) throw DUPLICATE();
         const row: MemoryRecoursRow = {
           id: randomUUID(),
           claimId: dto.claimId,
@@ -219,63 +410,65 @@ export class RecoursService {
           state: 'EN_ATTENTE',
           requestSentAt: now.toISOString(),
           createdAt: now.toISOString(),
+          history: [creation],
+          version: 1,
         };
         this.memory.push(row);
+        await this.seal('RECOURS_OUVERT', row.id, actor.actorId, sealSummary);
         return toView(row, row, now, this.timerConfig);
       },
     );
+    // Notification de la compagnie débitrice (et de la place) — SEC-06 §4 / SEC-07.
+    this.emitState(view.id, view.state, view.from, view.to, { created: true });
+    return view;
   }
 
   /**
-   * Récupère la ligne (DB ou repli mémoire) SANS passer par
-   * `withDegradedFallback` : contrairement aux lectures en masse
-   * (`computeAllViews`), cette méthode doit ensuite lever des exceptions
-   * MÉTIER (404/400) qu'il ne faut jamais confondre avec une bascule en
-   * mode dégradé (`withDegradedFallback` catcherait aussi ces exceptions et
-   * retomberait, à tort, sur le repli mémoire — masquant par exemple un
-   * 400 "action invalide" derrière un 404 "introuvable (mode dégradé)").
-   */
-  private async loadForTransition(id: string): Promise<{ mode: 'db'; entity: Recours } | { mode: 'memory'; row: MemoryRecoursRow }> {
-    try {
-      const entity = await this.repo.findOne({ id });
-      if (entity) return { mode: 'db', entity };
-    } catch (err) {
-      logDegraded('RecoursService.transition', `base de données injoignable (${(err as Error).message}) — repli mémoire`);
-    }
-    const row = this.memory.find((r) => r.id === id);
-    if (row) return { mode: 'memory', row };
-    throw new NotFoundException({ code: 'NOT_FOUND', message: 'Recours introuvable.' });
-  }
-
-  /**
-   * Autorisation par action — absente jusqu'ici (trouvé en revue Product
-   * Owner, sprint 3 : seul le `@Privileges('exchange','decide')` du
-   * contrôleur filtrait, n'importe quel `CORRESPONDANT_IDA`/`TRESORIER`
-   * pouvait agir sur n'importe quel recours, y compris clôturer une
-   * commission à la place des membres de la commission).
-   *  - accepter/opposer : réaction de la compagnie adverse (`to`).
-   *  - lever_opposition/contester : réaction de la compagnie demanderesse (`from`).
-   *  - transmettre_commission : escalade, les deux parties ou un rôle "place".
-   *  - cloturer_commission_* : décision de la commission — rôle "place" uniquement.
+   * Autorisation par action, APRÈS le contrôle de visibilité (SEC-46 : un non-participant a déjà reçu un 404) :
+   *  - accepter/opposer : réaction de la compagnie adverse (`to`) ;
+   *  - lever_opposition/contester : réaction de la compagnie demanderesse (`from`) — règle de `lever_opposition` en attente de confirmation UAR (SEC-18, QUESTIONS_UAR.md §15) ;
+   *  - SEC-17 : ces quatre actes engagent une compagnie : un rôle place ne peut pas les accomplir à sa place (403) ;
+   *  - transmettre_commission : l'une des deux parties ou un rôle place ;
+   *  - cloturer_commission_* : rôle place uniquement (SEC-25 : jamais un utilisateur rattaché à une compagnie).
+   * Messages génériques : jamais le code d'une compagnie (SEC-46).
    */
   private assertActionAllowed(action: RecoursAction, from: string, to: string, user: AuthenticatedUser): void {
-    const tenant = resolveTenantFilter(user);
-    if (!tenant) return; // rôle "place" : toujours autorisé
-    if (action === 'cloturer_commission_favorable' || action === 'cloturer_commission_defavorable') {
-      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Seule la commission (rôle "place") peut clôturer un dossier transmis en commission.' });
+    const place = isPlaceUser(user);
+    const tenant = place ? undefined : resolveTenantFilter(user);
+    const forbidden = (message: string) => new ForbiddenException({ code: 'FORBIDDEN', message });
+    switch (action) {
+      case 'cloturer_commission_favorable':
+      case 'cloturer_commission_defavorable':
+        if (!place) throw forbidden('Seule la commission (rôle place) peut clôturer un dossier transmis en commission.');
+        return;
+      case 'accepter':
+      case 'opposer':
+        if (place) throw forbidden('Cet acte engage la compagnie destinataire : il ne peut pas être accompli par un rôle de la place.');
+        if (tenant !== to) throw forbidden('Seule la compagnie destinataire du recours peut effectuer cette action.');
+        return;
+      case 'lever_opposition':
+      case 'contester':
+        if (place) throw forbidden('Cet acte engage la compagnie demanderesse : il ne peut pas être accompli par un rôle de la place.');
+        if (tenant !== from) throw forbidden('Seule la compagnie demanderesse du recours peut effectuer cette action.');
+        return;
+      case 'transmettre_commission':
+        if (!place && tenant !== from && tenant !== to) throw forbidden('Action réservée aux parties au recours.');
+        return;
     }
-    if (action === 'accepter' || action === 'opposer') {
-      if (tenant !== to) throw new ForbiddenException({ code: 'FORBIDDEN', message: `Seule la compagnie destinataire ("${to}") peut effectuer cette action.` });
-      return;
+  }
+
+  /** SEC-32 : la clôture en commission découle d'une décision PRONONCÉE, au PV signé, de sens identique. */
+  private async commissionBasis(id: string, action: RecoursAction): Promise<{ commissionCaseId?: string; pvRef?: string }> {
+    if (action !== 'cloturer_commission_favorable' && action !== 'cloturer_commission_defavorable') return {};
+    const decision = this.commissionLookup ? await this.commissionLookup(id) : undefined;
+    const expected = action === 'cloturer_commission_favorable' ? 'RECOURS_FONDE' : 'RECOURS_REJETE';
+    if (!decision || decision.status !== 'PRONONCE' || !decision.pvSigned || decision.outcome !== expected) {
+      throw new ConflictException({
+        code: 'DECISION_COMMISSION_REQUISE',
+        message: `La clôture exige une décision de commission prononcée (${expected}) dont le PV est signé.`,
+      });
     }
-    if (action === 'lever_opposition' || action === 'contester') {
-      if (tenant !== from) throw new ForbiddenException({ code: 'FORBIDDEN', message: `Seule la compagnie demanderesse ("${from}") peut effectuer cette action.` });
-      return;
-    }
-    // transmettre_commission : les deux parties.
-    if (tenant !== from && tenant !== to) {
-      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
-    }
+    return { commissionCaseId: decision.caseId, pvRef: decision.pvRef };
   }
 
   async transition(id: string, dto: RecoursTransitionDto, user: AuthenticatedUser): Promise<RecoursTransitionResultDto> {
@@ -286,42 +479,81 @@ export class RecoursService {
     if (dto.reasonCode !== undefined && action !== 'opposer') {
       throw new BadRequestException({ code: 'BAD_REQUEST', message: '"reasonCode" n’est accepté que pour l’action "opposer".' });
     }
-    const decidedBy = user.name;
     const now = new Date();
 
-    const loaded = await this.loadForTransition(id);
-    const currentFromTo = loaded.mode === 'db' ? { from: loaded.entity.from, to: loaded.entity.to } : { from: loaded.row.from, to: loaded.row.to };
-    this.assertActionAllowed(action, currentFromTo.from, currentFromTo.to, user);
-    if (dto.reasonCode !== undefined) {
-      if (!this.adherents) throw new Error('Référentiel des motifs d’opposition indisponible (AdherentsService non injecté).');
-      await this.adherents.assertOppositionMotifUsable(dto.reasonCode);
-    }
-    const currentSnapshot = loaded.mode === 'db' ? snapshotOf(loaded.entity) : { ...loaded.row };
+    /** Contrôles communes aux deux voies (base / mémoire), puis calcul de l'état cible. */
+    const decide = async (from: string, to: string, current: RecoursSnapshot) => {
+      if (!this.visibleToUser({ from, to }, user)) throw NOT_FOUND();
+      if (dto.reasonCode !== undefined) {
+        if (!this.adherents) throw new Error('Référentiel des motifs d’opposition indisponible (AdherentsService non injecté).');
+        await this.adherents.assertOppositionMotifUsable(dto.reasonCode);
+      }
+      this.assertActionAllowed(action, from, to, user);
+      // Évalue d'abord les transitions automatiques (le timer peut avoir expiré entre deux requêtes).
+      const { snapshot: autoSnapshot } = applyAutomaticTransitions(current, now, this.timerConfig);
+      const next = applyManualTransition(autoSnapshot, action, now, this.timerConfig, { reason: dto.reason, reasonCode: dto.reasonCode });
+      if (!next) {
+        throw new BadRequestException({ code: 'INVALID_TRANSITION', message: `Action "${action}" non autorisée depuis l'état "${autoSnapshot.state}".` });
+      }
+      const basis = await this.commissionBasis(id, action);
+      if (basis.commissionCaseId && next.resolution) next.resolution = { ...next.resolution, note: [dto.reason, `Dossier ${basis.commissionCaseId}`, basis.pvRef && `PV ${basis.pvRef}`].filter(Boolean).join(' — ') };
+      const place = isPlaceUser(user);
+      const entry: RecoursHistoryEntry = {
+        at: now.toISOString(),
+        action,
+        fromState: autoSnapshot.state,
+        toState: next.state,
+        actorId: user.id,
+        actorRole: user.role,
+        ...(!place && user.companyId ? { onBehalfOf: user.companyId } : {}),
+        ...(dto.reason ? { reason: dto.reason } : {}),
+        ...basis,
+      };
+      const autoEntry = autoSnapshot.state !== current.state ? this.automaticEntry(current, autoSnapshot) : undefined;
+      return { next, entries: autoEntry ? [autoEntry, entry] : [entry] };
+    };
+    const sealOf = (from: string, to: string, entries: RecoursHistoryEntry[]) =>
+      this.seal('RECOURS_TRANSITION', id, user.id, { action, entries: entries.map(({ action: a, fromState, toState, actorRole, onBehalfOf, commissionCaseId, pvRef }) => ({ a, fromState, toState, actorRole, onBehalfOf, commissionCaseId, pvRef })), from, to });
 
-    // Évalue d'abord les transitions automatiques (le timer peut avoir
-    // expiré entre deux requêtes) avant de tenter l'action manuelle.
-    const { snapshot: autoSnapshot } = applyAutomaticTransitions(currentSnapshot, now, this.timerConfig);
-    const next = applyManualTransition(autoSnapshot, action, now, this.timerConfig, { reason: dto.reason, reasonCode: dto.reasonCode });
-    if (!next) {
-      throw new BadRequestException({
-        code: 'INVALID_TRANSITION',
-        message: `Action "${action}" non autorisée depuis l'état "${autoSnapshot.state}".`,
-      });
-    }
+    const result = await withStrictFallback(
+      'RecoursService.transition',
+      async () => {
+        try {
+          return await this.freshEm().transactional(async (tem) => {
+            // SEC-33 : verrou pessimiste dans la transaction + colonne de version.
+            const e = await tem.findOne(Recours, { id }, { lockMode: LockMode.PESSIMISTIC_WRITE });
+            if (!e) throw NOT_FOUND();
+            const { next, entries } = await decide(e.from, e.to, snapshotOf(e));
+            applySnapshotToEntity(e, next);
+            e.history = [...(e.history ?? []), ...entries];
+            await tem.flush();
+            await sealOf(e.from, e.to, entries);
+            return { next, from: e.from, to: e.to };
+          });
+        } catch (err) {
+          throw toConflict(err, 'CONFLIT_CONCURRENT', 'Le recours a été modifié entre-temps : rechargez-le avant de recommencer.');
+        }
+      },
+      async () => {
+        const row = this.memory.find((r) => r.id === id);
+        if (!row) throw NOT_FOUND();
+        const version = row.version;
+        const { next, entries } = await decide(row.from, row.to, { ...row });
+        // SEC-33 (mode dégradé) : comparer-et-écrire synchrone sur la version lue.
+        if (row.version !== version) throw CONCURRENT();
+        Object.assign(row, next);
+        row.version += 1;
+        row.history.push(...entries);
+        await sealOf(row.from, row.to, entries);
+        return { next, from: row.from, to: row.to };
+      },
+    );
 
-    if (loaded.mode === 'db') {
-      applySnapshotToEntity(loaded.entity, next);
-      await this.repo.getEntityManager().flush();
-    } else {
-      Object.assign(loaded.row, next);
-    }
-
-    this.realtime.emitEvent('recours.timer', { id, state: next.state, decidedBy });
-
+    this.emitState(id, result.next.state, result.from, result.to, { action });
     return {
       id,
-      state: next.state,
-      timer: computeTimerState(next, now, this.timerConfig),
+      state: result.next.state,
+      timer: computeTimerState(result.next, now, this.timerConfig),
       transitionedAt: now.toISOString(),
     };
   }

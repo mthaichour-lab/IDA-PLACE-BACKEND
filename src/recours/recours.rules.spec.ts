@@ -5,6 +5,8 @@ import {
   computeTimerState,
   DEFAULT_RECOURS_TIMER_CONFIG,
   isActionAllowed,
+  parseIntSetting,
+  parseRecoursTimerConfig,
   RecoursSnapshot,
   RecoursTimerConfig,
 } from './recours.rules';
@@ -87,8 +89,19 @@ describe('applyAutomaticTransitions — Art.10 (silence = acceptation tacite)', 
     expect(changed).toBe(true);
     expect(next.state).toBe('REGLE');
     expect(next.resolution?.kind).toBe('ACCEPTATION_TACITE_ART10');
-    expect(next.responseAt).toBe(now.toISOString());
-    expect(next.settledAt).toBe(now.toISOString()); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
+    // SEC-35 : datée de l'ÉCHÉANCE, jamais de l'instant de lecture.
+    expect(next.responseAt).toBe('2026-01-31T00:00:00.000Z');
+    expect(next.settledAt).toBe('2026-01-31T00:00:00.000Z'); // B.3 : Recours.settledAt doit être posé dès que state=REGLE
+    expect(next.resolution?.at).toBe('2026-01-31T00:00:00.000Z');
+  });
+
+  it('SEC-35 : settledAt égale l’échéance quel que soit le moment de la lecture (horloge simulée)', () => {
+    const s = snapshot();
+    for (const readAt of ['2026-01-31T00:00:00.001Z', '2026-02-15T10:00:00.000Z', '2026-03-31T23:59:59.000Z', '2026-12-31T00:00:00.000Z']) {
+      const { snapshot: next } = applyAutomaticTransitions(s, new Date(readAt), CONFIG);
+      expect(next.state).toBe('REGLE');
+      expect(next.settledAt).toBe('2026-01-31T00:00:00.000Z');
+    }
   });
 
   it('ne touche jamais un état terminal (REJETE)', () => {
@@ -120,6 +133,9 @@ describe('applyAutomaticTransitions — Art.12 (opposition non traitée = réput
     expect(next.state).toBe('REJETE');
     expect(next.opposition?.status).toBe('FONDEE_TACITE');
     expect(next.resolution?.kind).toBe('OPPOSITION_FONDEE_ART12');
+    // SEC-35 : datée de l'échéance Art. 12.
+    expect(next.opposition?.decidedAt).toBe('2026-01-25T00:00:00.000Z');
+    expect(next.resolution?.at).toBe('2026-01-25T00:00:00.000Z');
   });
 
   it('une opposition déjà tranchée (REJETEE) n’est plus affectée par le délai Art.12', () => {
@@ -143,21 +159,30 @@ describe('applyAutomaticTransitions — Art.19 (forclusion globale, priorité ab
     expect(changed).toBe(false);
   });
 
-  it('bascule en FORCLOS 1ms après l’échéance de 6 mois, quel que soit le sous-état', () => {
+  it('bascule en FORCLOS 1ms après l’échéance de 6 mois pour un sous-état sans délai propre échu, datée de l’échéance', () => {
     const now = new Date(new Date('2026-07-01T00:00:00.000Z').getTime() + 1);
-    for (const state of ['EN_ATTENTE', 'OPPOSITION', 'CONTESTATION', 'COMMISSION'] as const) {
+    for (const state of ['OPPOSITION', 'CONTESTATION', 'COMMISSION'] as const) {
       const s = snapshot({ state });
       const { changed, snapshot: next } = applyAutomaticTransitions(s, now, CONFIG);
       expect(changed).toBe(true);
       expect(next.state).toBe('FORCLOS');
       expect(next.resolution?.kind).toBe('FORCLUSION_ART19');
+      expect(next.resolution?.at).toBe('2026-07-01T00:00:00.000Z');
     }
   });
 
-  it('la forclusion prime sur l’acceptation tacite Art.10 si les deux délais sont dépassés simultanément', () => {
+  it('SEC-35 : l’échéance échue la PREMIÈRE l’emporte — un recours jamais consulté avant la forclusion reste tacitement accepté au jour J+30', () => {
+    // Avant : la forclusion « primait » quand la lecture survenait après les deux échéances,
+    // si bien que l'issue (réglé ou forclos) dépendait du moment où quelqu'un ouvrait l'écran.
     const s = snapshot();
-    const now = new Date('2027-01-01T00:00:00.000Z'); // largement après silence ET forclusion
-    const { snapshot: next } = applyAutomaticTransitions(s, now, CONFIG);
+    const { snapshot: next } = applyAutomaticTransitions(s, new Date('2027-01-01T00:00:00.000Z'), CONFIG);
+    expect(next.state).toBe('REGLE');
+    expect(next.settledAt).toBe('2026-01-31T00:00:00.000Z');
+  });
+
+  it('la forclusion l’emporte quand elle échoit avant le délai propre (délai de silence paramétré au-delà de la forclusion)', () => {
+    const s = snapshot();
+    const { snapshot: next } = applyAutomaticTransitions(s, new Date('2027-01-01T00:00:00.000Z'), { silenceDays: 365, oppositionDays: 15, forclusionMonths: 6 });
     expect(next.state).toBe('FORCLOS');
   });
 });
@@ -285,5 +310,30 @@ describe('buildRecoursJourneySteps — parcours réel (MonitoringModule, écran 
     });
     const steps = buildRecoursJourneySteps(s);
     expect(steps.map((s) => s.key)).toEqual(['annexe2', 'annexe3', 'annexe4', 'commission', 'resolution']);
+  });
+});
+
+describe('parseRecoursTimerConfig / parseIntSetting (SEC-48 — configuration validée au démarrage)', () => {
+  const env = (values: Record<string, string>) => (key: string) => values[key];
+
+  it('prend les défauts si rien n’est configuré', () => {
+    expect(parseRecoursTimerConfig(env({}))).toEqual(DEFAULT_RECOURS_TIMER_CONFIG);
+  });
+
+  it('lit des valeurs entières valides', () => {
+    expect(parseRecoursTimerConfig(env({ RECOURS_SILENCE_DAYS: '20', RECOURS_OPPOSITION_DAYS: '10', ELIGIBILITY_RECOURS_MAX_MONTHS: '12' }))).toEqual({ silenceDays: 20, oppositionDays: 10, forclusionMonths: 12 });
+  });
+
+  it.each([['abc'], ['-5'], ['0'], ['12.5'], ['1e3'], ['99999']])('refuse RECOURS_SILENCE_DAYS=%s (démarrage refusé, jamais NaN silencieux)', (value) => {
+    expect(() => parseRecoursTimerConfig(env({ RECOURS_SILENCE_DAYS: value }))).toThrow(/Configuration invalide : RECOURS_SILENCE_DAYS/);
+  });
+
+  it('refuse une forclusion invalide', () => {
+    expect(() => parseRecoursTimerConfig(env({ ELIGIBILITY_RECOURS_MAX_MONTHS: 'NaN' }))).toThrow(/ELIGIBILITY_RECOURS_MAX_MONTHS/);
+  });
+
+  it('parseIntSetting borne la valeur', () => {
+    expect(parseIntSetting('X', '0', 60, 0, 1440)).toBe(0);
+    expect(() => parseIntSetting('X', '1441', 60, 0, 1440)).toThrow(/hors bornes/);
   });
 });
