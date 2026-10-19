@@ -124,6 +124,14 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
         reason: 'Montant excessif',
       });
       await http().get(`/api/v1/recours/${id}/history`).set('x-dev-user', corr('SAA')).expect(404);
+      // La fiche elle-même n'expose ni l'historique ni la version, à la création comme en lecture.
+      const claimId = await importEligibleClaim(app, 'E2E-S17-2', 'CAAT', 'SAA');
+      const created = await http().post('/api/v1/recours').set('x-dev-user', corr('CAAT')).send({ claimId, from: 'CAAT', to: 'SAA', amount: 1_000 }).expect(201);
+      const read = await http().get(`/api/v1/recours/${id}`).set('x-dev-user', corr('SAA')).expect(200);
+      for (const body of [created.body, read.body]) {
+        expect(body).not.toHaveProperty('history');
+        expect(body).not.toHaveProperty('version');
+      }
     });
   });
 

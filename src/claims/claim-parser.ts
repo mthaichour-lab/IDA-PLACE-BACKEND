@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { isValidCircumstance } from '../adherents/bareme-rules';
 import { CLAIM_IMPORT_COLUMNS, ClaimColumnDef } from './claim-47-columns';
@@ -289,6 +290,16 @@ export async function parseClaimFile(buffer: Buffer, fileName: string, limits: I
   const format = assertImportFileAcceptable(fileName, buffer, limits);
   const rawRows = format === 'xlsx' ? await parseXlsxBuffer(buffer, limits) : parseCsvBuffer(buffer);
   assertRowCount(Math.max(0, rawRows.length - 1), limits);
+  // Format positionnel à 47 colonnes (B.4) : un fichier dont l'en-tête n'en
+  // compte pas autant n'est pas le modèle — refusé en bloc plutôt que lu
+  // comme des déclarations incomplètes (hors IDA), revue Tech Lead 2026-10-20.
+  const headerWidth = (rawRows[0] ?? []).filter((cell) => String(cell ?? '').trim() !== '').length;
+  if (headerWidth < CLAIM_IMPORT_COLUMNS.length) {
+    throw new BadRequestException({
+      code: 'FORMAT_COLONNES',
+      message: `En-tête incomplet : ${headerWidth} colonne(s) au lieu des ${CLAIM_IMPORT_COLUMNS.length} du modèle d'import.`,
+    });
+  }
   const dataRows = rawRows.slice(1); // ligne 1 = en-tête (modèle téléchargeable, B.4)
 
   return dataRows.map((cells, i) => {

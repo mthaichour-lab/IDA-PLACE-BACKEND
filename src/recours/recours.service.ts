@@ -103,7 +103,13 @@ function baseOf(e: Recours) {
 }
 
 function toView(base: { id: string; claimId: string; from: string; to: string; amount: number; createdAt: string }, snap: RecoursSnapshot, now: Date, config: RecoursTimerConfig): RecoursViewDto {
-  return { ...base, ...snap, timer: computeTimerState(snap, now, config) };
+  // SEC-17 : l'historique d'audit (identifiants des agents) et la version de
+  // verrouillage ne sortent jamais dans la fiche — l'historique n'est servi
+  // que par `GET /recours/:id/history`, réservé à la place. Les lignes du
+  // repli mémoire portent ces champs : on les retire explicitement.
+  const merged = { ...base, ...snap } as RecoursSnapshot & typeof base & { history?: unknown; version?: unknown };
+  const { history: _history, version: _version, ...publicView } = merged;
+  return { ...publicView, timer: computeTimerState(snap, now, config) };
 }
 
 /** Plafond conventionnel d'un recours (SEC-06) : le plafond Art. 4 déjà paramétré pour l'éligibilité — une seule source, jamais une 2e constante. */

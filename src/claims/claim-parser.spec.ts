@@ -144,6 +144,11 @@ describe('parseClaimFile (CSV)', () => {
     const rows = await parseClaimFile(buffer, 'import.csv');
     expect(rows[0].values.nombreVehicules).toBe(2);
   });
+
+  it('refuse en bloc un fichier dont l’en-tête ne compte pas les 47 colonnes du modèle (400 FORMAT_COLONNES)', async () => {
+    const buffer = Buffer.from('econstat,montant\nE-1,1000\n', 'utf-8');
+    await expect(parseClaimFile(buffer, 'import.csv')).rejects.toMatchObject({ response: { code: 'FORMAT_COLONNES' } });
+  });
 });
 
 describe('colonnes d’extension 48-53 (barème Art. 14)', () => {
