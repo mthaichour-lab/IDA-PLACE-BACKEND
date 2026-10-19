@@ -9,6 +9,7 @@ import {
   isSwaggerEnabled,
   validateEnv,
 } from './env.validation';
+import { getRouteThrottle } from '../throttle/route-throttle';
 
 const STRONG = 'x'.repeat(48);
 
@@ -152,6 +153,14 @@ describe('validateEnv — configuration au démarrage (SEC-01, SEC-23, SEC-07, S
       });
       expect(getThrottleSettings({ NODE_ENV: 'production', THROTTLE_ENABLED: 'false' }).enabled).toBe(true);
       expect(problemsOf(productionEnv({ THROTTLE_ENABLED: 'false' })).join('\n')).toMatch(/interdit en production/);
+    });
+
+    it('limites par route : défauts, surcharge par variable, valeurs invalides refusées au démarrage', () => {
+      expect(getRouteThrottle('IMPORT', {})).toEqual({ limit: 10, ttlMs: 60_000 });
+      expect(getRouteThrottle('LEDGER_VERIFY', { THROTTLE_LEDGER_VERIFY_LIMIT: '2', THROTTLE_LEDGER_VERIFY_TTL_SECONDS: '30' })).toEqual({ limit: 2, ttlMs: 30_000 });
+      expect(problemsOf(productionEnv({ THROTTLE_IMPORT_LIMIT: '5', THROTTLE_ADMIN_TTL_SECONDS: '120' }))).toEqual([]);
+      expect(problemsOf(productionEnv({ THROTTLE_UPLOAD_LIMIT: '0' })).join('\n')).toMatch(/THROTTLE_UPLOAD_LIMIT/);
+      expect(problemsOf(productionEnv({ THROTTLE_ADMIN_TTL_SECONDS: 'abc' })).join('\n')).toMatch(/THROTTLE_ADMIN_TTL_SECONDS/);
     });
 
     it('TRUST_PROXY_HOPS : entier borné', () => {

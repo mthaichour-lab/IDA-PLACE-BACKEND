@@ -6,6 +6,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiProduces, ApiTags } from '
 import { randomUUID } from 'crypto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Authenticated } from '../common/decorators/access.decorator';
+import { RouteThrottle } from '../common/throttle/route-throttle';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -269,6 +270,8 @@ class DocumentsController {
   // le type réel est vérifié sur les octets par le service (SEC-29).
   @Post('upload')
   @Privileges('insert')
+  // SEC-13 : limite de débit stricte (stockage, antivirus), voir route-throttle.ts.
+  @RouteThrottle('UPLOAD')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload de pièce (constat, carte grise, devis...) — PDF/JPEG/PNG/WEBP réels (signature des octets), antivirus si activé ; renvoie l’id du document et son URL de téléchargement.' })
   @UseInterceptors(

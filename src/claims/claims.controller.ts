@@ -3,6 +3,7 @@ import { StrictQuery } from './dto/strict-query.pipe';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RouteThrottle } from '../common/throttle/route-throttle';
 import { Authenticated } from '../common/decorators/access.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -45,6 +46,8 @@ export class ClaimsController {
   // `import-file-guard.ts` avant tout parsing.
   @Post('import')
   @Privileges('import')
+  // SEC-13 : limite de débit stricte (analyse de fichier coûteuse), voir route-throttle.ts.
+  @RouteThrottle('IMPORT')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Import Excel/CSV (47 colonnes) → rapport d’éligibilité ligne à ligne (B.4)' })
   @ApiOkResponse({ type: ClaimImportReportDto })

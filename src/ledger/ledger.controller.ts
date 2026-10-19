@@ -1,6 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../common/decorators/roles.decorator';
+import { RouteThrottle } from '../common/throttle/route-throttle';
 import { PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
 import { ListLedgerQueryDto } from './dto/ledger-query.dto';
 import { LedgerService } from './ledger.service';
@@ -31,6 +32,8 @@ export class LedgerController {
 
   @Get('verify')
   @Roles('OPERATEUR_PLACE', 'ADMIN_UAR', 'AUDITEUR_CSA')
+  // SEC-13 : vérification complète du chaînage, coûteuse — limite stricte (route-throttle.ts).
+  @RouteThrottle('LEDGER_VERIFY')
   @ApiOperation({ summary: 'Vérifie le chaînage et l’ancre de tête (intégrité append-only) — administration et audit' })
   verify() {
     return this.service.verifyChain();

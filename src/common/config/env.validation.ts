@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
+import { ROUTE_THROTTLE_PROFILES, routeThrottleEnvKeys } from '../throttle/route-throttle';
 
 /**
  * Validation de la configuration au démarrage — SEC-01, SEC-07, SEC-13,
@@ -251,6 +252,13 @@ export function validateEnv(env: Env = process.env): EnvValidationResult {
   }
   if (!isPositiveInt(env.THROTTLE_TTL_SECONDS)) problems.push('THROTTLE_TTL_SECONDS doit être un entier > 0.');
   if (!isPositiveInt(env.THROTTLE_LIMIT)) problems.push('THROTTLE_LIMIT doit être un entier > 0.');
+  // Limites strictes par route (import, upload, vérification du journal, administration) — voir route-throttle.ts.
+  for (const profile of ROUTE_THROTTLE_PROFILES) {
+    const keys = routeThrottleEnvKeys(profile);
+    for (const k of [keys.limit, keys.ttl]) {
+      if (!isPositiveInt(env[k])) problems.push(`${k} doit être un entier > 0.`);
+    }
+  }
   if (prod && env.THROTTLE_ENABLED === 'false') problems.push('THROTTLE_ENABLED=false est interdit en production.');
   if (prod && env.SWAGGER_ENABLED === 'true') warnings.push('SWAGGER_ENABLED=true en production : la cartographie de l\'API est publique.');
 

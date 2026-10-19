@@ -41,7 +41,9 @@ import { StatsModule } from './stats/stats.module';
  *  - MikroORM configuré à la compilation (`forRootAsync`), APRÈS le
  *    chargement du `.env` par `ConfigModule` (auparavant la configuration
  *    était figée à l'import, avant le `.env`) ;
- *  - `ThrottlerGuard` global (SEC-13), réglé par `THROTTLE_*` ;
+ *  - `ThrottlerGuard` global (SEC-13), réglé par `THROTTLE_*` ; limites plus
+ *    strictes par route via `@RouteThrottle` (`common/throttle/route-throttle.ts`),
+ *    soumises au même interrupteur `skipIf` ;
  *  - `AuthGuard` puis `PrivilegesGuard` GLOBAUX (SEC-43), dans cet ordre et
  *    après le throttler : toute route est authentifiée et doit déclarer son
  *    accès (`@Privileges`, `@Roles`, `@Authenticated` ou `@Public`) — fermé

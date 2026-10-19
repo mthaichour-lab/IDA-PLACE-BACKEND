@@ -2,6 +2,7 @@ import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Post, Put, Query }
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthModule } from '../auth/auth.module';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RouteThrottle } from '../common/throttle/route-throttle';
 import { Privileges } from '../common/decorators/privileges.decorator';
 import { PlaceUserDirectory } from '../common/directory/place-user-directory.service';
 import { PlaceUserDirectoryModule } from '../common/directory/place-user-directory.module';
@@ -69,6 +70,8 @@ function describeUserPatch(dto: UpdatePlaceUserDto): string {
 @ApiTags('admin')
 @ApiBearerAuth()
 @Controller('admin')
+// SEC-13 : administration des utilisateurs et de la matrice — limite de débit stricte (route-throttle.ts).
+@RouteThrottle('ADMIN')
 class AdminController {
   constructor(
     private readonly rbac: RbacService,

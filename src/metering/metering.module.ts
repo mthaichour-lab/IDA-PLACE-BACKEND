@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Module, Param, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Privileges } from '../common/decorators/privileges.decorator';
+import { RouteThrottle } from '../common/throttle/route-throttle';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { AdherentsService } from '../adherents/adherents.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -108,6 +109,8 @@ class MeteringController {
   // jamais rétroactive. SEC-38 : 403 côté serveur sans le privilège `grid`.
   @Put('pricing/grid')
   @Privileges('grid')
+  // SEC-13 : gestion de la grille tarifaire — limite de débit stricte (route-throttle.ts).
+  @RouteThrottle('ADMIN')
   @ApiOperation({ summary: 'Nouvelle version de la grille tarifaire à date d’effet (super admin) — 400 si invalide ou rétroactive, 409 si la version existe' })
   putGrid(@Body() body: UpdatePriceGridDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.updateGrid(body, user);
