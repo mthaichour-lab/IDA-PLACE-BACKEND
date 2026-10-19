@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -27,9 +27,11 @@ import {
   UpdateVehicleCategoryDto,
   UpdateWilayaPerimeterDto,
   UpdateWilayaPopulationDto,
+  ValidateRevisionDto,
 } from './dto/place-referential.dto';
 import { PlaceMetricsReferentialService } from './place-metrics-referential.service';
 import { MOBILE_HOLIDAY_KIND_LABELS, MOBILE_HOLIDAY_KINDS } from './place-referential.data';
+import { CodeParamPipe, WilayaCodePipe } from './referential-params';
 
 /**
  * Référentiels de place — écran 12, décisions PO points 1 à 5. Lecture : tous
@@ -70,22 +72,22 @@ export class PlaceReferentialController {
   @Put('mobile-holidays/:id')
   @Privileges('params')
   @ApiOperation({ summary: 'Modification d’un férié mobile PREVISIONNEL (409 si confirmé)' })
-  updateHoliday(@Param('id') id: string, @Body() dto: UpdateMobileHolidayDto) {
-    return this.convention.updateHoliday(id, dto);
+  updateHoliday(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateMobileHolidayDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.convention.updateHoliday(id, dto, user);
   }
 
   @Post('mobile-holidays/:id/confirm')
   @Privileges('params')
-  @ApiOperation({ summary: 'Confirmation PREVISIONNEL → CONFIRME, avec la référence du communiqué ou du décret (date corrigible)' })
-  confirmHoliday(@Param('id') id: string, @Body() dto: ConfirmMobileHolidayDto, @CurrentUser() user: AuthenticatedUser) {
+  @ApiOperation({ summary: 'Confirmation PREVISIONNEL → CONFIRME, avec la référence du communiqué ou du décret (date corrigible) — quatre yeux : 409 si le confirmateur a saisi ou modifié le férié (SEC-30)' })
+  confirmHoliday(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ConfirmMobileHolidayDto, @CurrentUser() user: AuthenticatedUser) {
     return this.convention.confirmHoliday(id, dto, user);
   }
 
   @Delete('mobile-holidays/:id')
   @Privileges('params')
   @ApiOperation({ summary: 'Suppression d’un férié mobile PREVISIONNEL (409 si confirmé)' })
-  removeHoliday(@Param('id') id: string) {
-    return this.convention.removeHoliday(id);
+  removeHoliday(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.convention.removeHoliday(id, user);
   }
 
   // ---- Circonstances du constat (§1) ------------------------------------
@@ -106,8 +108,8 @@ export class PlaceReferentialController {
   @Post('constat-circumstances/:number/validate')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Validation UAR d’une circonstance (quatre yeux : 409 si le validateur en est l’auteur)' })
-  validateCircumstance(@Param('number', ParseIntPipe) number: number, @CurrentUser() user: AuthenticatedUser) {
-    return this.convention.validateCircumstance(number, user);
+  validateCircumstance(@Param('number', ParseIntPipe) number: number, @Body() dto: ValidateRevisionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.convention.validateCircumstance(number, user, dto.revision);
   }
 
   // ---- Motifs d'opposition (§1) -----------------------------------------
@@ -128,15 +130,15 @@ export class PlaceReferentialController {
   @Put('opposition-motifs/:code')
   @Privileges('params')
   @ApiOperation({ summary: 'Modification d’un motif d’opposition (repasse au statut SAISI)' })
-  updateMotif(@Param('code') code: string, @Body() dto: UpdateOppositionMotifDto, @CurrentUser() user: AuthenticatedUser) {
+  updateMotif(@Param('code', CodeParamPipe) code: string, @Body() dto: UpdateOppositionMotifDto, @CurrentUser() user: AuthenticatedUser) {
     return this.convention.updateMotif(code, dto, user);
   }
 
   @Post('opposition-motifs/:code/validate')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Validation UAR d’un motif d’opposition (quatre yeux : 409 si le validateur en est l’auteur)' })
-  validateMotif(@Param('code') code: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.convention.validateMotif(code, user);
+  validateMotif(@Param('code', CodeParamPipe) code: string, @Body() dto: ValidateRevisionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.convention.validateMotif(code, user, dto.revision);
   }
 
   // ---- Wilayas / populations (§3) ---------------------------------------
@@ -144,8 +146,8 @@ export class PlaceReferentialController {
   @Put('wilayas/:code')
   @Privileges('params')
   @ApiOperation({ summary: 'Périmètre d’une wilaya : date d’entrée en vigueur et wilaya mère (null pour effacer)' })
-  updateWilayaPerimeter(@Param('code') code: string, @Body() dto: UpdateWilayaPerimeterDto) {
-    return this.metrics.updateWilayaPerimeter(code, dto);
+  updateWilayaPerimeter(@Param('code', WilayaCodePipe) code: string, @Body() dto: UpdateWilayaPerimeterDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.metrics.updateWilayaPerimeter(code, dto, user);
   }
 
   @Get('wilaya-populations')
@@ -164,8 +166,8 @@ export class PlaceReferentialController {
   @Put('wilaya-populations/:id')
   @Privileges('params')
   @ApiOperation({ summary: 'Correction d’une population (valeur, type ou référence de source)' })
-  updatePopulation(@Param('id') id: string, @Body() dto: UpdateWilayaPopulationDto) {
-    return this.metrics.updatePopulation(id, dto);
+  updatePopulation(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWilayaPopulationDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.metrics.updatePopulation(id, dto, user);
   }
 
   @Post('wilaya-populations/import')
@@ -203,15 +205,15 @@ export class PlaceReferentialController {
   @Post('irsam-benchmarks/:id/validate')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Validation UAR (quatre yeux) — archive la référence validée précédente du même indicateur' })
-  validateIrsam(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+  validateIrsam(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.metrics.validateIrsam(id, user);
   }
 
   @Post('irsam-benchmarks/:id/archive')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Archivage d’une référence IRSAM (retirée du comparatif)' })
-  archiveIrsam(@Param('id') id: string) {
-    return this.metrics.archiveIrsam(id);
+  archiveIrsam(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.metrics.archiveIrsam(id, user);
   }
 
   // ---- Barème Art. 14 et catégories de véhicule (§5) ----------------------
@@ -232,43 +234,43 @@ export class PlaceReferentialController {
   @Put('bareme-versions/:id')
   @Privileges('params')
   @ApiOperation({ summary: 'Libellé / source d’une version BROUILLON (409 si validée ou archivée)' })
-  updateBaremeVersion(@Param('id') id: string, @Body() dto: UpdateBaremeVersionDto, @CurrentUser() user: AuthenticatedUser) {
+  updateBaremeVersion(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBaremeVersionDto, @CurrentUser() user: AuthenticatedUser) {
     return this.bareme.updateVersion(id, dto, user);
   }
 
   @Post('bareme-versions/:id/cases')
   @Privileges('params')
   @ApiOperation({ summary: 'Ajout d’un cas (code, libellé, partA + partB = 100) à une version BROUILLON' })
-  addBaremeCase(@Param('id') id: string, @Body() dto: CreateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
+  addBaremeCase(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
     return this.bareme.addCase(id, dto, user);
   }
 
   @Put('bareme-versions/:id/cases/:code')
   @Privileges('params')
   @ApiOperation({ summary: 'Modification d’un cas d’une version BROUILLON (partA + partB = 100)' })
-  updateBaremeCase(@Param('id') id: string, @Param('code') code: string, @Body() dto: UpdateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
+  updateBaremeCase(@Param('id', ParseUUIDPipe) id: string, @Param('code', CodeParamPipe) code: string, @Body() dto: UpdateBaremeCaseDto, @CurrentUser() user: AuthenticatedUser) {
     return this.bareme.updateCase(id, code, dto, user);
   }
 
   @Delete('bareme-versions/:id/cases/:code')
   @Privileges('params')
   @ApiOperation({ summary: 'Suppression d’un cas d’une version BROUILLON' })
-  removeBaremeCase(@Param('id') id: string, @Param('code') code: string, @CurrentUser() user: AuthenticatedUser) {
+  removeBaremeCase(@Param('id', ParseUUIDPipe) id: string, @Param('code', CodeParamPipe) code: string, @CurrentUser() user: AuthenticatedUser) {
     return this.bareme.removeCase(id, code, user);
   }
 
   @Post('bareme-versions/:id/validate')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Validation UAR d’une version (quatre yeux : 409 si le validateur a saisi la version ou l’un de ses cas) — la version devient immuable' })
-  validateBaremeVersion(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.bareme.validateVersion(id, user);
+  validateBaremeVersion(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ValidateRevisionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.validateVersion(id, user, dto.revision);
   }
 
   @Post('bareme-versions/:id/archive')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Archivage d’une version VALIDE_UAR (n’est plus proposée ni utilisée pour le taux selon barème)' })
-  archiveBaremeVersion(@Param('id') id: string) {
-    return this.bareme.archiveVersion(id);
+  archiveBaremeVersion(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.archiveVersion(id, user);
   }
 
   @Get('vehicle-categories')
@@ -287,14 +289,14 @@ export class PlaceReferentialController {
   @Put('vehicle-categories/:code')
   @Privileges('params')
   @ApiOperation({ summary: 'Modification du libellé d’une catégorie (repasse au statut SAISI)' })
-  updateVehicleCategory(@Param('code') code: string, @Body() dto: UpdateVehicleCategoryDto, @CurrentUser() user: AuthenticatedUser) {
+  updateVehicleCategory(@Param('code', CodeParamPipe) code: string, @Body() dto: UpdateVehicleCategoryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.bareme.updateCategory(code, dto, user);
   }
 
   @Post('vehicle-categories/:code/validate')
   @Privileges('validateRef')
   @ApiOperation({ summary: 'Validation UAR d’une catégorie (quatre yeux : 409 si le validateur en est l’auteur)' })
-  validateVehicleCategory(@Param('code') code: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.bareme.validateCategory(code, user);
+  validateVehicleCategory(@Param('code', CodeParamPipe) code: string, @Body() dto: ValidateRevisionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.bareme.validateCategory(code, user, dto.revision);
   }
 }

@@ -1,15 +1,16 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { LedgerService } from '../ledger/ledger.service';
 import { CreateIrsamBenchmarkDto, CreateWilayaPopulationDto, UpdateWilayaPerimeterDto, UpdateWilayaPopulationDto } from './dto/place-referential.dto';
 import { IrsamBenchmark, IrsamMeasureDefinition } from './entities/irsam-benchmark.entity';
 import { Wilaya } from './entities/wilaya.entity';
 import { WilayaPopulation } from './entities/wilaya-population.entity';
 import { IrsamIndicator, IrsamStatus, POPULATION_SOURCE_TYPES, PopulationSourceType } from './place-referential.data';
-import { assertFourEyes, assertIsoDate, populationInvalidReason } from './referential-rules';
+import { assertFourEyes, assertIsoDate, populationInvalidReason, withAuthor } from './referential-rules';
 import { buildWilayaSeeds, WilayaSeed } from './wilayas.data';
 
 export interface WilayaPopulationView {
@@ -21,6 +22,8 @@ export interface WilayaPopulationView {
   sourceRef: string;
   createdBy: string;
   createdAt: string;
+  updatedBy?: string;
+  authors?: string[];
   /** Faux si l'année précède le périmètre actuel de la wilaya (ou d'une wilaya fille) : jamais utilisée dans un calcul. */
   valid: boolean;
   invalidReason?: string;
@@ -89,6 +92,8 @@ function populationRow(e: WilayaPopulation): StoredPopulation {
     sourceRef: e.sourceRef,
     createdBy: e.createdBy,
     createdAt: e.createdAt.toISOString(),
+    updatedBy: e.updatedBy ?? undefined,
+    authors: e.authors ?? undefined,
   };
 }
 
@@ -113,6 +118,11 @@ function irsamView(e: IrsamBenchmark): IrsamBenchmarkView {
  * Référentiels de place servant aux statistiques (écran 11) : périmètre des
  * wilayas, populations (§3) et référence IRSAM (§4). Aucune valeur
  * pré-remplie. Contrôles toujours AVANT la closure de `withDegradedFallback`.
+ *
+ * SEC-30 : toute modification (périmètre, population, référence IRSAM) est
+ * tracée (auteurs) et scellée au journal avec ses valeurs avant/après. Les
+ * populations et périmètres restent sans étape de validation à quatre yeux :
+ * la décision PO §3 prévoit une saisie directe (point à soumettre à l'UAR).
  */
 @Injectable()
 export class PlaceMetricsReferentialService {
@@ -127,7 +137,12 @@ export class PlaceMetricsReferentialService {
     @InjectRepository(Wilaya) private readonly wilayas: EntityRepository<Wilaya>,
     @InjectRepository(WilayaPopulation) private readonly populations: EntityRepository<WilayaPopulation>,
     @InjectRepository(IrsamBenchmark) private readonly irsam: EntityRepository<IrsamBenchmark>,
+    @Optional() private readonly ledger?: LedgerService,
   ) {}
+
+  private async seal(type: string, ref: string, user: AuthenticatedUser, summary: Record<string, unknown>): Promise<void> {
+    if (this.ledger) await this.ledger.append(type, ref, user.id, JSON.stringify(summary));
+  }
 
   // ---- Wilayas ------------------------------------------------------------
 
@@ -154,7 +169,7 @@ export class PlaceMetricsReferentialService {
     );
   }
 
-  async updateWilayaPerimeter(code: string, dto: UpdateWilayaPerimeterDto): Promise<WilayaSeed> {
+  async updateWilayaPerimeter(code: string, dto: UpdateWilayaPerimeterDto, user: AuthenticatedUser): Promise<WilayaSeed> {
     const all = await this.listWilayas();
     const current = all.find((w) => w.code === code);
     if (!current) throw new NotFoundException({ code: 'NOT_FOUND', message: `Wilaya "${code}" introuvable.` });
@@ -166,6 +181,7 @@ export class PlaceMetricsReferentialService {
     const patch: { effectiveFrom?: string | null; parentCode?: string | null } = {};
     if (dto.effectiveFrom !== undefined) patch.effectiveFrom = dto.effectiveFrom;
     if (dto.parentCode !== undefined) patch.parentCode = dto.parentCode;
+    await this.seal('REFERENTIEL_PERIMETRE_WILAYA', code, user, { before: { effectiveFrom: current.effectiveFrom, parentCode: current.parentCode }, after: patch });
     return withDegradedFallback(
       'PlaceMetricsReferentialService.updateWilayaPerimeter',
       async () => {
@@ -230,14 +246,24 @@ export class PlaceMetricsReferentialService {
     const invalidReason = populationInvalidReason(dto.wilayaCode, dto.referenceYear, wilayas);
     if (invalidReason) throw new BadRequestException({ code: 'POPULATION_INVALIDE', message: invalidReason });
     const [created] = await this.persistPopulations([{ ...dto, sourceRef: dto.sourceRef.trim() }], user, 'createPopulation');
+    await this.seal('REFERENTIEL_POPULATION_SAISIE', created.id, user, { wilaya: created.wilayaCode, year: created.referenceYear, population: created.population, sourceRef: created.sourceRef });
     return { ...created, valid: true };
   }
 
-  async updatePopulation(id: string, dto: UpdateWilayaPopulationDto): Promise<WilayaPopulationView> {
-    if (!(await this.storedPopulations()).some((p) => p.id === id)) {
+  async updatePopulation(id: string, dto: UpdateWilayaPopulationDto, user: AuthenticatedUser): Promise<WilayaPopulationView> {
+    const current = (await this.storedPopulations()).find((p) => p.id === id);
+    if (!current) {
       throw new NotFoundException({ code: 'NOT_FOUND', message: 'Population introuvable.' });
     }
-    const patch = Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined));
+    const patch: Record<string, unknown> = Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined));
+    patch.updatedBy = user.id;
+    patch.authors = withAuthor(current.authors ?? [current.createdBy], user.id);
+    await this.seal('REFERENTIEL_POPULATION_CORRIGEE', id, user, {
+      wilaya: current.wilayaCode,
+      year: current.referenceYear,
+      before: { population: current.population, sourceType: current.sourceType, sourceRef: current.sourceRef },
+      after: dto,
+    });
     await withDegradedFallback(
       'PlaceMetricsReferentialService.updatePopulation',
       async () => {
@@ -263,13 +289,13 @@ export class PlaceMetricsReferentialService {
       `PlaceMetricsReferentialService.${scope}`,
       async () => {
         const em = this.populations.getEntityManager();
-        const entities = items.map((i) => this.populations.create({ ...i, createdBy: user.id, createdAt: new Date() }));
+        const entities = items.map((i) => this.populations.create({ ...i, createdBy: user.id, createdAt: new Date(), authors: [user.id] }));
         for (const e of entities) em.persist(e);
         await em.flush();
         return entities.map(populationRow);
       },
       () => {
-        const rows = items.map((i) => ({ id: randomUUID(), ...i, createdBy: user.id, createdAt: new Date().toISOString() }));
+        const rows = items.map((i) => ({ id: randomUUID(), ...i, createdBy: user.id, createdAt: new Date().toISOString(), authors: [user.id] }));
         this.memory.populations.push(...rows);
         return rows;
       },
@@ -342,7 +368,10 @@ export class PlaceMetricsReferentialService {
 
     const rejectedCount = rows.filter((r) => r.status === 'REJETEE').length;
     const written = rejectedCount === 0;
-    if (written) await this.persistPopulations(accepted, user, 'importPopulations');
+    if (written) {
+      await this.persistPopulations(accepted, user, 'importPopulations');
+      await this.seal('REFERENTIEL_POPULATIONS_IMPORTEES', fileName, user, { count: accepted.length, rows: accepted.map((a) => ({ wilaya: a.wilayaCode, year: a.referenceYear, population: a.population })) });
+    }
     return {
       fileName,
       totalRows: rows.length,
@@ -412,7 +441,10 @@ export class PlaceMetricsReferentialService {
         this.memory.irsam.push(view);
         return view;
       },
-    );
+    ).then(async (created) => {
+      await this.seal('REFERENTIEL_IRSAM_SAISI', created.id, user, { indicator: created.indicator, value: created.value, periodFrom: created.periodFrom, periodTo: created.periodTo });
+      return created;
+    });
   }
 
   /** Validation UAR : archive la référence précédemment validée pour le même indicateur (une seule référence officielle). */
@@ -422,6 +454,7 @@ export class PlaceMetricsReferentialService {
       throw new ConflictException({ code: 'ALREADY_VALIDATED', message: `Seule une référence au statut SAISI peut être validée (statut actuel : ${current.status}).` });
     }
     assertFourEyes(user, [current.createdBy]);
+    await this.seal('REFERENTIEL_IRSAM_VALIDE', id, user, { indicator: current.indicator, value: current.value, createdBy: current.createdBy });
     const validatedAt = new Date();
     return withDegradedFallback(
       'PlaceMetricsReferentialService.validateIrsam',
@@ -443,9 +476,10 @@ export class PlaceMetricsReferentialService {
     );
   }
 
-  async archiveIrsam(id: string): Promise<IrsamBenchmarkView> {
+  async archiveIrsam(id: string, user: AuthenticatedUser): Promise<IrsamBenchmarkView> {
     const current = await this.getIrsam(id);
     if (current.status === 'ARCHIVE') throw new ConflictException({ code: 'CONFLICT', message: 'Référence IRSAM déjà archivée.' });
+    await this.seal('REFERENTIEL_IRSAM_ARCHIVE', id, user, { indicator: current.indicator, value: current.value });
     return withDegradedFallback(
       'PlaceMetricsReferentialService.archiveIrsam',
       async () => {

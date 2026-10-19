@@ -58,7 +58,7 @@ describe('PlaceMetricsReferentialService (mode dégradé)', () => {
     });
 
     it('createPopulation refuse (400) une population antérieure à effectiveFrom', async () => {
-      await service.updateWilayaPerimeter('49', { effectiveFrom: '2019-12-18', parentCode: '01' });
+      await service.updateWilayaPerimeter('49', { effectiveFrom: '2019-12-18', parentCode: '01' }, operateur);
       await expect(
         service.createPopulation({ wilayaCode: '49', referenceYear: 2008, population: 10_000, sourceType: 'RECENSEMENT_RGPH', sourceRef: 'RGPH 2008' }, operateur),
       ).rejects.toMatchObject({ response: { code: 'POPULATION_INVALIDE' } });
@@ -67,7 +67,7 @@ describe('PlaceMetricsReferentialService (mode dégradé)', () => {
     it('une population devenue invalide après coup est signalée et ignorée par populationReferences', async () => {
       await service.createPopulation({ wilayaCode: '01', referenceYear: 2008, population: 400_000, sourceType: 'RECENSEMENT_RGPH', sourceRef: 'RGPH 2008' }, operateur);
       expect(await service.populationReferences(2026)).toHaveProperty('01');
-      await service.updateWilayaPerimeter('49', { effectiveFrom: '2019-12-18', parentCode: '01' });
+      await service.updateWilayaPerimeter('49', { effectiveFrom: '2019-12-18', parentCode: '01' }, operateur);
       const [row] = await service.listPopulations('01');
       expect(row.valid).toBe(false);
       expect(row.invalidReason).toMatch(/49/);
@@ -164,7 +164,7 @@ describe('PlaceMetricsReferentialService (mode dégradé)', () => {
       expect(list.find((b) => b.id === first.id)?.status).toBe('ARCHIVE');
       expect(await service.irsamReference('DELAI_MOYEN_REGLEMENT_RECOURS_JOURS')).toMatchObject({ status: 'VALIDE', benchmark: { id: second.id, value: 55 } });
 
-      await service.archiveIrsam(second.id);
+      await service.archiveIrsam(second.id, adminUar);
       expect(await service.irsamReference('DELAI_MOYEN_REGLEMENT_RECOURS_JOURS')).toEqual({ status: 'NON_RENSEIGNE', benchmark: null });
     });
 

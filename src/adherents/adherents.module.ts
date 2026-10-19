@@ -8,6 +8,7 @@ import { Agency } from './entities/agency.entity';
 import { BaremeCase } from './entities/bareme-case.entity';
 import { BaremeVersion } from './entities/bareme-version.entity';
 import { Company } from './entities/company.entity';
+import { CompanyGovernanceChange } from './entities/company-governance-change.entity';
 import { ConstatCircumstance } from './entities/constat-circumstance.entity';
 import { IrsamBenchmark } from './entities/irsam-benchmark.entity';
 import { MobileHoliday } from './entities/mobile-holiday.entity';
@@ -17,6 +18,7 @@ import { Wilaya } from './entities/wilaya.entity';
 import { WilayaPopulation } from './entities/wilaya-population.entity';
 import { PlaceMetricsReferentialService } from './place-metrics-referential.service';
 import { PlaceReferentialController } from './place-referential.controller';
+import { LedgerModule } from '../ledger/ledger.module';
 
 /**
  * AdherentsModule — B.2 : adhérents/compagnies, agences, wilayas et
@@ -24,7 +26,11 @@ import { PlaceReferentialController } from './place-referential.controller';
  * les autres modules passent par ses méthodes publiques.
  */
 @Module({
-  imports: [MikroOrmModule.forFeature([Company, Agency, Wilaya, MobileHoliday, ConstatCircumstance, OppositionMotif, WilayaPopulation, IrsamBenchmark, BaremeVersion, BaremeCase, VehicleCategory])],
+  imports: [
+    MikroOrmModule.forFeature([Company, CompanyGovernanceChange, Agency, Wilaya, MobileHoliday, ConstatCircumstance, OppositionMotif, WilayaPopulation, IrsamBenchmark, BaremeVersion, BaremeCase, VehicleCategory]),
+    // Journal scellé (SEC-04/SEC-30) — LedgerModule n'importe aucun module métier : pas de cycle.
+    LedgerModule,
+  ],
   controllers: [AdherentsController, PlaceReferentialController],
   providers: [AdherentsService, ConventionReferentialService, PlaceMetricsReferentialService, BaremeReferentialService],
   exports: [AdherentsService],

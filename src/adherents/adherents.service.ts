@@ -1,20 +1,32 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
+import { EntityManager, EntityRepository } from '@mikro-orm/postgresql';
 import { randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { assertCompanyAccess } from '../common/rbac/tenant-scope';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
-import { DEFAULT_RECOURS_TIMER_CONFIG } from '../recours/recours.rules';
+import { LedgerService } from '../ledger/ledger.service';
+import { isPlaceUser } from '../recours/place-role';
+import { parseRecoursTimerConfig } from '../recours/recours.rules';
+import { isUniqueViolation, withStrictFallback } from '../recours/strict-persistence';
 import { CreateAgencyDto, AgencyViewDto, UpdateAgencyDto } from './dto/agency.dto';
-import { CompanyViewDto, CreateCompanyDto, UpdateCompanyDto } from './dto/company.dto';
+import {
+  CompanyPublicViewDto,
+  CompanyViewDto,
+  CreateCompanyDto,
+  GOVERNANCE_FIELDS,
+  GovernanceChangeViewDto,
+  UpdateCompanyDto,
+  UpdateCompanyGovernanceDto,
+} from './dto/company.dto';
 import { Agency } from './entities/agency.entity';
 import { Company, CompanyStatus } from './entities/company.entity';
+import { CompanyGovernanceChange } from './entities/company-governance-change.entity';
 import { Wilaya } from './entities/wilaya.entity';
-import { MEMORY_AGENCIES, MEMORY_COMPANIES, MEMORY_SEED_AT } from './adherents.memory-seed';
+import { MEMORY_AGENCIES, MEMORY_COMPANIES, MEMORY_SEED_AT, MemoryAgency } from './adherents.memory-seed';
 import { algeriaFixedHolidays, ALGERIA_WEEKEND_DAYS, ConventionParams, ELIGIBILITY_MOTIF_CATALOG } from './referential-reference-data';
 import { WilayaSeed } from './wilayas.data';
 import { CalendarHolidayView, ConventionReferentialService, OppositionMotifView } from './convention-referential.service';
@@ -29,6 +41,10 @@ function maskKey(hash?: string): string {
 }
 
 const EMPTY_AGENCY_COUNTS: Record<'DG' | 'DR' | 'AG', number> = { DG: 0, DR: 0, AG: 0 };
+
+/** Profil d'une compagnie modifiable par son correspondant (SEC-04) — affectation champ par champ, jamais `assign(dto)`. */
+const PROFILE_FIELDS = ['name', 'nameAr', 'color', 'correspondentName', 'correspondentPhone', 'correspondentEmail'] as const;
+const AGENCY_FIELDS = ['name', 'type', 'manager', 'phone', 'email', 'address', 'status'] as const;
 
 function toCompanyView(c: Company, agencyCounts: Record<'DG' | 'DR' | 'AG', number> = EMPTY_AGENCY_COUNTS): CompanyViewDto {
   return {
@@ -50,6 +66,11 @@ function toCompanyView(c: Company, agencyCounts: Record<'DG' | 'DR' | 'AG', numb
   };
 }
 
+/** SEC-26 : projection publique d'une compagnie concurrente. */
+function toPublicView(c: CompanyViewDto): CompanyPublicViewDto {
+  return { id: c.id, code: c.code, name: c.name, nameAr: c.nameAr, color: c.color, kind: c.kind, status: c.status };
+}
+
 function toAgencyView(a: Agency): AgencyViewDto {
   return {
     id: a.id,
@@ -67,17 +88,46 @@ function toAgencyView(a: Agency): AgencyViewDto {
   };
 }
 
+function governanceView(e: CompanyGovernanceChange): GovernanceChangeViewDto {
+  return {
+    id: e.id,
+    companyId: e.companyId,
+    companyCode: e.companyCode,
+    patch: e.patch,
+    reason: e.reason,
+    status: e.status,
+    requestedById: e.requestedById,
+    requestedBy: e.requestedBy,
+    requestedAt: e.requestedAt.toISOString(),
+    decidedById: e.decidedById,
+    decidedBy: e.decidedBy,
+    decidedAt: e.decidedAt?.toISOString(),
+  };
+}
+
+const AGENCY_NOT_FOUND = () => new NotFoundException({ code: 'NOT_FOUND', message: 'Agence introuvable.' });
+
 @Injectable()
 export class AdherentsService {
+  /** Repli mémoire — demandes de changement de gouvernance (mode dégradé, hors production). */
+  private readonly memoryGovernance: GovernanceChangeViewDto[] = [];
+
   constructor(
     @InjectRepository(Company) private readonly companies: EntityRepository<Company>,
     @InjectRepository(Agency) private readonly agencies: EntityRepository<Agency>,
     @InjectRepository(Wilaya) private readonly wilayas: EntityRepository<Wilaya>,
+    @InjectRepository(CompanyGovernanceChange) private readonly governance: EntityRepository<CompanyGovernanceChange>,
     private readonly configService: ConfigService,
     private readonly convention: ConventionReferentialService,
     private readonly metrics: PlaceMetricsReferentialService,
     private readonly bareme: BaremeReferentialService,
+    // Toujours fourni par AdherentsModule (LedgerModule importé) ; optionnel pour les specs d'autres modules.
+    @Optional() private readonly ledger?: LedgerService,
   ) {}
+
+  private async seal(type: string, ref: string, actorId: string, summary: Record<string, unknown>): Promise<void> {
+    if (this.ledger) await this.ledger.append(type, ref, actorId, JSON.stringify(summary));
+  }
 
   // ---- Paramètres de la convention / Calendrier ouvré / Barème & motifs
   // (écran 12) — additif, voir referential-reference-data.ts. -----------
@@ -85,16 +135,15 @@ export class AdherentsService {
   /**
    * Réutilise EXACTEMENT les mêmes variables d'env/valeurs par défaut que
    * `RecoursService`/`EligibilityModule` (jamais une seconde constante
-   * dupliquée pour cet écran, qui risquerait de diverger silencieusement).
+   * dupliquée) — et désormais le même contrôle strict (SEC-48).
    */
   getConventionParams(): ConventionParams {
+    const timers = parseRecoursTimerConfig((key) => this.configService.get<string>(key));
     return {
       version: DEFAULT_ELIGIBILITY_CONFIG.version,
-      silenceDays: Number(this.configService.get<string>('RECOURS_SILENCE_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.silenceDays),
-      oppositionDays: Number(this.configService.get<string>('RECOURS_OPPOSITION_DAYS') ?? DEFAULT_RECOURS_TIMER_CONFIG.oppositionDays),
-      forclusionMonths: Number(
-        this.configService.get<string>('ELIGIBILITY_RECOURS_MAX_MONTHS') ?? DEFAULT_RECOURS_TIMER_CONFIG.forclusionMonths,
-      ),
+      silenceDays: timers.silenceDays,
+      oppositionDays: timers.oppositionDays,
+      forclusionMonths: timers.forclusionMonths,
       maxAmountDA: Number(this.configService.get<string>('ELIGIBILITY_MAX_AMOUNT_DA') ?? DEFAULT_ELIGIBILITY_CONFIG.maxAmountDA),
     };
   }
@@ -114,10 +163,7 @@ export class AdherentsService {
     return this.convention.calendarHolidays(from, to);
   }
 
-  /**
-   * Dates ISO des fériés MOBILES (prévisionnels et confirmés) entre `from` et
-   * `to` inclus — paramètre « fériés supplémentaires » du calcul en jours ouvrés.
-   */
+  /** Dates ISO des fériés MOBILES (prévisionnels et confirmés) entre `from` et `to` inclus. */
   extraHolidays(from: string, to: string): Promise<string[]> {
     return this.convention.extraHolidays(from, to);
   }
@@ -163,8 +209,17 @@ export class AdherentsService {
     return counts;
   }
 
-  async listCompanies(page: number, pageSize: number): Promise<PaginatedResult<CompanyViewDto>> {
-    return withDegradedFallback(
+  /** SEC-26 : un rôle compagnie voit sa propre fiche complète, les autres en projection publique minimale. */
+  private projectFor(view: CompanyViewDto, user?: AuthenticatedUser): CompanyViewDto | CompanyPublicViewDto {
+    if (!user) return view;
+    const tenant = resolveTenantFilter(user);
+    return !tenant || tenant === view.code ? view : toPublicView(view);
+  }
+
+  async listCompanies(page: number, pageSize: number): Promise<PaginatedResult<CompanyViewDto>>;
+  async listCompanies(page: number, pageSize: number, user: AuthenticatedUser): Promise<PaginatedResult<CompanyViewDto | CompanyPublicViewDto>>;
+  async listCompanies(page: number, pageSize: number, user?: AuthenticatedUser): Promise<PaginatedResult<CompanyViewDto | CompanyPublicViewDto>> {
+    const result = await withDegradedFallback(
       'AdherentsService.listCompanies',
       async () => {
         const [rows, total] = await this.companies.findAndCount({}, { limit: pageSize, offset: (page - 1) * pageSize, orderBy: { code: 'ASC' } });
@@ -179,10 +234,14 @@ export class AdherentsService {
         };
       },
     );
+    return { ...result, items: result.items.map((c) => this.projectFor(c, user)) };
   }
 
-  async getCompany(id: string): Promise<CompanyViewDto> {
-    return withDegradedFallback(
+  /** Fiche complète (usage interne inter-modules et rôles place) ; un rôle compagnie passe `user` et reçoit la projection publique pour une concurrente (SEC-26). */
+  async getCompany(id: string): Promise<CompanyViewDto>;
+  async getCompany(id: string, user: AuthenticatedUser): Promise<CompanyViewDto | CompanyPublicViewDto>;
+  async getCompany(id: string, user?: AuthenticatedUser): Promise<CompanyViewDto | CompanyPublicViewDto> {
+    const view = await withDegradedFallback(
       'AdherentsService.getCompany',
       async () => {
         const c = await this.companies.findOne({ id });
@@ -195,6 +254,16 @@ export class AdherentsService {
         return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
+    return this.projectFor(view, user);
+  }
+
+  /** Id interne d'une compagnie à partir de son CODE (celui de `AuthenticatedUser.companyId`). */
+  private async companyIdByCode(code: string): Promise<string | undefined> {
+    return withDegradedFallback(
+      'AdherentsService.companyIdByCode',
+      async () => (await this.companies.findOne({ code }))?.id,
+      () => MEMORY_COMPANIES.find((c) => c.code === code)?.id,
+    );
   }
 
   /**
@@ -202,8 +271,8 @@ export class AdherentsService {
    * ET agences) n'avaient aucun repli mémoire (contrairement à `list*`/
    * `get*`) — 500 garanti dès que PostgreSQL était absent.
    */
-  async createCompany(dto: CreateCompanyDto): Promise<CompanyViewDto> {
-    return withDegradedFallback(
+  async createCompany(dto: CreateCompanyDto, user?: AuthenticatedUser): Promise<CompanyViewDto> {
+    const created = await withStrictFallback(
       'AdherentsService.createCompany',
       async () => {
         const c = this.companies.create({
@@ -220,10 +289,15 @@ export class AdherentsService {
           correspondentEmail: dto.correspondentEmail,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
-        await this.companies.getEntityManager().persistAndFlush(c);
+        try {
+          await this.companies.getEntityManager().persistAndFlush(c);
+        } catch (err) {
+          throw isUniqueViolation(err) ? new ConflictException({ code: 'CONFLICT', message: `La compagnie ${dto.code} existe déjà.` }) : err;
+        }
         return toCompanyView(c);
       },
       () => {
+        if (MEMORY_COMPANIES.some((c) => c.code === dto.code)) throw new ConflictException({ code: 'CONFLICT', message: `La compagnie ${dto.code} existe déjà.` });
         const view = {
           id: randomUUID(),
           code: dto.code,
@@ -233,11 +307,7 @@ export class AdherentsService {
           kind: dto.kind,
           feedMode: dto.feedMode,
           apiKeyMasked: maskKey(undefined),
-          // L'entité réelle défaut à ACTIF (`Company.status`) ; ce défaut ne
-          // s'applique qu'à l'entité MikroORM, jamais à cette vue mémoire —
-          // sans lui, le champ valait `undefined` (bug latent, resté invisible
-          // tant que rien ne lisait vraiment ce champ avant l'audit sécurité
-          // du 2026-10-19).
+          // L'entité réelle défaut à ACTIF (`Company.status`) ; sans ce défaut le champ valait `undefined` en mode dégradé.
           status: dto.status ?? CompanyStatus.ACTIF,
           delayOverrides: dto.delayOverrides,
           correspondentName: dto.correspondentName,
@@ -249,47 +319,157 @@ export class AdherentsService {
         return { ...view, createdAt, agencyCounts: EMPTY_AGENCY_COUNTS } as CompanyViewDto;
       },
     );
+    await this.seal('COMPANY_ADHESION', created.code, user?.id ?? 'system', { code: created.code, status: created.status, kind: created.kind });
+    return created;
   }
 
   /**
-   * Revue sécurité 2026-10-18 (B.7) : `assertCompanyAccess` appelé AVANT le
-   * `withDegradedFallback` de la mutation elle-même, jamais dedans — une
-   * `ForbiddenException` levée à l'intérieur de `withDegradedFallback` y
-   * serait interceptée comme une simple panne DB et déclencherait à tort le
-   * repli mémoire (qui pourrait réussir et renvoyer 200 au lieu de 403).
-   * `getCompany(id)` gère déjà la double voie DB/mémoire et expose `code`
-   * (le `companyId` RBAC — à ne pas confondre avec l'`id` UUID interne de
-   * ce module, deux identifiants différents ici, voir `MemoryAgency` vs
-   * `AuthenticatedUser.companyId`).
+   * SEC-04 : seul le PROFIL est modifiable ici (affectation champ par champ) ;
+   * tout champ de GOUVERNANCE (`status`, `delayOverrides`, `kind`, `feedMode`)
+   * est refusé (403) — il passe par une demande de changement validée par un
+   * second ADMIN_UAR (`requestGovernanceChange`/`validateGovernanceChange`).
+   * Contrôle d'accès AVANT toute écriture (revue sécurité 2026-10-18).
    */
   async updateCompany(id: string, dto: UpdateCompanyDto, user: AuthenticatedUser): Promise<CompanyViewDto> {
+    const governance = GOVERNANCE_FIELDS.filter((f) => (dto as Record<string, unknown>)[f] !== undefined);
+    if (governance.length > 0) {
+      throw new ForbiddenException({
+        code: 'GOUVERNANCE_RESERVEE',
+        message: `Champs de gouvernance non modifiables ici (${governance.join(', ')}) : demande de changement ADMIN_UAR, validée par un second ADMIN_UAR.`,
+      });
+    }
     const existing = await this.getCompany(id);
     assertCompanyAccess(user, existing.code);
-    return withDegradedFallback(
+    const patch: Record<string, unknown> = {};
+    for (const f of PROFILE_FIELDS) if (dto[f] !== undefined) patch[f] = dto[f];
+    const updated = await withStrictFallback(
       'AdherentsService.updateCompany',
       async () => {
         const c = await this.companies.findOne({ id });
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable.' });
-        this.companies.assign(c, dto as Partial<Company>);
+        for (const [k, v] of Object.entries(patch)) (c as unknown as Record<string, unknown>)[k] = v;
         await this.companies.getEntityManager().flush();
         return toCompanyView(c, await this.agencyCountsFor(c.id));
       },
       () => {
         const c = MEMORY_COMPANIES.find((m) => m.id === id);
         if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
-        Object.assign(c, dto);
+        for (const [k, v] of Object.entries(patch)) (c as unknown as Record<string, unknown>)[k] = v;
         return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
+    await this.seal('COMPANY_PROFIL', existing.code, user.id, { fields: Object.keys(patch) });
+    return updated;
+  }
+
+  // ---- Gouvernance d'une compagnie (SEC-04) -----------------------------
+
+  private assertUarAdmin(user: AuthenticatedUser): void {
+    if (user.role !== 'ADMIN_UAR' || !isPlaceUser(user)) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Changement de gouvernance réservé à l’Admin UAR.' });
+    }
+  }
+
+  private async listGovernanceRaw(companyId: string): Promise<GovernanceChangeViewDto[]> {
+    return withDegradedFallback(
+      'AdherentsService.listGovernanceChanges',
+      async () => (await this.governance.find({ companyId }, { orderBy: { requestedAt: 'DESC' } })).map(governanceView),
+      () => this.memoryGovernance.filter((g) => g.companyId === companyId).sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : -1)),
+    );
+  }
+
+  async listGovernanceChanges(companyId: string, user: AuthenticatedUser): Promise<GovernanceChangeViewDto[]> {
+    if (!isPlaceUser(user)) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Réservé aux rôles de la place.' });
+    await this.getCompany(companyId);
+    return this.listGovernanceRaw(companyId);
+  }
+
+  async requestGovernanceChange(companyId: string, dto: UpdateCompanyGovernanceDto, user: AuthenticatedUser): Promise<GovernanceChangeViewDto> {
+    this.assertUarAdmin(user);
+    const company = await this.getCompany(companyId);
+    const patch: Record<string, unknown> = {};
+    for (const f of GOVERNANCE_FIELDS) if (dto[f] !== undefined) patch[f] = dto[f];
+    if (Object.keys(patch).length === 0) throw new BadRequestException({ code: 'BAD_REQUEST', message: 'Aucun champ de gouvernance à modifier.' });
+    const record = { companyId, companyCode: company.code, patch, reason: dto.reason.trim(), status: 'EN_ATTENTE', requestedById: user.id, requestedBy: user.name };
+    const view = await withStrictFallback(
+      'AdherentsService.requestGovernanceChange',
+      async () => {
+        const e = this.governance.create({ ...record, requestedAt: new Date() } as never);
+        await this.governance.getEntityManager().persistAndFlush(e);
+        return governanceView(e);
+      },
+      () => {
+        const row: GovernanceChangeViewDto = { id: randomUUID(), ...record, requestedAt: new Date().toISOString() };
+        this.memoryGovernance.push(row);
+        return { ...row };
+      },
+    );
+    await this.seal('COMPANY_GOUVERNANCE_DEMANDE', company.code, user.id, { change: view.id, patch });
+    return view;
+  }
+
+  /** Quatre yeux : le valideur n'est pas l'auteur de la demande ; la compagnie est mise à jour champ par champ puis l'acte scellé (auteur + valideur). */
+  async decideGovernanceChange(companyId: string, changeId: string, decision: 'VALIDEE' | 'REJETEE', user: AuthenticatedUser): Promise<GovernanceChangeViewDto> {
+    this.assertUarAdmin(user);
+    const change = (await this.listGovernanceRaw(companyId)).find((g) => g.id === changeId);
+    if (!change) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Demande de changement introuvable.' });
+    if (change.status !== 'EN_ATTENTE') throw new ConflictException({ code: 'CONFLICT', message: `Demande déjà ${change.status === 'VALIDEE' ? 'validée' : 'rejetée'}.` });
+    if (change.requestedById === user.id) {
+      throw new ConflictException({ code: 'FOUR_EYES', message: 'Règle des quatre yeux : la demande doit être validée par un autre Admin UAR que son auteur.' });
+    }
+    const before = await this.getCompany(companyId);
+    const decidedAt = new Date();
+    const apply = decision === 'VALIDEE';
+    const result = await withStrictFallback(
+      'AdherentsService.decideGovernanceChange',
+      async () =>
+        (this.governance.getEntityManager() as EntityManager).fork({ clear: true }).transactional(async (tem) => {
+          const g = await tem.findOne(CompanyGovernanceChange, { id: changeId, status: 'EN_ATTENTE' });
+          if (!g) throw new ConflictException({ code: 'CONFLICT', message: 'Demande déjà traitée.' });
+          if (apply) {
+            const c = await tem.findOneOrFail(Company, { id: companyId });
+            for (const [k, v] of Object.entries(change.patch)) (c as unknown as Record<string, unknown>)[k] = v;
+          }
+          Object.assign(g, { status: decision, decidedById: user.id, decidedBy: user.name, decidedAt });
+          await tem.flush();
+          await this.seal(apply ? 'COMPANY_GOUVERNANCE' : 'COMPANY_GOUVERNANCE_REJET', change.companyCode, user.id, {
+            change: change.id,
+            requestedBy: change.requestedById,
+            validatedBy: user.id,
+            before: Object.fromEntries(Object.keys(change.patch).map((k) => [k, (before as unknown as Record<string, unknown>)[k]])),
+            after: apply ? change.patch : undefined,
+          });
+          return governanceView(g);
+        }),
+      async () => {
+        const g = this.memoryGovernance.find((r) => r.id === changeId);
+        if (!g || g.status !== 'EN_ATTENTE') throw new ConflictException({ code: 'CONFLICT', message: 'Demande déjà traitée.' });
+        if (apply) {
+          const c = MEMORY_COMPANIES.find((m) => m.id === companyId);
+          if (!c) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
+          for (const [k, v] of Object.entries(change.patch)) (c as unknown as Record<string, unknown>)[k] = v;
+        }
+        Object.assign(g, { status: decision, decidedById: user.id, decidedBy: user.name, decidedAt: decidedAt.toISOString() });
+        await this.seal(apply ? 'COMPANY_GOUVERNANCE' : 'COMPANY_GOUVERNANCE_REJET', change.companyCode, user.id, {
+          change: change.id,
+          requestedBy: change.requestedById,
+          validatedBy: user.id,
+          before: Object.fromEntries(Object.keys(change.patch).map((k) => [k, (before as unknown as Record<string, unknown>)[k]])),
+          after: apply ? change.patch : undefined,
+        });
+        return { ...g };
+      },
+    );
+    return result;
   }
 
   /**
    * Constat d'un retrait devenu effectif (Art. 30-35), appelé par
-   * `MembershipService` (CommissionModule) après ses propres contrôles
-   * d'autorisation — aucune vérification de périmètre ici.
+   * `MembershipService` (CommissionModule) dans SA transaction, après ses
+   * propres contrôles d'autorisation. Changement de statut scellé au journal (SEC-04).
    */
-  async markCompanyWithdrawn(id: string, effectiveDate: string): Promise<CompanyViewDto> {
-    return withDegradedFallback(
+  async markCompanyWithdrawn(id: string, effectiveDate: string, user?: AuthenticatedUser): Promise<CompanyViewDto> {
+    const view = await withStrictFallback(
       'AdherentsService.markCompanyWithdrawn',
       async () => {
         const c = await this.companies.findOne({ id });
@@ -307,6 +487,8 @@ export class AdherentsService {
         return { ...c, createdAt: c.createdAt ?? MEMORY_SEED_AT, agencyCounts: this.agencyCountsForMemory(c.id) } as CompanyViewDto;
       },
     );
+    await this.seal('COMPANY_STATUT', view.code, user?.id ?? 'system', { status: CompanyStatus.EN_RETRAIT, withdrawalEffectiveDate: effectiveDate, origine: 'retrait constaté (Art. 30-35)' });
+    return view;
   }
 
   /**
@@ -330,14 +512,9 @@ export class AdherentsService {
   }
 
   /**
-   * `undefined` si `code` est ACTIF ou inconnu du référentiel (ce n'est pas
-   * à cette méthode de décider qu'une compagnie référencée ailleurs
-   * n'existe pas), sinon le motif de refus — pour un appelant qui doit
-   * TAGUER plutôt que lever (ex. un rapport d'import ligne par ligne).
-   * `eventDate` : date du sinistre concerné (accident), pour l'exception
-   * EN_RETRAIT (Chapitre VI Art. 30-35 : obligations maintenues pour les
-   * sinistres antérieurs à la sortie). EXCLU/SUSPENDU n'ont pas
-   * d'exception : aucun texte ne la justifie pour une sanction.
+   * `undefined` si `code` est ACTIF ou inconnu du référentiel, sinon le motif
+   * de refus — pour un appelant qui doit TAGUER plutôt que lever. `eventDate` :
+   * date du sinistre (exception EN_RETRAIT, Chapitre VI Art. 30-35).
    */
   async companyInactiveReason(code: string, eventDate: string | undefined): Promise<string | undefined> {
     const company = await this.companyStatusByCode(code);
@@ -355,11 +532,19 @@ export class AdherentsService {
 
   // ---- Agencies --------------------------------------------------------
 
-  async listAgencies(page: number, pageSize: number, companyId?: string): Promise<PaginatedResult<AgencyViewDto>> {
+  /** SEC-26 : un rôle compagnie ne liste que les agences de SA compagnie, quel que soit le filtre demandé. */
+  async listAgencies(page: number, pageSize: number, companyId?: string, user?: AuthenticatedUser): Promise<PaginatedResult<AgencyViewDto>> {
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    let effectiveCompanyId = companyId;
+    if (tenant) {
+      const ownId = await this.companyIdByCode(tenant);
+      if (!ownId || (companyId && companyId !== ownId)) return paginateArray<AgencyViewDto>([], page, pageSize);
+      effectiveCompanyId = ownId;
+    }
     return withDegradedFallback(
       'AdherentsService.listAgencies',
       async () => {
-        const where = companyId ? { company: companyId } : {};
+        const where = effectiveCompanyId ? { company: effectiveCompanyId } : {};
         const [rows, total] = await this.agencies.findAndCount(where, {
           limit: pageSize,
           offset: (page - 1) * pageSize,
@@ -369,17 +554,59 @@ export class AdherentsService {
         return { page, total, items: rows.map(toAgencyView) } as PaginatedResult<AgencyViewDto>;
       },
       () => {
-        const filtered = companyId ? MEMORY_AGENCIES.filter((a) => a.companyId === companyId) : MEMORY_AGENCIES;
+        const filtered = effectiveCompanyId ? MEMORY_AGENCIES.filter((a) => a.companyId === effectiveCompanyId) : MEMORY_AGENCIES;
         return paginateArray(filtered as unknown as AgencyViewDto[], page, pageSize);
       },
     );
   }
 
-  /** Revue sécurité 2026-10-18 (B.7) : voir le commentaire de `updateCompany` — vérifié AVANT tout `withDegradedFallback` de mutation, jamais dedans. */
+  /** Compagnie et parent d'une agence (base, puis repli mémoire) — pour les contrôles d'accès et de hiérarchie, hors de toute écriture. */
+  private async agencyLink(id: string): Promise<{ companyId: string; companyCode: string; parentId?: string }> {
+    try {
+      const a = await this.agencies.findOne({ id }, { populate: ['company', 'parent'] });
+      if (!a) throw AGENCY_NOT_FOUND();
+      return { companyId: a.company.id, companyCode: a.company.code, parentId: a.parent?.id };
+    } catch (err) {
+      if ((err as { getStatus?: () => number }).getStatus?.() === 404) throw err;
+      const a: MemoryAgency | undefined = MEMORY_AGENCIES.find((m) => m.id === id);
+      if (!a) throw AGENCY_NOT_FOUND();
+      const company = MEMORY_COMPANIES.find((c) => c.id === a.companyId);
+      if (!company) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
+      return { companyId: company.id, companyCode: company.code, parentId: a.parentId };
+    }
+  }
+
+  /**
+   * SEC-31 : l'agence parente existe, appartient à la MÊME compagnie, et le
+   * rattachement ne crée pas de cycle (une agence ne peut pas devenir
+   * l'ancêtre d'elle-même).
+   */
+  private async assertValidParent(companyId: string, parentId: string, selfId?: string): Promise<void> {
+    const invalid = (message: string) => new BadRequestException({ code: 'PARENT_INVALIDE', message });
+    if (parentId === selfId) throw invalid('Une agence ne peut pas être sa propre parente.');
+    let link: { companyId: string; parentId?: string };
+    try {
+      link = await this.agencyLink(parentId);
+    } catch {
+      throw invalid('Agence parente introuvable.');
+    }
+    if (link.companyId !== companyId) throw invalid('L’agence parente doit appartenir à la même compagnie.');
+    const seen = new Set<string>([parentId]);
+    let cursor = link.parentId;
+    while (cursor) {
+      if (cursor === selfId) throw invalid('Ce rattachement créerait un cycle dans la hiérarchie des agences.');
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+      cursor = (await this.agencyLink(cursor)).parentId;
+    }
+  }
+
+  /** Revue sécurité 2026-10-18 (B.7) : contrôle d'accès AVANT toute écriture. SEC-31 : parent de la même compagnie. */
   async createAgency(dto: CreateAgencyDto, user: AuthenticatedUser): Promise<AgencyViewDto> {
     const owner = await this.getCompany(dto.companyId);
     assertCompanyAccess(user, owner.code);
-    return withDegradedFallback(
+    if (dto.parentId) await this.assertValidParent(owner.id, dto.parentId);
+    const created = await withStrictFallback(
       'AdherentsService.createAgency',
       async () => {
         const company = await this.companies.findOneOrFail({ id: dto.companyId });
@@ -414,51 +641,42 @@ export class AdherentsService {
           phone: dto.phone,
           email: dto.email,
           address: dto.address,
-          status: 'ACTIF' as const,
+          status: CompanyStatus.ACTIF,
         };
-        MEMORY_AGENCIES.push(view as unknown as (typeof MEMORY_AGENCIES)[number]);
+        MEMORY_AGENCIES.push(view as MemoryAgency);
         return view as unknown as AgencyViewDto;
       },
     );
+    await this.seal('AGENCE_CREEE', created.id, user.id, { company: owner.code, code: created.code, parentId: created.parentId });
+    return created;
   }
 
-  /**
-   * Revue sécurité 2026-10-18 (B.7) : résout la compagnie propriétaire de
-   * l'agence (DB, puis repli mémoire si injoignable — jamais l'inverse)
-   * UNIQUEMENT pour le contrôle d'accès, en dehors de tout
-   * `withDegradedFallback` de mutation (voir `updateCompany`).
-   */
-  private async resolveAgencyOwnerCode(id: string): Promise<string> {
-    try {
-      const a = await this.agencies.findOneOrFail({ id }, { populate: ['company'] });
-      return a.company.code;
-    } catch {
-      const a = MEMORY_AGENCIES.find((m) => m.id === id);
-      if (!a) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Agence introuvable (mode dégradé).' });
-      const company = MEMORY_COMPANIES.find((c) => c.id === a.companyId);
-      if (!company) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
-      return company.code;
-    }
-  }
-
+  /** Affectation champ par champ (jamais `assign(dto)`) ; SEC-31 : nouveau parent de la même compagnie, sans cycle. */
   async updateAgency(id: string, dto: UpdateAgencyDto, user: AuthenticatedUser): Promise<AgencyViewDto> {
-    assertCompanyAccess(user, await this.resolveAgencyOwnerCode(id));
-    return withDegradedFallback(
+    const link = await this.agencyLink(id);
+    assertCompanyAccess(user, link.companyCode);
+    if (dto.parentId) await this.assertValidParent(link.companyId, dto.parentId, id);
+    const updated = await withStrictFallback(
       'AdherentsService.updateAgency',
       async () => {
         const a = await this.agencies.findOneOrFail({ id }, { populate: ['company', 'wilaya', 'parent'] });
-        const wilaya = dto.wilayaCode ? await this.wilayas.findOne({ code: dto.wilayaCode }) : a.wilaya;
-        this.agencies.assign(a, { ...dto, wilaya } as Partial<Agency>);
+        for (const f of AGENCY_FIELDS) if (dto[f] !== undefined) (a as unknown as Record<string, unknown>)[f] = dto[f];
+        if (dto.wilayaCode) a.wilaya = (await this.wilayas.findOne({ code: dto.wilayaCode })) ?? a.wilaya;
+        if (dto.parentId) a.parent = (await this.agencies.findOneOrFail({ id: dto.parentId })) as Agency;
         await this.agencies.getEntityManager().flush();
         return toAgencyView(a);
       },
       () => {
         const a = MEMORY_AGENCIES.find((m) => m.id === id);
-        if (!a) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Agence introuvable (mode dégradé).' });
-        Object.assign(a, dto);
+        if (!a) throw AGENCY_NOT_FOUND();
+        for (const f of AGENCY_FIELDS) if (dto[f] !== undefined) (a as unknown as Record<string, unknown>)[f] = dto[f];
+        if (dto.wilayaCode) a.wilayaCode = dto.wilayaCode;
+        if (dto.parentId) a.parentId = dto.parentId;
         return a as unknown as AgencyViewDto;
       },
     );
+    await this.seal('AGENCE_MODIFIEE', id, user.id, { company: link.companyCode, fields: Object.keys(dto).filter((k) => (dto as Record<string, unknown>)[k] !== undefined) });
+    return updated;
   }
 
   // ---- Wilayas (référentiel partagé) -----------------------------------

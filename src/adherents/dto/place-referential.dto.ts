@@ -36,8 +36,18 @@ export class UpdateMobileHolidayDto {
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1300) @Max(1700) hijriYear?: number;
 }
 
+/**
+ * SEC-30 — validation d'une révision précise : si `revision` est fourni et ne
+ * correspond plus à la valeur en base (modifiée depuis la lecture), 409
+ * `REVISION_PERIMEE`. Recommandé pour tous les clients.
+ */
+export class ValidateRevisionDto {
+  @ApiPropertyOptional({ description: 'Révision lue par le valideur (409 si la valeur a changé depuis)' }) @IsOptional() @IsInt() @Min(1) revision?: number;
+}
+
 export class ConfirmMobileHolidayDto {
   @ApiProperty({ description: 'Référence du communiqué ou du décret' }) @IsString() @IsNotEmpty() @MaxLength(255) sourceRef!: string;
+  @ApiPropertyOptional({ description: 'SEC-30 : révision lue par le valideur (409 si le férié a changé depuis)' }) @IsOptional() @IsInt() @Min(1) revision?: number;
   @ApiPropertyOptional({ description: 'Date confirmée, si elle diffère de la date prévisionnelle' })
   @IsOptional()
   @Matches(ISO_DATE_PATTERN, { message: ISO_DATE_MESSAGE })
@@ -85,13 +95,13 @@ export class ListWilayaPopulationsQueryDto {
 export class CreateWilayaPopulationDto {
   @ApiProperty({ example: '16' }) @Matches(/^\d{2}$/, { message: 'wilayaCode : code sur 2 chiffres' }) wilayaCode!: string;
   @ApiProperty({ example: 2024 }) @IsInt() @Min(1900) @Max(2200) referenceYear!: number;
-  @ApiProperty() @IsInt() @Min(1) population!: number;
+  @ApiProperty() @IsInt() @Min(1) @Max(2_147_483_647) population!: number;
   @ApiProperty({ enum: POPULATION_SOURCE_TYPES }) @IsIn(POPULATION_SOURCE_TYPES as unknown as string[]) sourceType!: PopulationSourceType;
   @ApiProperty() @IsString() @IsNotEmpty() @MaxLength(255) sourceRef!: string;
 }
 
 export class UpdateWilayaPopulationDto {
-  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) population?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) @Max(2_147_483_647) population?: number;
   @ApiPropertyOptional({ enum: POPULATION_SOURCE_TYPES }) @IsOptional() @IsIn(POPULATION_SOURCE_TYPES as unknown as string[]) sourceType?: PopulationSourceType;
   @ApiPropertyOptional() @IsOptional() @IsString() @IsNotEmpty() @MaxLength(255) sourceRef?: string;
 }
@@ -99,14 +109,14 @@ export class UpdateWilayaPopulationDto {
 // ---- Référence IRSAM (§4) ----------------------------------------------
 
 export class IrsamMeasureDefinitionDto {
-  @ApiProperty({ example: 'Envoi de la demande de recours' }) @IsString() @IsNotEmpty() startEvent!: string;
-  @ApiProperty({ example: 'Règlement inter-compagnies' }) @IsString() @IsNotEmpty() endEvent!: string;
-  @ApiProperty({ example: 'Recours matériels réglés sur E-Recours' }) @IsString() @IsNotEmpty() scope!: string;
+  @ApiProperty({ example: 'Envoi de la demande de recours' }) @IsString() @IsNotEmpty() @MaxLength(255) startEvent!: string;
+  @ApiProperty({ example: 'Règlement inter-compagnies' }) @IsString() @IsNotEmpty() @MaxLength(255) endEvent!: string;
+  @ApiProperty({ example: 'Recours matériels réglés sur E-Recours' }) @IsString() @IsNotEmpty() @MaxLength(255) scope!: string;
 }
 
 export class CreateIrsamBenchmarkDto {
   @ApiProperty({ enum: IRSAM_INDICATORS }) @IsIn(IRSAM_INDICATORS as unknown as string[]) indicator!: IrsamIndicator;
-  @ApiProperty() @IsNumber() @Min(0) value!: number;
+  @ApiProperty() @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 }) @Min(0) @Max(100_000) value!: number;
   @ApiProperty({ example: '2025-01-01' }) @Matches(ISO_DATE_PATTERN, { message: ISO_DATE_MESSAGE }) periodFrom!: string;
   @ApiProperty({ example: '2025-12-31' }) @Matches(ISO_DATE_PATTERN, { message: ISO_DATE_MESSAGE }) periodTo!: string;
   @ApiProperty({ type: IrsamMeasureDefinitionDto }) @IsObject() @ValidateNested() @Type(() => IrsamMeasureDefinitionDto) measureDefinition!: IrsamMeasureDefinitionDto;

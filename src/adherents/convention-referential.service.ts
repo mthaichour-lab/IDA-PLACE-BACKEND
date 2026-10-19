@@ -1,9 +1,10 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { LedgerService } from '../ledger/ledger.service';
 import {
   ConfirmMobileHolidayDto,
   CreateMobileHolidayDto,
@@ -26,7 +27,7 @@ import {
   SEED_AUTHOR,
 } from './place-referential.data';
 import { algeriaFixedHolidays } from './referential-reference-data';
-import { assertFourEyes, assertIsoDate } from './referential-rules';
+import { assertExpectedRevision, assertFourEyes, assertIsoDate, withAuthor } from './referential-rules';
 
 const MAX_CALENDAR_SPAN_YEARS = 10;
 
@@ -42,6 +43,9 @@ export interface MobileHolidayView {
   createdAt: string;
   confirmedBy?: string;
   confirmedAt?: string;
+  /** SEC-30 : auteurs successifs et révision courante. */
+  authors?: string[];
+  revision: number;
 }
 
 export interface CalendarHolidayView {
@@ -62,6 +66,8 @@ export interface ConstatCircumstanceView {
   updatedBy?: string;
   validatedBy?: string;
   validatedAt?: string;
+  authors?: string[];
+  revision: number;
 }
 
 export interface OppositionMotifView {
@@ -75,6 +81,8 @@ export interface OppositionMotifView {
   updatedBy?: string;
   validatedBy?: string;
   validatedAt?: string;
+  authors?: string[];
+  revision: number;
 }
 
 function holidayView(e: MobileHoliday): MobileHolidayView {
@@ -91,6 +99,8 @@ function holidayView(e: MobileHoliday): MobileHolidayView {
     createdAt: e.createdAt.toISOString(),
     confirmedBy: e.confirmedBy ?? undefined,
     confirmedAt: e.confirmedAt?.toISOString(),
+    authors: e.authors ?? undefined,
+    revision: e.revision ?? 1,
   };
 }
 
@@ -104,6 +114,8 @@ function circumstanceView(e: ConstatCircumstance): ConstatCircumstanceView {
     updatedBy: e.updatedBy ?? undefined,
     validatedBy: e.validatedBy ?? undefined,
     validatedAt: e.validatedAt?.toISOString(),
+    authors: e.authors ?? undefined,
+    revision: e.revision ?? 1,
   };
 }
 
@@ -119,6 +131,8 @@ function motifView(e: OppositionMotif): OppositionMotifView {
     updatedBy: e.updatedBy ?? undefined,
     validatedBy: e.validatedBy ?? undefined,
     validatedAt: e.validatedAt?.toISOString(),
+    authors: e.authors ?? undefined,
+    revision: e.revision ?? 1,
   };
 }
 
@@ -128,6 +142,11 @@ const byDate = (a: { date: string }, b: { date: string }) => a.date.localeCompar
  * Référentiels conventionnels de l'écran 12 : fériés mobiles (§2),
  * circonstances du constat et motifs d'opposition (§1). Contrôles métier et
  * règle des quatre yeux toujours AVANT la closure de `withDegradedFallback`.
+ *
+ * SEC-30 : la règle des quatre yeux compare le valideur à TOUS les auteurs
+ * successifs (`authors`, jamais écrasé) ; une validation peut viser une
+ * révision précise (409 si la valeur a changé) ; la confirmation d'un férié
+ * suit aussi les quatre yeux ; chaque écriture est scellée au journal.
  */
 @Injectable()
 export class ConventionReferentialService {
@@ -142,13 +161,18 @@ export class ConventionReferentialService {
     @InjectRepository(MobileHoliday) private readonly holidays: EntityRepository<MobileHoliday>,
     @InjectRepository(ConstatCircumstance) private readonly circumstances: EntityRepository<ConstatCircumstance>,
     @InjectRepository(OppositionMotif) private readonly motifs: EntityRepository<OppositionMotif>,
+    @Optional() private readonly ledger?: LedgerService,
   ) {
     const seededAt = new Date().toISOString();
     this.memory = {
       holidays: [],
-      circumstances: CONSTAT_CIRCUMSTANCES_SEED.map((c) => ({ number: c.number, labelFr: c.labelFr, status: 'STANDARD_A_CONFIRMER', createdBy: SEED_AUTHOR })),
-      motifs: OPPOSITION_MOTIFS_SEED.map((m) => ({ ...m, status: 'SAISI', createdBy: SEED_AUTHOR, createdAt: seededAt })),
+      circumstances: CONSTAT_CIRCUMSTANCES_SEED.map((c) => ({ number: c.number, labelFr: c.labelFr, status: 'STANDARD_A_CONFIRMER', createdBy: SEED_AUTHOR, revision: 1 })),
+      motifs: OPPOSITION_MOTIFS_SEED.map((m) => ({ ...m, status: 'SAISI', createdBy: SEED_AUTHOR, createdAt: seededAt, revision: 1 })),
     };
+  }
+
+  private async seal(type: string, ref: string, user: AuthenticatedUser, summary: Record<string, unknown>): Promise<void> {
+    if (this.ledger) await this.ledger.append(type, ref, user.id, JSON.stringify(summary));
   }
 
   // ---- Fériés mobiles (§2) ----------------------------------------------
@@ -176,10 +200,10 @@ export class ConventionReferentialService {
   async createHoliday(dto: CreateMobileHolidayDto, user: AuthenticatedUser): Promise<MobileHolidayView> {
     assertIsoDate(dto.date, 'date');
     await this.assertHolidayUnique(dto.date, dto.kind);
-    return withDegradedFallback(
+    const created = await withDegradedFallback(
       'ConventionReferentialService.createHoliday',
       async () => {
-        const e = this.holidays.create({ date: dto.date, kind: dto.kind, hijriYear: dto.hijriYear, status: 'PREVISIONNEL', createdBy: user.id, createdAt: new Date() });
+        const e = this.holidays.create({ date: dto.date, kind: dto.kind, hijriYear: dto.hijriYear, status: 'PREVISIONNEL', createdBy: user.id, createdAt: new Date(), authors: [user.id], revision: 1 });
         await this.holidays.getEntityManager().persistAndFlush(e);
         return holidayView(e);
       },
@@ -193,38 +217,54 @@ export class ConventionReferentialService {
           status: 'PREVISIONNEL',
           createdBy: user.id,
           createdAt: new Date().toISOString(),
+          authors: [user.id],
+          revision: 1,
         };
         this.memory.holidays.push(view);
         return view;
       },
     );
+    await this.seal('REFERENTIEL_FERIE_SAISI', created.id, user, { date: created.date, kind: created.kind });
+    return created;
   }
 
-  async updateHoliday(id: string, dto: UpdateMobileHolidayDto): Promise<MobileHolidayView> {
+  async updateHoliday(id: string, dto: UpdateMobileHolidayDto, user: AuthenticatedUser): Promise<MobileHolidayView> {
     const current = await this.getHoliday(id);
     if (current.status === 'CONFIRME') {
       throw new ConflictException({ code: 'CONFLICT', message: 'Un férié confirmé ne se modifie plus : la date confirmée provient du communiqué officiel.' });
     }
     if (dto.date) assertIsoDate(dto.date, 'date');
     await this.assertHolidayUnique(dto.date ?? current.date, dto.kind ?? current.kind, id);
-    return this.writeHoliday(id, { date: dto.date, kind: dto.kind, hijriYear: dto.hijriYear }, 'updateHoliday');
+    const updated = await this.writeHoliday(
+      id,
+      { date: dto.date, kind: dto.kind, hijriYear: dto.hijriYear, authors: withAuthor(current.authors ?? [current.createdBy], user.id), revision: current.revision + 1 },
+      'updateHoliday',
+    );
+    await this.seal('REFERENTIEL_FERIE_MODIFIE', id, user, { before: { date: current.date, kind: current.kind }, after: { date: updated.date, kind: updated.kind } });
+    return updated;
   }
 
+  /** SEC-30 : la confirmation (date officielle) est faite par une autre personne que les auteurs de la saisie. */
   async confirmHoliday(id: string, dto: ConfirmMobileHolidayDto, user: AuthenticatedUser): Promise<MobileHolidayView> {
     const current = await this.getHoliday(id);
     if (current.status === 'CONFIRME') throw new ConflictException({ code: 'CONFLICT', message: 'Férié déjà confirmé.' });
     const sourceRef = dto.sourceRef.trim();
     if (!sourceRef) throw new BadRequestException({ code: 'BAD_REQUEST', message: 'La confirmation exige la référence du communiqué ou du décret.' });
+    assertExpectedRevision(current.revision, dto.revision);
+    assertFourEyes(user, [current.createdBy, ...(current.authors ?? [])]);
     if (dto.date) {
       assertIsoDate(dto.date, 'date');
       await this.assertHolidayUnique(dto.date, current.kind, id);
     }
-    return this.writeHoliday(id, { date: dto.date, status: 'CONFIRME', sourceRef, confirmedBy: user.id, confirmedAt: new Date() }, 'confirmHoliday');
+    const confirmed = await this.writeHoliday(id, { date: dto.date, status: 'CONFIRME', sourceRef, confirmedBy: user.id, confirmedAt: new Date() }, 'confirmHoliday');
+    await this.seal('REFERENTIEL_FERIE_CONFIRME', id, user, { date: confirmed.date, kind: confirmed.kind, sourceRef, authors: current.authors ?? [current.createdBy] });
+    return confirmed;
   }
 
-  async removeHoliday(id: string): Promise<{ id: string; deleted: true }> {
+  async removeHoliday(id: string, user: AuthenticatedUser): Promise<{ id: string; deleted: true }> {
     const current = await this.getHoliday(id);
     if (current.status === 'CONFIRME') throw new ConflictException({ code: 'CONFLICT', message: 'Un férié confirmé ne se supprime pas.' });
+    await this.seal('REFERENTIEL_FERIE_SUPPRIME', id, user, { date: current.date, kind: current.kind });
     return withDegradedFallback(
       'ConventionReferentialService.removeHoliday',
       async () => {
@@ -243,7 +283,7 @@ export class ConventionReferentialService {
 
   private writeHoliday(
     id: string,
-    patch: { date?: string; kind?: MobileHolidayKind; hijriYear?: number; status?: MobileHolidayStatus; sourceRef?: string; confirmedBy?: string; confirmedAt?: Date },
+    patch: { date?: string; kind?: MobileHolidayKind; hijriYear?: number; status?: MobileHolidayStatus; sourceRef?: string; confirmedBy?: string; confirmedAt?: Date; authors?: string[]; revision?: number },
     scope: string,
   ): Promise<MobileHolidayView> {
     const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
@@ -316,7 +356,7 @@ export class ConventionReferentialService {
 
   /** Une modification fait repasser la valeur en attente de validation UAR. */
   async updateCircumstance(number: number, dto: UpdateConstatCircumstanceDto, user: AuthenticatedUser): Promise<ConstatCircumstanceView> {
-    await this.getCircumstance(number);
+    const current = await this.getCircumstance(number);
     const patch = {
       ...(dto.labelFr !== undefined ? { labelFr: dto.labelFr } : {}),
       ...(dto.labelAr !== undefined ? { labelAr: dto.labelAr } : {}),
@@ -324,20 +364,27 @@ export class ConventionReferentialService {
       updatedBy: user.id,
       validatedBy: undefined,
       validatedAt: undefined,
+      authors: withAuthor(current.authors ?? [current.createdBy, ...(current.updatedBy ? [current.updatedBy] : [])], user.id),
+      revision: current.revision + 1,
     };
-    return this.writeCircumstance(number, patch, 'updateCircumstance');
+    const updated = await this.writeCircumstance(number, patch, 'updateCircumstance');
+    await this.seal('REFERENTIEL_CIRCONSTANCE_MODIFIEE', String(number), user, { before: { labelFr: current.labelFr, labelAr: current.labelAr }, after: { labelFr: updated.labelFr, labelAr: updated.labelAr }, revision: updated.revision });
+    return updated;
   }
 
-  async validateCircumstance(number: number, user: AuthenticatedUser): Promise<ConstatCircumstanceView> {
+  async validateCircumstance(number: number, user: AuthenticatedUser, expectedRevision?: number): Promise<ConstatCircumstanceView> {
     const current = await this.getCircumstance(number);
     if (current.status === 'VALIDE_UAR') throw new ConflictException({ code: 'ALREADY_VALIDATED', message: 'Circonstance déjà validée par l’UAR.' });
-    assertFourEyes(user, [current.createdBy, current.updatedBy]);
-    return this.writeCircumstance(number, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, 'validateCircumstance');
+    assertExpectedRevision(current.revision, expectedRevision);
+    assertFourEyes(user, [current.createdBy, current.updatedBy, ...(current.authors ?? [])]);
+    const validated = await this.writeCircumstance(number, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, 'validateCircumstance');
+    await this.seal('REFERENTIEL_CIRCONSTANCE_VALIDEE', String(number), user, { revision: current.revision, labelFr: current.labelFr, authors: current.authors ?? [current.createdBy] });
+    return validated;
   }
 
   private writeCircumstance(
     number: number,
-    patch: { labelFr?: string; labelAr?: string; status: ConstatCircumstanceStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date },
+    patch: { labelFr?: string; labelAr?: string; status: ConstatCircumstanceStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date; authors?: string[]; revision?: number },
     scope: string,
   ): Promise<ConstatCircumstanceView> {
     return withDegradedFallback(
@@ -389,6 +436,8 @@ export class ConventionReferentialService {
           status: 'SAISI',
           createdBy: user.id,
           createdAt: new Date(),
+          authors: [user.id],
+          revision: 1,
         });
         await this.motifs.getEntityManager().persistAndFlush(e);
         return motifView(e);
@@ -402,36 +451,48 @@ export class ConventionReferentialService {
           status: 'SAISI',
           createdBy: user.id,
           createdAt: new Date().toISOString(),
+          authors: [user.id],
+          revision: 1,
         };
         this.memory.motifs.push(view);
         return view;
       },
-    );
+    ).then(async (created) => {
+      await this.seal('REFERENTIEL_MOTIF_SAISI', created.code, user, { label: created.label, forbidden: created.forbidden });
+      return created;
+    });
   }
 
   /** Une modification fait repasser le motif en attente de validation UAR. */
   async updateMotif(code: string, dto: UpdateOppositionMotifDto, user: AuthenticatedUser): Promise<OppositionMotifView> {
-    await this.getMotif(code);
+    const current = await this.getMotif(code);
     const patch = {
       ...(dto.label !== undefined ? { label: dto.label } : {}),
       ...(dto.forbidden !== undefined ? { forbidden: dto.forbidden } : {}),
       ...(dto.sourceRef !== undefined ? { sourceRef: dto.sourceRef } : {}),
       status: 'SAISI' as const,
       updatedBy: user.id,
+      authors: withAuthor(current.authors ?? [current.createdBy, ...(current.updatedBy ? [current.updatedBy] : [])], user.id),
+      revision: current.revision + 1,
     };
-    return this.writeMotif(code, patch, true, 'updateMotif');
+    const updated = await this.writeMotif(code, patch, true, 'updateMotif');
+    await this.seal('REFERENTIEL_MOTIF_MODIFIE', code, user, { before: { label: current.label, forbidden: current.forbidden }, after: { label: updated.label, forbidden: updated.forbidden }, revision: updated.revision });
+    return updated;
   }
 
-  async validateMotif(code: string, user: AuthenticatedUser): Promise<OppositionMotifView> {
+  async validateMotif(code: string, user: AuthenticatedUser, expectedRevision?: number): Promise<OppositionMotifView> {
     const current = await this.getMotif(code);
     if (current.status === 'VALIDE_UAR') throw new ConflictException({ code: 'ALREADY_VALIDATED', message: 'Motif déjà validé par l’UAR.' });
-    assertFourEyes(user, [current.createdBy, current.updatedBy]);
-    return this.writeMotif(code, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, false, 'validateMotif');
+    assertExpectedRevision(current.revision, expectedRevision);
+    assertFourEyes(user, [current.createdBy, current.updatedBy, ...(current.authors ?? [])]);
+    const validated = await this.writeMotif(code, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, false, 'validateMotif');
+    await this.seal('REFERENTIEL_MOTIF_VALIDE', code, user, { revision: current.revision, label: current.label, forbidden: current.forbidden, authors: current.authors ?? [current.createdBy] });
+    return validated;
   }
 
   private writeMotif(
     code: string,
-    patch: { label?: string; forbidden?: boolean; sourceRef?: string; status: OppositionMotifStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date },
+    patch: { label?: string; forbidden?: boolean; sourceRef?: string; status: OppositionMotifStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date; authors?: string[]; revision?: number },
     clearValidation: boolean,
     scope: string,
   ): Promise<OppositionMotifView> {

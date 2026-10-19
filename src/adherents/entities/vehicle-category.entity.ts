@@ -16,6 +16,14 @@ export class VehicleCategory {
   @Property()
   createdBy!: string;
 
+  /** SEC-30 : identifiants de TOUS les auteurs d'une saisie ou modification (jamais écrasés) — base de la règle des quatre yeux. */
+  @Property({ type: 'text[]', nullable: true })
+  authors?: string[];
+
+  /** SEC-30 : révision, incrémentée à chaque modification — la validation porte sur une révision précise. */
+  @Property({ type: 'integer' })
+  revision: number = 1;
+
   @Property()
   createdAt: Date = new Date();
 

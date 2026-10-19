@@ -130,10 +130,10 @@ describe('BaremeReferentialService (mode dégradé, décision PO §5)', () => {
       const id = await draftWithCase();
       await service.validateVersion(id, adminUar);
       expect(await service.publishedCases()).toHaveLength(1);
-      await service.archiveVersion(id);
+      await service.archiveVersion(id, adminUar);
       expect(await service.publishedCases()).toEqual([]);
       await expect(service.addCase(id, { code: 'B02', label: 'x', partA: 50, partB: 50 }, operateur)).rejects.toMatchObject({ response: { code: 'VERSION_IMMUABLE' } });
-      await expect(service.archiveVersion(id)).rejects.toMatchObject({ status: 409 });
+      await expect(service.archiveVersion(id, adminUar)).rejects.toMatchObject({ status: 409 });
     });
 
     it('une version vide ne se valide pas (400)', async () => {
@@ -155,6 +155,25 @@ describe('BaremeReferentialService (mode dégradé, décision PO §5)', () => {
       expect(resolvePublishedBaremeCase(cases, 'b01')).toMatchObject({ versionId: v2.id, partA: 50 });
       expect(resolvePublishedBaremeCase(cases, 'B01', 'Barème 2026')).toMatchObject({ versionId: v1, partA: 100 });
       expect(resolvePublishedBaremeCase(cases, 'B09')).toBeUndefined();
+    });
+  });
+
+  describe('SEC-30 — historique des auteurs et révision', () => {
+    it('un Admin UAR ayant modifié la version ne peut pas la valider, même si un tiers l’a modifiée ensuite', async () => {
+      const auteur = user('uar-auteur', 'ADMIN_UAR');
+      const id = await draftWithCase();
+      await service.updateVersion(id, { label: 'Barème 2026 (relu)' }, auteur);
+      await service.updateVersion(id, { sourceRef: 'Note UAR' }, autreOperateur);
+      await expect(service.validateVersion(id, auteur)).rejects.toMatchObject({ status: 409, response: { code: 'FOUR_EYES' } });
+      await expect(service.validateVersion(id, adminUar)).resolves.toMatchObject({ status: 'VALIDE_UAR' });
+    });
+
+    it('toute saisie de cas incrémente la révision ; valider une révision périmée renvoie 409', async () => {
+      const id = await draftWithCase();
+      const lue = (await service.getVersion(id)).revision;
+      await service.updateCase(id, 'B01', { partA: 70, partB: 30 }, autreOperateur);
+      await expect(service.validateVersion(id, adminUar, lue)).rejects.toMatchObject({ status: 409, response: { code: 'REVISION_PERIMEE' } });
+      await expect(service.validateVersion(id, adminUar, lue + 1)).resolves.toMatchObject({ status: 'VALIDE_UAR' });
     });
   });
 });

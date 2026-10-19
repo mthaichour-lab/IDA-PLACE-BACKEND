@@ -1,9 +1,10 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { LedgerService } from '../ledger/ledger.service';
 import { assertBaremeParts, PublishedBaremeCase, PublishedVehicleCategory } from './bareme-rules';
 import {
   CreateBaremeCaseDto,
@@ -17,7 +18,7 @@ import { BaremeCase } from './entities/bareme-case.entity';
 import { BaremeVersion } from './entities/bareme-version.entity';
 import { VehicleCategory } from './entities/vehicle-category.entity';
 import { BaremeVersionStatus, VehicleCategoryStatus } from './place-referential.data';
-import { assertFourEyes } from './referential-rules';
+import { assertExpectedRevision, assertFourEyes, withAuthor } from './referential-rules';
 
 export interface BaremeCaseView {
   code: string;
@@ -39,6 +40,9 @@ export interface BaremeVersionView {
   updatedBy?: string;
   validatedBy?: string;
   validatedAt?: string;
+  /** SEC-30 : auteurs successifs (version ET cas) et révision courante. */
+  authors?: string[];
+  revision: number;
   cases: BaremeCaseView[];
 }
 
@@ -51,6 +55,8 @@ export interface VehicleCategoryView {
   updatedBy?: string;
   validatedBy?: string;
   validatedAt?: string;
+  authors?: string[];
+  revision: number;
 }
 
 type StoredVersion = Omit<BaremeVersionView, 'cases'>;
@@ -67,6 +73,8 @@ function versionRow(e: BaremeVersion): StoredVersion {
     updatedBy: e.updatedBy ?? undefined,
     validatedBy: e.validatedBy ?? undefined,
     validatedAt: e.validatedAt?.toISOString(),
+    authors: e.authors ?? undefined,
+    revision: e.revision ?? 1,
   };
 }
 
@@ -93,6 +101,8 @@ function categoryView(e: VehicleCategory): VehicleCategoryView {
     updatedBy: e.updatedBy ?? undefined,
     validatedBy: e.validatedBy ?? undefined,
     validatedAt: e.validatedAt?.toISOString(),
+    authors: e.authors ?? undefined,
+    revision: e.revision ?? 1,
   };
 }
 
@@ -104,6 +114,11 @@ function publicCase({ versionId: _versionId, ...rest }: StoredCase): BaremeCaseV
  * Barème Art. 14 et catégories de véhicule (décision PO §5). Rien n'est
  * pré-rempli : ni codes, ni parts, ni catégories. Contrôles métier et quatre
  * yeux toujours AVANT la closure de `withDegradedFallback`.
+ *
+ * SEC-30 : toute saisie (version, cas, catégorie) ajoute son auteur à
+ * l'historique `authors` de la version/catégorie et incrémente sa révision ;
+ * la validation exclut TOUS ces auteurs et peut viser une révision précise ;
+ * chaque écriture est scellée au journal.
  */
 @Injectable()
 export class BaremeReferentialService {
@@ -118,7 +133,17 @@ export class BaremeReferentialService {
     @InjectRepository(BaremeVersion) private readonly versions: EntityRepository<BaremeVersion>,
     @InjectRepository(BaremeCase) private readonly cases: EntityRepository<BaremeCase>,
     @InjectRepository(VehicleCategory) private readonly categories: EntityRepository<VehicleCategory>,
+    @Optional() private readonly ledger?: LedgerService,
   ) {}
+
+  private async seal(type: string, ref: string, user: AuthenticatedUser, summary: Record<string, unknown>): Promise<void> {
+    if (this.ledger) await this.ledger.append(type, ref, user.id, JSON.stringify(summary));
+  }
+
+  /** Auteurs connus d'une version : historique, plus créateur/dernier modificateur des lignes héritées. */
+  private versionAuthors(v: BaremeVersionView): string[] {
+    return [...new Set([v.createdBy, ...(v.updatedBy ? [v.updatedBy] : []), ...(v.authors ?? []), ...v.cases.flatMap((c) => [c.createdBy, ...(c.updatedBy ? [c.updatedBy] : [])])])];
+  }
 
   // ---- Versions du barème ---------------------------------------------------
 
@@ -172,52 +197,62 @@ export class BaremeReferentialService {
     const stored = await withDegradedFallback(
       'BaremeReferentialService.createVersion',
       async () => {
-        const e = this.versions.create({ label, sourceRef: dto.sourceRef, status: 'BROUILLON', createdBy: user.id, createdAt: new Date() });
+        const e = this.versions.create({ label, sourceRef: dto.sourceRef, status: 'BROUILLON', createdBy: user.id, createdAt: new Date(), authors: [user.id], revision: 1 });
         await this.versions.getEntityManager().persistAndFlush(e);
         return versionRow(e);
       },
       () => {
-        const row: StoredVersion = { id: randomUUID(), label, sourceRef: dto.sourceRef, status: 'BROUILLON', createdBy: user.id, createdAt: new Date().toISOString() };
+        const row: StoredVersion = { id: randomUUID(), label, sourceRef: dto.sourceRef, status: 'BROUILLON', createdBy: user.id, createdAt: new Date().toISOString(), authors: [user.id], revision: 1 };
         this.memory.versions.push(row);
         return row;
       },
     );
+    await this.seal('BAREME_VERSION_CREEE', stored.id, user, { label });
     return { ...stored, cases: [] };
   }
 
+  /** Toute saisie sur une version (libellé, cas) l'ajoute à ses auteurs et incrémente sa révision. */
+  private async touchVersion(v: BaremeVersionView, user: AuthenticatedUser, extra: { label?: string; sourceRef?: string } = {}, scope: string): Promise<void> {
+    await this.writeVersion(v.id, { ...extra, updatedBy: user.id, authors: withAuthor(this.versionAuthors(v), user.id), revision: v.revision + 1 }, scope);
+  }
+
   async updateVersion(id: string, dto: UpdateBaremeVersionDto, user: AuthenticatedUser): Promise<BaremeVersionView> {
-    await this.getDraft(id);
+    const v = await this.getDraft(id);
     const label = dto.label?.trim();
     if (label) await this.assertLabelFree(label, id);
-    await this.writeVersion(id, { ...(label ? { label } : {}), ...(dto.sourceRef !== undefined ? { sourceRef: dto.sourceRef } : {}), updatedBy: user.id }, 'updateVersion');
+    await this.touchVersion(v, user, { ...(label ? { label } : {}), ...(dto.sourceRef !== undefined ? { sourceRef: dto.sourceRef } : {}) }, 'updateVersion');
+    await this.seal('BAREME_VERSION_MODIFIEE', id, user, { label: label ?? v.label, sourceRef: dto.sourceRef });
     return this.getVersion(id);
   }
 
-  /** Quatre yeux : le validateur n'a ni créé ni modifié la version, ni aucun de ses cas. */
-  async validateVersion(id: string, user: AuthenticatedUser): Promise<BaremeVersionView> {
+  /** Quatre yeux : le validateur n'a ni créé ni modifié la version, ni aucun de ses cas (historique complet, SEC-30). */
+  async validateVersion(id: string, user: AuthenticatedUser, expectedRevision?: number): Promise<BaremeVersionView> {
     const v = await this.getVersion(id);
     if (v.status !== 'BROUILLON') {
       throw new ConflictException({ code: 'ALREADY_VALIDATED', message: `Seule une version BROUILLON peut être validée (statut actuel : ${v.status}).` });
     }
     if (v.cases.length === 0) throw new BadRequestException({ code: 'BAREME_VIDE', message: 'Une version sans aucun cas ne peut pas être validée.' });
     for (const c of v.cases) assertBaremeParts(c.partA, c.partB);
-    assertFourEyes(user, [v.createdBy, v.updatedBy, ...v.cases.flatMap((c) => [c.createdBy, c.updatedBy])]);
+    assertExpectedRevision(v.revision, expectedRevision);
+    assertFourEyes(user, this.versionAuthors(v));
     await this.writeVersion(id, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, 'validateVersion');
+    await this.seal('BAREME_VERSION_VALIDEE', id, user, { label: v.label, revision: v.revision, authors: this.versionAuthors(v), cases: v.cases.map((c) => ({ code: c.code, partA: c.partA, partB: c.partB })) });
     return this.getVersion(id);
   }
 
-  async archiveVersion(id: string): Promise<BaremeVersionView> {
+  async archiveVersion(id: string, user: AuthenticatedUser): Promise<BaremeVersionView> {
     const v = await this.getVersion(id);
     if (v.status !== 'VALIDE_UAR') {
       throw new ConflictException({ code: 'CONFLICT', message: `Seule une version VALIDE_UAR peut être archivée (statut actuel : ${v.status}).` });
     }
     await this.writeVersion(id, { status: 'ARCHIVE' }, 'archiveVersion');
+    await this.seal('BAREME_VERSION_ARCHIVEE', id, user, { label: v.label });
     return this.getVersion(id);
   }
 
   private writeVersion(
     id: string,
-    patch: { label?: string; sourceRef?: string; status?: BaremeVersionStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date },
+    patch: { label?: string; sourceRef?: string; status?: BaremeVersionStatus; updatedBy?: string; validatedBy?: string; validatedAt?: Date; authors?: string[]; revision?: number },
     scope: string,
   ): Promise<void> {
     return withDegradedFallback(
@@ -254,6 +289,8 @@ export class BaremeReferentialService {
         this.memory.cases.push({ ...item, createdAt: new Date().toISOString() });
       },
     );
+    await this.touchVersion(v, user, {}, 'addCase');
+    await this.seal('BAREME_CAS_AJOUTE', versionId, user, { code: dto.code, partA: dto.partA, partB: dto.partB });
     return this.getVersion(versionId);
   }
 
@@ -276,6 +313,8 @@ export class BaremeReferentialService {
         Object.assign(row, patch);
       },
     );
+    await this.touchVersion(v, user, {}, 'updateCase');
+    await this.seal('BAREME_CAS_MODIFIE', versionId, user, { code, before: { partA: current.partA, partB: current.partB }, after: { partA: dto.partA ?? current.partA, partB: dto.partB ?? current.partB } });
     return this.getVersion(versionId);
   }
 
@@ -295,7 +334,8 @@ export class BaremeReferentialService {
       },
     );
     // Une suppression est une saisie : son auteur ne peut plus valider la version.
-    await this.writeVersion(versionId, { updatedBy: user.id }, 'removeCase');
+    await this.touchVersion(v, user, {}, 'removeCase');
+    await this.seal('BAREME_CAS_SUPPRIME', versionId, user, { code });
     return this.getVersion(versionId);
   }
 
@@ -331,16 +371,19 @@ export class BaremeReferentialService {
     return withDegradedFallback(
       'BaremeReferentialService.createCategory',
       async () => {
-        const e = this.categories.create({ code: dto.code, label: dto.label, status: 'SAISI', createdBy: user.id, createdAt: new Date() });
+        const e = this.categories.create({ code: dto.code, label: dto.label, status: 'SAISI', createdBy: user.id, createdAt: new Date(), authors: [user.id], revision: 1 });
         await this.categories.getEntityManager().persistAndFlush(e);
         return categoryView(e);
       },
       () => {
-        const view: VehicleCategoryView = { code: dto.code, label: dto.label, status: 'SAISI', createdBy: user.id, createdAt: new Date().toISOString() };
+        const view: VehicleCategoryView = { code: dto.code, label: dto.label, status: 'SAISI', createdBy: user.id, createdAt: new Date().toISOString(), authors: [user.id], revision: 1 };
         this.memory.categories.push(view);
         return view;
       },
-    );
+    ).then(async (created) => {
+      await this.seal('CATEGORIE_VEHICULE_SAISIE', created.code, user, { label: created.label });
+      return created;
+    });
   }
 
   /** Une modification fait repasser la catégorie en attente de validation UAR. */
@@ -353,19 +396,36 @@ export class BaremeReferentialService {
         message: `La catégorie « ${current.code} » est validée UAR : elle ne se modifie plus, créez une nouvelle catégorie.`,
       });
     }
-    return this.writeCategory(code, { label: dto.label, status: 'SAISI', updatedBy: user.id, validatedBy: null, validatedAt: null }, 'updateCategory');
+    const updated = await this.writeCategory(
+      code,
+      {
+        label: dto.label,
+        status: 'SAISI',
+        updatedBy: user.id,
+        validatedBy: null,
+        validatedAt: null,
+        authors: withAuthor(current.authors ?? [current.createdBy, ...(current.updatedBy ? [current.updatedBy] : [])], user.id),
+        revision: current.revision + 1,
+      },
+      'updateCategory',
+    );
+    await this.seal('CATEGORIE_VEHICULE_MODIFIEE', code, user, { before: current.label, after: dto.label, revision: updated.revision });
+    return updated;
   }
 
-  async validateCategory(code: string, user: AuthenticatedUser): Promise<VehicleCategoryView> {
+  async validateCategory(code: string, user: AuthenticatedUser, expectedRevision?: number): Promise<VehicleCategoryView> {
     const current = await this.getCategory(code);
     if (current.status === 'VALIDE_UAR') throw new ConflictException({ code: 'ALREADY_VALIDATED', message: 'Catégorie déjà validée par l’UAR.' });
-    assertFourEyes(user, [current.createdBy, current.updatedBy]);
-    return this.writeCategory(code, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, 'validateCategory');
+    assertExpectedRevision(current.revision, expectedRevision);
+    assertFourEyes(user, [current.createdBy, current.updatedBy, ...(current.authors ?? [])]);
+    const validated = await this.writeCategory(code, { status: 'VALIDE_UAR', validatedBy: user.id, validatedAt: new Date() }, 'validateCategory');
+    await this.seal('CATEGORIE_VEHICULE_VALIDEE', code, user, { label: current.label, revision: current.revision, authors: current.authors ?? [current.createdBy] });
+    return validated;
   }
 
   private writeCategory(
     code: string,
-    patch: { label?: string; status: VehicleCategoryStatus; updatedBy?: string; validatedBy: string | null; validatedAt: Date | null },
+    patch: { label?: string; status: VehicleCategoryStatus; updatedBy?: string; validatedBy: string | null; validatedAt: Date | null; authors?: string[]; revision?: number },
     scope: string,
   ): Promise<VehicleCategoryView> {
     return withDegradedFallback(

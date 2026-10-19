@@ -115,8 +115,8 @@ describe('ConventionReferentialService (mode dégradé)', () => {
       expect(confirmed).toMatchObject({ status: 'CONFIRME', date: '2026-03-21', sourceRef: 'Communiqué MAR 2026-03', confirmedBy: 'uar-1' });
       expect(await service.extraHolidays('2026-03-01', '2026-03-31')).toEqual(['2026-03-21']);
 
-      await expect(service.updateHoliday(h.id, { date: '2026-03-22' })).rejects.toMatchObject({ response: { code: 'CONFLICT' } });
-      await expect(service.removeHoliday(h.id)).rejects.toMatchObject({ response: { code: 'CONFLICT' } });
+      await expect(service.updateHoliday(h.id, { date: '2026-03-22' }, operateur)).rejects.toMatchObject({ response: { code: 'CONFLICT' } });
+      await expect(service.removeHoliday(h.id, operateur)).rejects.toMatchObject({ response: { code: 'CONFLICT' } });
     });
 
     it('refuse un doublon (date, kind) et une date impossible', async () => {
@@ -147,8 +147,58 @@ describe('ConventionReferentialService (mode dégradé)', () => {
 
     it('un férié prévisionnel se supprime', async () => {
       const h = await service.createHoliday({ date: '2026-08-26', kind: 'MAWLID_ENNABAOUI' }, operateur);
-      await service.removeHoliday(h.id);
+      await service.removeHoliday(h.id, operateur);
       expect(await service.listHolidays(2026)).toEqual([]);
+    });
+  });
+
+  describe('SEC-30 — quatre yeux sur l’historique complet des auteurs, révision validée, journal', () => {
+    let ledgerAppend: jest.Mock;
+
+    beforeEach(() => {
+      ledgerAppend = jest.fn(async () => ({}));
+      service = new ConventionReferentialService(throwingRepo<MobileHoliday>(), throwingRepo<ConstatCircumstance>(), throwingRepo<OppositionMotif>(), { append: ledgerAppend } as never);
+    });
+
+    it('un auteur ne peut pas valider une valeur qu’il a modifiée, même si un tiers l’a modifiée ensuite', async () => {
+      const auteur = user('uar-auteur', 'ADMIN_UAR');
+      await service.createMotif({ code: 'MONTANT_CONTESTE', label: 'Montant contesté' }, operateur);
+      await service.updateMotif('MONTANT_CONTESTE', { label: 'Montant contesté (v2)' }, auteur);
+      // Un tiers modifie ensuite : avant SEC-30, `updatedBy` écrasé faisait « oublier » l'auteur.
+      await service.updateMotif('MONTANT_CONTESTE', { sourceRef: 'Note UAR' }, user('op-tiers'));
+      await expect(service.validateMotif('MONTANT_CONTESTE', auteur)).rejects.toMatchObject({ status: 409, response: { code: 'FOUR_EYES' } });
+      await expect(service.validateMotif('MONTANT_CONTESTE', adminUar)).resolves.toMatchObject({ status: 'VALIDE_UAR' });
+    });
+
+    it('même règle pour les circonstances du constat', async () => {
+      const auteur = user('uar-auteur', 'ADMIN_UAR');
+      await service.updateCircumstance(3, { labelFr: 'Libellé A' }, auteur);
+      await service.updateCircumstance(3, { labelAr: 'تسمية' }, user('op-tiers'));
+      await expect(service.validateCircumstance(3, auteur)).rejects.toMatchObject({ response: { code: 'FOUR_EYES' } });
+    });
+
+    it('la validation porte sur la révision lue : 409 REVISION_PERIMEE si la valeur a changé depuis', async () => {
+      await service.createMotif({ code: 'REV', label: 'v1' }, operateur);
+      const lu = (await service.listMotifs()).find((m) => m.code === 'REV')!.revision;
+      expect(lu).toBe(1);
+      await service.updateMotif('REV', { label: 'v2 (modifiée après lecture)' }, user('op-2'));
+      await expect(service.validateMotif('REV', adminUar, lu)).rejects.toMatchObject({ status: 409, response: { code: 'REVISION_PERIMEE' } });
+      await expect(service.validateMotif('REV', adminUar, 2)).resolves.toMatchObject({ status: 'VALIDE_UAR' });
+    });
+
+    it('un férié ne peut pas être créé et confirmé par la même personne', async () => {
+      const h = await service.createHoliday({ date: '2026-06-16', kind: 'AWAL_MOHARRAM' }, operateur);
+      await expect(service.confirmHoliday(h.id, { sourceRef: 'Communiqué' }, operateur)).rejects.toMatchObject({ status: 409, response: { code: 'FOUR_EYES' } });
+      await expect(service.confirmHoliday(h.id, { sourceRef: 'Communiqué' }, adminUar)).resolves.toMatchObject({ status: 'CONFIRME' });
+    });
+
+    it('chaque modification et chaque validation est scellée au journal', async () => {
+      await service.createMotif({ code: 'J1', label: 'x' }, operateur);
+      await service.validateMotif('J1', adminUar);
+      const h = await service.createHoliday({ date: '2026-07-20', kind: 'ACHOURA' }, operateur);
+      await service.updateHoliday(h.id, { date: '2026-07-21' }, user('op-2'));
+      expect(ledgerAppend.mock.calls.map((c) => c[0])).toEqual(['REFERENTIEL_MOTIF_SAISI', 'REFERENTIEL_MOTIF_VALIDE', 'REFERENTIEL_FERIE_SAISI', 'REFERENTIEL_FERIE_MODIFIE']);
+      expect(ledgerAppend).toHaveBeenCalledWith('REFERENTIEL_MOTIF_VALIDE', 'J1', 'uar-1', expect.any(String));
     });
   });
 });

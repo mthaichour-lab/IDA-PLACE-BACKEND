@@ -15,7 +15,13 @@ export function assertIsoDate(value: string, field: string): void {
   }
 }
 
-/** Règle des quatre yeux (décision PO, règles transverses) : le validateur n'est l'auteur d'aucune saisie de la valeur. */
+/**
+ * Règle des quatre yeux (décision PO, règles transverses) : le validateur n'est
+ * l'auteur d'aucune saisie de la valeur. SEC-30 : `authors` doit contenir
+ * l'historique COMPLET des auteurs (voir `withAuthor`), pas seulement le
+ * dernier — sinon un auteur faisait modifier un champ par un tiers (qui
+ * écrasait `updatedBy`) puis validait lui-même.
+ */
 export function assertFourEyes(user: AuthenticatedUser, authors: Array<string | undefined>): void {
   if (authors.includes(user.id)) {
     throw new ConflictException({
@@ -49,4 +55,19 @@ export function populationInvalidReason(wilayaCode: string, referenceYear: numbe
     }
   }
   return undefined;
+}
+
+/** SEC-30 : ajoute un auteur à l'historique (sans doublon, jamais d'effacement). */
+export function withAuthor(authors: readonly string[] | undefined | null, userId: string): string[] {
+  return [...new Set([...(authors ?? []), userId])];
+}
+
+/** SEC-30 : la validation porte sur la révision lue par le valideur (409 si la valeur a changé depuis). */
+export function assertExpectedRevision(current: number | undefined, expected: number | undefined): void {
+  if (expected !== undefined && expected !== (current ?? 1)) {
+    throw new ConflictException({
+      code: 'REVISION_PERIMEE',
+      message: `La valeur a été modifiée depuis votre lecture (révision ${current ?? 1}, vous validiez la révision ${expected}) : relisez-la avant de valider.`,
+    });
+  }
 }

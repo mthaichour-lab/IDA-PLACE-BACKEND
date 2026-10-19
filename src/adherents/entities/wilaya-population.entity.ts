@@ -27,6 +27,13 @@ export class WilayaPopulation {
   @Property()
   createdBy!: string;
 
+  /** SEC-30 : dernier auteur d'une correction et historique des auteurs (trace, en plus du journal scellé). */
+  @Property({ nullable: true })
+  updatedBy?: string;
+
+  @Property({ type: 'text[]', nullable: true })
+  authors?: string[];
+
   @Property()
   createdAt: Date = new Date();
 }
