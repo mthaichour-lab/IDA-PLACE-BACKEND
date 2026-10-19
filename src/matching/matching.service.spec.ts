@@ -145,12 +145,12 @@ describe('MatchingService — SEC-03 (seuil, compagnie désignée, masquage)', (
 
   it('la ligne de A est appariée à SAA (désignée), jamais à CASH malgré l’e-constat commun', async () => {
     const { items } = await service.queue({ page: 1, pageSize: 100 } as never);
-    expect(items.find((i) => i.refA === 'EC-MA')).toMatchObject({ companyB: 'SAA', level: 'MANUEL', status: 'A_CONFIRMER' });
+    expect(items.find((i) => i.refA === 'EC-MA' && i.companyA === 'CAAT')).toMatchObject({ companyB: 'SAA', level: 'MANUEL', status: 'A_CONFIRMER' });
   });
 
   it('CAAT lit la file : aucun champ nominatif de SAA tant que la paire n’est pas confirmée, ni l’id de son dossier', async () => {
     const { items } = await service.queue({ page: 1, pageSize: 100 } as never, caat);
-    const row = items.find((i) => i.refA === 'EC-MA')!;
+    const row = items.find((i) => i.refA === 'EC-MA' && i.companyA === 'CAAT')!;
     expect(row).toMatchObject({ masked: true, plateB: '••••', policeB: '••••', assureBIdentite: '••••', assureAIdentite: 'Assuré CAAT' });
     expect(JSON.stringify(items)).not.toContain('Assuré SAA');
     const detail = await service.getItem(row.id, caat);
@@ -160,7 +160,7 @@ describe('MatchingService — SEC-03 (seuil, compagnie désignée, masquage)', (
 
   it('après confirmation, les champs de la contrepartie sont publiés', async () => {
     const { items } = await service.queue({ page: 1, pageSize: 100 } as never, caat);
-    const row = items.find((i) => i.refA === 'EC-MA')!;
+    const row = items.find((i) => i.refA === 'EC-MA' && i.companyA === 'CAAT')!;
     await service.decide(row.id, { action: 'confirm' }, 'Correspondant CAAT', caat);
     const detail = await service.getItem(row.id, caat);
     expect(detail).toMatchObject({ assureBIdentite: 'Assuré SAA', claimBId: 'clm-mb' });

@@ -73,6 +73,13 @@ function toClaimView(c: Claim): ClaimViewDto {
   };
 }
 
+/** SEC-26 : champs nominatifs de la compagnie déclarante masqués pour une autre compagnie (voir `projectForUser`). */
+export const MASKED_VALUE = '••••';
+function maskForeignClaim(c: ClaimViewDto): ClaimViewDto {
+  const mask = (v: string | undefined) => (v === undefined ? v : MASKED_VALUE);
+  return { ...c, plateA: mask(c.plateA), policeA: mask(c.policeA), assureIdentite: mask(c.assureIdentite), gpsLat: undefined, gpsLng: undefined, masked: true };
+}
+
 /** `null` (effacement) devient une absence de valeur, comme pour un dossier jamais renseigné. */
 function art14View(f: ClaimArt14Fields): Partial<ClaimViewDto> {
   return Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v ?? undefined])) as Partial<ClaimViewDto>;
@@ -199,7 +206,7 @@ export class ClaimsService {
     const tenant = user ? resolveTenantFilter(user) : undefined;
     const page = Math.max(1, query.page ?? 1);
     const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
-    return withDegradedFallback(
+    const result = await withDegradedFallback(
       'ClaimsService.list',
       async () => {
         const and: FilterQuery<Claim>[] = [];
@@ -221,6 +228,31 @@ export class ClaimsService {
         return paginateArray(rows, page, pageSize);
       },
     );
+    result.items = await this.projectForUser(result.items, user);
+    return result;
+  }
+
+  /**
+   * SEC-26/SEC-03 — minimisation : un rôle compagnie voit les dossiers où
+   * elle est partie adverse déclarée, mais les champs nominatifs d'un dossier
+   * d'une AUTRE compagnie (son assuré, sa plaque, sa police, la position GPS)
+   * ne lui sont publiés que si un dossier commun confirmé l'exige :
+   * appariement confirmé (AUTO_CONFIRME / CONFIRME_MANUEL) où elle est partie,
+   * ou recours ouvert entre les deux compagnies sur ce dossier. Sinon
+   * « •••• » et `masked: true`. Même règle que la file d'appariement.
+   */
+  private async projectForUser(views: ClaimViewDto[], user?: AuthenticatedUser): Promise<ClaimViewDto[]> {
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    if (!tenant) return views;
+    const foreign = views.filter((v) => v.company !== tenant).map((v) => v.id);
+    if (foreign.length === 0) return views;
+    const disclosed = await this.matching.disclosedClaimIds(foreign, tenant);
+    if (foreign.some((id) => !disclosed.has(id))) {
+      for (const r of await this.recours.listAll()) {
+        if (foreign.includes(r.claimId) && (r.from === tenant || r.to === tenant)) disclosed.add(r.claimId);
+      }
+    }
+    return views.map((v) => (v.company === tenant || disclosed.has(v.id) ? v : maskForeignClaim(v)));
   }
 
   /**
@@ -340,7 +372,8 @@ export class ClaimsService {
     if (!this.visibleToUser(view, user)) {
       throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Accès hors périmètre de la compagnie.' });
     }
-    return view;
+    const [projected] = await this.projectForUser([view], user);
+    return projected;
   }
 
   columns() {

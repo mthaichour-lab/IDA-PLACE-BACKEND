@@ -20,7 +20,7 @@ import {
 } from './dto/matching.dto';
 import { MatchLevel, MatchQueueItem, MatchStatus } from './entities/match-queue-item.entity';
 import { compactResponsabilite, computeDivergence, withTauxSelonBareme } from './matching.bareme';
-import { projectForViewer } from './matching.projection';
+import { isDisclosed, projectForViewer } from './matching.projection';
 import { levelForScore, MatchLevelThresholds, MatchScoreResult } from './matching.scoring';
 import { CandidateSelection, MatchCandidateIndex, matchKeysFor, NON_INDEXED_MAX_SCORE, selectBestCandidate } from './matching.selection';
 import { ClaimMatchInput, MatchCandidateSource } from './matching.types';
@@ -293,6 +293,39 @@ export class MatchingService {
           .filter((r) => !!r.declBId)
           .map((r) => ({ declAId: r.declAId, declBId: r.declBId as string, score: r.score, status: r.status })),
     );
+  }
+
+  /**
+   * SEC-03/SEC-26 — parmi `claimIds`, dossiers appariés de manière confirmée
+   * (AUTO_CONFIRME ou CONFIRME_MANUEL) dans une paire où `tenant` est
+   * partie : leurs champs nominatifs peuvent être publiés à `tenant`
+   * (`ClaimsService`, lecture d'un dossier d'une autre compagnie).
+   */
+  async disclosedClaimIds(claimIds: string[], tenant: string): Promise<Set<string>> {
+    if (claimIds.length === 0) return new Set();
+    const wanted = new Set(claimIds);
+    const disclosedStatuses = [MatchStatus.AUTO_CONFIRME, MatchStatus.CONFIRME_MANUEL];
+    const pairs = await withDegradedFallback<Array<{ declAId: string; declBId?: string }>>(
+      'MatchingService.disclosedClaimIds',
+      async () =>
+        this.repo.find({
+          $and: [
+            { status: { $in: disclosedStatuses } },
+            { $or: [{ declAId: { $in: claimIds } }, { declBId: { $in: claimIds } }] },
+            { $or: [{ companyA: tenant }, { companyB: tenant }] },
+          ],
+        }),
+      () =>
+        this.memory.filter(
+          (r) => isDisclosed(r.status) && (wanted.has(r.declAId) || (!!r.declBId && wanted.has(r.declBId))) && (r.companyA === tenant || r.companyB === tenant),
+        ),
+    );
+    const out = new Set<string>();
+    for (const p of pairs) {
+      if (wanted.has(p.declAId)) out.add(p.declAId);
+      if (p.declBId && wanted.has(p.declBId)) out.add(p.declBId);
+    }
+    return out;
   }
 
   /** SEC-13 : compteurs calculés en base (COUNT), filtre tenant compris. */

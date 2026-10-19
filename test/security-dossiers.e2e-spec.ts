@@ -162,6 +162,52 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-21 — journal des actions suspectes', () => {
+    it.each(['CORRESPONDANT_IDA', 'TRESORIER'] as const)('%s : GET /fraud/actions refusé (403)', async (role) => {
+      await http().get('/api/v1/fraud/actions').set('x-dev-user', companyUser(role, 'CAAT')).expect(403);
+    });
+
+    it.each(['OPERATEUR_PLACE', 'AUDITEUR_CSA'])('%s (rôle place) : accès autorisé', async (role) => {
+      await http().get('/api/v1/fraud/actions').set('x-dev-user', role).expect(200);
+    });
+  });
+
+  describe('SEC-26 — lectures minimisées pour les rôles compagnie', () => {
+    it('GET /metering/place-summary/:period : réservé aux rôles place', async () => {
+      await http().get('/api/v1/metering/place-summary/2026-09').set('x-dev-user', companyUser('TRESORIER', 'CAAT')).expect(403);
+      await http().get('/api/v1/metering/place-summary/2026-09').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+    });
+
+    it('GET /monitoring/scores : rang, note et score seulement pour les autres compagnies', async () => {
+      await http()
+        .post('/api/v1/claims/import')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
+        .attach('file', csvFile(csvRow({ numEconstat: 'E2E-SEC26-MON', compagnieA: 'SAA', compagnieB: 'CAAT' })), 'm.csv')
+        .expect(201);
+      const res = await http().get('/api/v1/monitoring/scores').set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      const saa = res.body.companies.find((c: { code: string }) => c.code === 'SAA');
+      expect(saa).toBeDefined();
+      expect(Object.keys(saa).sort()).toEqual(['code', 'grade', 'rank', 'score']);
+      const place = await http().get('/api/v1/monitoring/scores').set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(place.body.companies.find((c: { code: string }) => c.code === 'SAA')).toHaveProperty('profile');
+    });
+
+    it('GET /claims : un dossier de SAA qui désigne CAAT est visible de CAAT mais sans données nominatives tant qu’aucun dossier commun n’est confirmé', async () => {
+      await http()
+        .post('/api/v1/claims/import')
+        .set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA'))
+        .attach('file', csvFile(csvRow({ numEconstat: 'E2E-SEC26-CLM', compagnieA: 'SAA', compagnieB: 'CAAT', immatriculationA: '31999026', numPoliceA: 'POL-SAA-26', assureAIdentite: 'Nom SAA 26' })), 'c.csv')
+        .expect(201);
+      const list = await http().get('/api/v1/claims').query({ pageSize: 100 }).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      const claim = list.body.items.find((c: { numEconstat: string }) => c.numEconstat === 'E2E-SEC26-CLM');
+      expect(claim).toMatchObject({ company: 'SAA', masked: true, plateA: '••••', policeA: '••••', assureIdentite: '••••' });
+      const detail = await http().get(`/api/v1/claims/${claim.id}`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CAAT')).expect(200);
+      expect(JSON.stringify(detail.body)).not.toMatch(/Nom SAA 26|POL-SAA-26|31999026/);
+      const own = await http().get(`/api/v1/claims/${claim.id}`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'SAA')).expect(200);
+      expect(own.body).toMatchObject({ assureIdentite: 'Nom SAA 26' });
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

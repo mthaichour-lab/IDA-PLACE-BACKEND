@@ -26,6 +26,7 @@ import {
   FraudClaimInput,
   MatchedPairAmounts,
 } from './fraud.detection';
+import { projectFraudCase } from './fraud.projection';
 
 type MemoryFraudCase = FraudCaseViewDto & { dedupeKey: string };
 
@@ -215,7 +216,7 @@ export class FraudService implements OnApplicationBootstrap {
     await this.whenIdle();
     const tenant = user ? resolveTenantFilter(user) : undefined;
     const { rows, total } = await this.readCases(tenant, { page, pageSize });
-    const result = new PaginatedResult(await this.withPlates(rows), total, Math.max(1, page));
+    const result = new PaginatedResult(await this.project(rows, tenant), total, Math.max(1, page));
     return Object.assign(result, { analysis: this.analysisStatus() });
   }
 
@@ -262,11 +263,15 @@ export class FraudService implements OnApplicationBootstrap {
     );
   }
 
-  /** `plateA` (jointure réelle sur le premier dossier lié — jamais fabriquée), en ne lisant que les dossiers des cas renvoyés. */
-  private async withPlates(rows: FraudCaseViewDto[]): Promise<FraudCaseViewDto[]> {
+  /**
+   * `plateA` (jointure réelle sur le premier dossier lié — jamais fabriquée),
+   * en ne lisant que les dossiers des cas renvoyés ; SEC-26 : projection par
+   * tenant (ses dossiers + nombre de contreparties) pour un rôle compagnie.
+   */
+  private async project(rows: FraudCaseViewDto[], tenant: string | undefined): Promise<FraudCaseViewDto[]> {
     const summaries = await this.claims.summariesFor([...new Set(rows.flatMap((r) => r.claimIds))]);
-    const plateByClaimId = new Map(summaries.map((c) => [c.id, c.plateA]));
-    return rows.map((r) => ({ ...r, plateA: r.claimIds.map((id) => plateByClaimId.get(id)).find((p) => p) }));
+    const byId = new Map(summaries.map((c) => [c.id, { company: c.company, plateA: c.plateA }]));
+    return rows.map((r) => projectFraudCase(r, tenant, byId));
   }
 
   /**
@@ -278,7 +283,7 @@ export class FraudService implements OnApplicationBootstrap {
   async signalsByAdherent(company: string, user: AuthenticatedUser): Promise<FraudSignalGroupDto[]> {
     assertCompanyAccess(user, company);
     await this.whenIdle();
-    const involving = await this.withPlates((await this.readCases(company)).rows);
+    const involving = await this.project((await this.readCases(company)).rows, resolveTenantFilter(user));
 
     const byGroup = new Map<string, FraudCaseViewDto[]>();
     for (const c of involving) {

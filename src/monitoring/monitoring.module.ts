@@ -42,8 +42,8 @@ class MonitoringController {
 
   @Get('scores')
   @ApiOperation({ summary: 'Scoring composite de conformité par compagnie — toutes composantes réelles (délais, silences, oppositions, qualité données, forclusions, demandes tardives, pénalités), hypothèses documentées (voir notes). Volontairement place-wide (classement documenté, voir doc de classe).' })
-  scores() {
-    return this.service.scores();
+  scores(@CurrentUser() user: AuthenticatedUser) {
+    return this.service.scores(user);
   }
 
   @Get('trajectories')

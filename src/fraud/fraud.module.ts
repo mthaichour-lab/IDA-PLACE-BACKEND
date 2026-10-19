@@ -12,6 +12,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { FraudAction } from './entities/fraud-action.entity';
 import { FraudCase } from './entities/fraud-case.entity';
 import { FraudService } from './fraud.service';
+import { PlaceOnlyGuard } from '../cockpit/place-only.guard';
 
 /**
  * FraudModule — écran 9 "Anti-fraude", B.2/B.9. Détection RÉELLE (5 règles,
@@ -23,13 +24,10 @@ import { FraudService } from './fraud.service';
  * désormais scopées (`FraudCase.companiesInvolved`, même principe que
  * `from`/`to` ailleurs — un cas reste visible à une compagnie-partie même
  * s'il nomme aussi une autre compagnie, car la détection de fraude est par
- * nature inter-compagnies, voir fraud.detection.ts). `actions()`
- * (journal des actions suspectes de PLACE) reste volontairement NON
- * scopée : `FraudAction.actor` est soit un identifiant utilisateur (décision
- * humaine), soit un code compagnie (transmission tardive) — pas un champ
- * compagnie fiable pour filtrer, et ce journal est par nature un audit
- * trail de place (même esprit que LedgerModule) — CONFIRMÉ volontairement
- * non scopé par le Product Owner le 2026-10-18 (QUESTIONS_UAR.md §13).
+ * nature inter-compagnies, voir fraud.detection.ts) ; SEC-26 : une
+ * compagnie n'y reçoit que ses dossiers et le nombre de contreparties.
+ * `actions()` (journal des actions suspectes de PLACE, `actor` à typage
+ * mixte — QUESTIONS_UAR.md §13) : SEC-21, réservé aux rôles place.
  */
 @ApiTags('fraud')
 @ApiBearerAuth()
@@ -44,8 +42,12 @@ class FraudController {
     return this.service.cases(q.page, q.pageSize, user);
   }
 
+  // SEC-21 : audit trail de place (e-mails/noms d'agents, retards de
+  // transmission de toutes les compagnies) — réservé aux rôles place, 403
+  // pour un rôle compagnie (décision PO 2026-10-18 : « audit trail de place »).
   @Get('actions')
-  @ApiOperation({ summary: 'Journal des actions suspectes de place (réel : appariement manuel/déliage/reliage observés sur MatchingModule, transmissions tardives), paginé (6/p) — volontairement place-wide, voir doc de classe' })
+  @UseGuards(PlaceOnlyGuard)
+  @ApiOperation({ summary: 'Journal des actions suspectes de place (appariement manuel/déliage/reliage, transmissions tardives), paginé (6/p) — réservé aux rôles place (SEC-21)' })
   actions(@Query() q: PaginationQueryDto) {
     return this.service.actions(q.page, q.pageSize);
   }

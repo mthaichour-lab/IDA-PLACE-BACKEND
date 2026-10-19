@@ -4,7 +4,7 @@ import { AggregateCache } from '../stats/aggregate-cache';
 import { ConfigService } from '@nestjs/config';
 import { PaginatedResult, paginateArray } from '../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
-import { assertCompanyAccess } from '../common/rbac/tenant-scope';
+import { assertCompanyAccess, resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { ClaimsService } from '../claims/claims.service';
 import { CommissionService } from '../commission/commission.service';
 import { MatchingService } from '../matching/matching.service';
@@ -49,9 +49,12 @@ export interface MonitoringJourneyDto {
   requestSentAt: string;
 }
 
+/** SEC-26 : ligne de classement d'une AUTRE compagnie vue par un rôle compagnie (ni `details` ni `profile`). */
+export type MonitoringCompanyRanking = Pick<MonitoringCompanyResult, 'code' | 'score' | 'grade' | 'rank'>;
+
 export interface MonitoringScoresDto {
   weights: typeof MONITORING_WEIGHTS;
-  companies: MonitoringCompanyResult[];
+  companies: Array<MonitoringCompanyResult | MonitoringCompanyRanking>;
   notes: string[];
   silenceDays: number;
   oppositionAlertThresholdPct: number;
@@ -103,9 +106,21 @@ export class MonitoringService {
     );
   }
 
-  /** SEC-13 : classement place-entière mis en cache (Redis si activé) + un seul calcul simultané. */
-  scores(): Promise<MonitoringScoresDto> {
-    return this.aggregates.get('monitoring:scores', MONITORING_CACHE_TTL_SECONDS, () => this.computeScores());
+  /**
+   * SEC-13 : classement place-entière mis en cache (Redis si activé) + un
+   * seul calcul simultané. SEC-26 : le classement reste visible de tous
+   * (transparence documentée, écran 8), mais un rôle compagnie ne reçoit le
+   * détail (`details`, `profile` brut, effectifs) que pour SA compagnie ;
+   * pour les autres : code, rang, note et score seulement.
+   */
+  async scores(user?: AuthenticatedUser): Promise<MonitoringScoresDto> {
+    const all = await this.aggregates.get('monitoring:scores', MONITORING_CACHE_TTL_SECONDS, () => this.computeScores());
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    if (!tenant) return all;
+    return {
+      ...all,
+      companies: all.companies.map((c) => (c.code === tenant ? c : { code: c.code, score: c.score, grade: c.grade, rank: c.rank })),
+    };
   }
 
   private async computeScores(): Promise<MonitoringScoresDto> {

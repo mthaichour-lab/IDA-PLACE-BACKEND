@@ -75,6 +75,8 @@ export class ClaimViewDto {
   @ApiPropertyOptional() vehicleCategoryB?: string;
   @ApiPropertyOptional({ description: 'Responsabilité déclarée A (%), colonne 32 du fichier importé' }) responsabiliteDeclareeA?: number;
   @ApiPropertyOptional({ description: 'Responsabilité déclarée B (%), colonne 33 du fichier importé' }) responsabiliteDeclareeB?: number;
+  /** Additif (SEC-26) : vrai si les champs nominatifs de la compagnie déclarante sont masqués (« •••• ») pour le lecteur. */
+  @ApiPropertyOptional() masked?: boolean;
 }
 
 /**

@@ -18,7 +18,8 @@ function claimEntity(i: number): Claim {
 describe('SEC-13 — filtre tenant et pagination en base (avant toute limite)', () => {
   it('GET /claims : le filtre compagnie, les filtres et la page sont transmis à la requête', async () => {
     const findAndCount = jest.fn(async () => [[claimEntity(1)], 7001]);
-    const service = new ClaimsService({ findAndCount } as never, undefined as never, undefined as never, undefined as never, undefined as never, undefined as never);
+    const matching = { disclosedClaimIds: jest.fn(async () => new Set<string>()) };
+    const service = new ClaimsService({ findAndCount } as never, undefined as never, matching as never, undefined as never, { listAll: async () => [] } as never, undefined as never);
     const page = await service.list({ page: 3, pageSize: 20, state: 'A_APPARIER' }, caat);
     expect(findAndCount).toHaveBeenCalledWith(
       { $and: [{ $or: [{ company: 'CAAT' }, { counterpartyCompany: 'CAAT' }] }, { state: 'A_APPARIER' }] },

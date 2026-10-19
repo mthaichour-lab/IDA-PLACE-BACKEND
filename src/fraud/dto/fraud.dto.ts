@@ -22,6 +22,10 @@ export class FraudCaseViewDto {
   @ApiProperty() detectedAt!: string;
   /** Plaque (`Claim.plateA`) du premier dossier lié — additif, écran 9 guide illustré (colonne "Plaque"). `undefined` si aucun dossier lié n'a de plaque renseignée. */
   @ApiPropertyOptional() plateA?: string;
+  /** Additif (SEC-26), rôle compagnie seulement : nombre de dossiers d'autres compagnies dans le cas (leurs id ne sont pas publiés). */
+  @ApiPropertyOptional() counterpartClaims?: number;
+  /** Additif (SEC-26), rôle compagnie seulement : nombre d'autres compagnies impliquées (leurs codes ne sont pas publiés). */
+  @ApiPropertyOptional() counterpartCompanies?: number;
 }
 
 /**
