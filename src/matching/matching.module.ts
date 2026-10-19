@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AdherentsModule } from '../adherents/adherents.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { MatchingController } from './matching.controller';
+import { MatchDecision } from './entities/match-decision.entity';
 import { MatchQueueItem } from './entities/match-queue-item.entity';
 import { MatchingService } from './matching.service';
 
@@ -13,7 +14,7 @@ import { MatchingService } from './matching.service';
  */
 @Module({
   // AdherentsModule : barème Art. 14 publié (taux selon barème, écran 2).
-  imports: [MikroOrmModule.forFeature([MatchQueueItem]), RealtimeModule, AdherentsModule],
+  imports: [MikroOrmModule.forFeature([MatchQueueItem, MatchDecision]), RealtimeModule, AdherentsModule],
   controllers: [MatchingController],
   providers: [MatchingService],
   exports: [MatchingService],

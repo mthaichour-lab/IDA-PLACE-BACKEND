@@ -213,3 +213,70 @@ describe('MatchingService — SEC-07 (diffusion temps réel ciblée et minimale)
     expect(internal).toHaveBeenCalledWith(expect.objectContaining({ decision: expect.objectContaining({ decidedBy: 'Agent Opérateur', status: 'CONFIRME_MANUEL' }) }));
   });
 });
+
+describe('MatchingService — SEC-28 (historique et re-décision motivée)', () => {
+  let service: MatchingService;
+  const caat: AuthenticatedUser = { id: 'u-caat', name: 'Agent CAAT', email: 'a@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', privileges: ['matchDecide'] };
+  const saa: AuthenticatedUser = { id: 'u-saa', name: 'Agent SAA', email: 'a@saa.dz', role: 'CORRESPONDANT_IDA', companyId: 'SAA', privileges: ['matchDecide'] };
+  const a: ClaimMatchInput = { ...declA, id: '11111111-1111-4111-8111-111111111111', numEconstat: 'EC-H' };
+  const b: ClaimMatchInput = { ...declB, id: '22222222-2222-4222-8222-222222222222', numEconstat: 'EC-H' };
+  const other: ClaimMatchInput = { id: '33333333-3333-4333-8333-333333333333', numEconstat: 'EC-O', company: 'CASH', plateA: '999' };
+
+  beforeEach(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MatchingService,
+        { provide: getRepositoryToken(MatchQueueItem), useFactory: throwingRepo },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        { provide: RealtimeGateway, useValue: { emitEvent: jest.fn() } },
+        { provide: AdherentsService, useValue: { publishedBaremeCases: async () => [], assertCompanyActiveFor: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(MatchingService);
+    await service.ingestClaims([a, b, other], { byKeys: async () => [a, b, other], all: async () => [a, b, other] });
+  });
+
+  async function rowOf(companyA: string) {
+    const { items } = await service.queue({ page: 1, pageSize: 100 } as never);
+    return items.find((i) => i.refA === 'EC-H' && i.companyA === companyA)!;
+  }
+
+  it('chaque décision est historisée (auteur, rôle, compagnie, état avant/après, motif)', async () => {
+    const ab = await rowOf('CAAT');
+    await service.decide(ab.id, { action: 'confirm' }, 'Agent CAAT', caat);
+    const history = await service.decisionHistory(ab.id, caat);
+    expect(history).toEqual([
+      expect.objectContaining({ action: 'confirm', previousStatus: 'AUTO_CONFIRME', newStatus: 'CONFIRME_MANUEL', decidedBy: 'Agent CAAT', decidedByRole: 'CORRESPONDANT_IDA', decidedByCompany: 'CAAT' }),
+    ]);
+  });
+
+  it('B ne peut défaire la décision de A qu’avec un motif, et la re-décision est historisée', async () => {
+    const ab = await rowOf('CAAT');
+    await service.decide(ab.id, { action: 'confirm' }, 'Agent CAAT', caat);
+    await expect(service.decide(ab.id, { action: 'reject' }, 'Agent SAA', saa)).rejects.toMatchObject({ status: 400, response: { code: 'MOTIF_REQUIS' } });
+    await service.decide(ab.id, { action: 'reject', reason: 'Pas le même sinistre' }, 'Agent SAA', saa);
+    const history = await service.decisionHistory(ab.id, saa);
+    expect(history.map((h) => [h.action, h.previousStatus, h.newStatus])).toEqual([
+      ['confirm', 'AUTO_CONFIRME', 'CONFIRME_MANUEL'],
+      ['reject', 'CONFIRME_MANUEL', 'REJETE'],
+    ]);
+    // Le nom de l'agent de CAAT n'est pas publié à SAA (SEC-26) ; son propre nom l'est.
+    expect(history[0].decidedBy).toBe('Compagnie CAAT');
+    expect(history[1]).toMatchObject({ decidedBy: 'Agent SAA', reason: 'Pas le même sinistre' });
+    expect((await service.queue({ page: 1, pageSize: 100 } as never, caat)).items.find((i) => i.id === ab.id)?.confirmedBy).toBe('Compagnie SAA');
+  });
+
+  it('link : linkDeclId obligatoire, existant, d’une autre compagnie que A', async () => {
+    const ab = await rowOf('CAAT');
+    await expect(service.decide(ab.id, { action: 'link' }, 'Agent CAAT', caat)).rejects.toMatchObject({ response: { code: 'LIEN_REQUIS' } });
+    await expect(service.decide(ab.id, { action: 'link', linkDeclId: '99999999-9999-4999-8999-999999999999' }, 'Agent CAAT', caat)).rejects.toMatchObject({ status: 404 });
+    await expect(service.decide(ab.id, { action: 'link', linkDeclId: a.id }, 'Agent CAAT', caat)).rejects.toMatchObject({ response: { code: 'LIEN_INVALIDE' } });
+    await expect(service.decide(ab.id, { action: 'link', linkDeclId: other.id }, 'Agent CAAT', caat)).resolves.toMatchObject({ status: 'CONFIRME_MANUEL' });
+  });
+
+  it('historique : même périmètre que le détail (403 pour une compagnie tierce)', async () => {
+    const ab = await rowOf('CAAT');
+    const cash: AuthenticatedUser = { ...caat, companyId: 'CASH' };
+    await expect(service.decisionHistory(ab.id, cash)).rejects.toMatchObject({ status: 403 });
+  });
+});

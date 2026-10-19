@@ -1,7 +1,7 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { FilterQuery } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
@@ -12,6 +12,7 @@ import { resolveTenantFilter } from '../common/rbac/tenant-scope';
 import { PLACE_ROOM, RealtimeGateway, tenantRoom } from '../realtime/realtime.module';
 import {
   MatchDecisionDto,
+  MatchDecisionHistoryDto,
   MatchDecisionResultDto,
   MatchItemDetailDto,
   MatchQueueItemDto,
@@ -20,10 +21,27 @@ import {
 } from './dto/matching.dto';
 import { MatchLevel, MatchQueueItem, MatchStatus } from './entities/match-queue-item.entity';
 import { compactResponsabilite, computeDivergence, withTauxSelonBareme } from './matching.bareme';
-import { isDisclosed, projectForViewer } from './matching.projection';
+import { MatchDecision } from './entities/match-decision.entity';
+import { actorLabelFor, isDisclosed, PLACE_ACTOR, projectForViewer } from './matching.projection';
 import { levelForScore, MatchLevelThresholds, MatchScoreResult } from './matching.scoring';
 import { CandidateSelection, MatchCandidateIndex, matchKeysFor, NON_INDEXED_MAX_SCORE, selectBestCandidate } from './matching.selection';
 import { ClaimMatchInput, MatchCandidateSource } from './matching.types';
+
+/** SEC-28 — entrée d'historique (forme commune base / repli mémoire). */
+interface MatchDecisionHistoryRow {
+  id: string;
+  matchId: string;
+  action: string;
+  previousStatus: string;
+  newStatus: string;
+  reason?: string;
+  linkDeclId?: string;
+  decidedBy: string;
+  decidedById: string;
+  decidedByRole: string;
+  decidedByCompany?: string;
+  decidedAt: string;
+}
 
 /** Ligne de file en repli mémoire — forme `MatchQueueItemDto` + les id internes utiles au recalcul. */
 type MemoryMatchRow = MatchQueueItemDto & { declAId: string; declBId?: string };
@@ -61,6 +79,7 @@ function toDto(e: MatchQueueItem): MatchQueueItemDto {
     econstatShared: e.econstatShared,
     criteria: e.criteria,
     confirmedBy: e.confirmedBy,
+    confirmedByCompany: e.confirmedByCompany,
     confirmedAt: e.confirmedAt?.toISOString(),
     rejectReason: e.rejectReason,
     at: e.at.toISOString(),
@@ -116,6 +135,8 @@ function nextStatusForAction(action: MatchDecisionDto['action']): MatchStatus {
 export class MatchingService {
   /** Repli mémoire — mode dégradé (base injoignable). Persistant pour la durée du process. */
   private readonly memory: MemoryMatchRow[] = [];
+  /** SEC-28 : historique des décisions en repli mémoire. */
+  private readonly memoryDecisions: MatchDecisionHistoryRow[] = [];
   private readonly logger = new Logger('MatchingService');
   private readonly thresholds: MatchLevelThresholds;
 
@@ -349,6 +370,54 @@ export class MatchingService {
    * Lecture, puis contrôle de périmètre, puis écriture : un 404/403 levé dans
    * la closure de `withDegradedFallback` serait pris pour une panne DB.
    */
+  /**
+   * SEC-28 — déclaration à lier : elle doit figurer dans la file (404 sinon),
+   * ne pas être la déclaration elle-même, et relever d'une autre compagnie
+   * que la déclaration A (un rattachement relie deux compagnies).
+   */
+  private async assertLinkTarget(current: { declAId: string; companyA: string }, linkDeclId: string | undefined): Promise<void> {
+    if (!linkDeclId) throw new BadRequestException({ code: 'LIEN_REQUIS', message: 'action=link : linkDeclId (identifiant de la déclaration à lier) est obligatoire.' });
+    if (linkDeclId === current.declAId) throw new BadRequestException({ code: 'LIEN_INVALIDE', message: 'Une déclaration ne peut pas être liée à elle-même.' });
+    const target = await withDegradedFallback(
+      'MatchingService.assertLinkTarget',
+      async () => {
+        const e = await this.repo.findOne({ declAId: linkDeclId });
+        return e ? { companyA: e.companyA } : undefined;
+      },
+      () => this.memory.find((r) => r.declAId === linkDeclId),
+    );
+    if (!target) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Déclaration à lier introuvable.' });
+    if (target.companyA === current.companyA) {
+      throw new BadRequestException({ code: 'LIEN_INVALIDE', message: 'La déclaration liée doit relever d’une autre compagnie.' });
+    }
+  }
+
+  /** SEC-28 — historique des décisions d'une ligne (même périmètre que le détail), auteurs d'autres compagnies masqués. */
+  async decisionHistory(id: string, user?: AuthenticatedUser): Promise<MatchDecisionHistoryDto[]> {
+    await this.getItem(id, user); // 404 / 403 hors périmètre
+    const tenant = user ? resolveTenantFilter(user) : undefined;
+    const rows = await withDegradedFallback<MatchDecisionHistoryRow[]>(
+      'MatchingService.decisionHistory',
+      async () => {
+        const ents = await this.repo.getEntityManager().find(MatchDecision, { matchId: id }, { orderBy: { decidedAt: 'ASC', id: 'ASC' } });
+        return ents.map((e) => ({ ...e, reason: e.reason ?? undefined, linkDeclId: e.linkDeclId ?? undefined, decidedByCompany: e.decidedByCompany ?? undefined, decidedAt: e.decidedAt.toISOString() }));
+      },
+      () => this.memoryDecisions.filter((d) => d.matchId === id),
+    );
+    return rows.map((d) => ({
+      id: d.id,
+      action: d.action,
+      previousStatus: d.previousStatus,
+      newStatus: d.newStatus,
+      reason: d.reason,
+      linkDeclId: d.linkDeclId,
+      decidedBy: actorLabelFor(d.decidedBy, d.decidedByCompany ?? PLACE_ACTOR, tenant) ?? '',
+      decidedByRole: d.decidedByRole,
+      decidedByCompany: d.decidedByCompany,
+      decidedAt: d.decidedAt,
+    }));
+  }
+
   async decide(id: string, dto: MatchDecisionDto, decidedBy: string, user?: AuthenticatedUser): Promise<MatchDecisionResultDto> {
     const loaded = await this.loadForDecision(id);
     const current = loaded.mode === 'db' ? loaded.entity : loaded.row;
@@ -358,9 +427,29 @@ export class MatchingService {
     // ClaimsService.openRecours, un côté comme l'autre).
     await this.adherents.assertCompanyActiveFor(current.companyA, current.accidentDateA);
     if (current.companyB) await this.adherents.assertCompanyActiveFor(current.companyB, current.accidentDateB);
+    // SEC-28 : revenir sur une décision déjà prise exige un motif ; un
+    // rattachement manuel exige une déclaration valide du périmètre.
+    if (isTerminal(current.status) && !dto.reason?.trim()) {
+      throw new BadRequestException({ code: 'MOTIF_REQUIS', message: 'Cette confrontation a déjà été tranchée : une nouvelle décision doit être motivée (reason).' });
+    }
+    if (dto.action === 'link') await this.assertLinkTarget(current, dto.linkDeclId);
     const status = nextStatusForAction(dto.action);
     const symmetric = dto.action === 'confirm' || dto.action === 'reject';
     const now = new Date();
+    const actorCompany = (user ? resolveTenantFilter(user) : undefined) ?? PLACE_ACTOR;
+    const historyFor = (t: { id: string; status: string }): Omit<MatchDecisionHistoryRow, 'id'> => ({
+      matchId: t.id,
+      action: dto.action,
+      previousStatus: t.status,
+      newStatus: status,
+      reason: dto.reason?.trim() || undefined,
+      linkDeclId: dto.action === 'link' ? dto.linkDeclId : undefined,
+      decidedBy,
+      decidedById: user?.id ?? decidedBy,
+      decidedByRole: user?.role ?? 'INCONNU',
+      decidedByCompany: actorCompany === PLACE_ACTOR ? undefined : actorCompany,
+      decidedAt: now.toISOString(),
+    });
 
     let result: MatchQueueItemDto;
     let mirrorResult: MatchQueueItemDto | undefined;
@@ -369,14 +458,19 @@ export class MatchingService {
       const targets = [item];
       const mirror = symmetric && item.declBId ? await this.repo.findOne({ declAId: item.declBId, declBId: item.declAId }) : null;
       if (mirror && !isTerminal(mirror.status)) targets.push(mirror);
+      const em = this.repo.getEntityManager();
       for (const t of targets) {
+        // SEC-28 : historique écrit dans la même unité de travail que la décision.
+        const h = historyFor(t);
+        em.persist(em.create(MatchDecision, { ...h, decidedAt: now }));
         t.status = status;
         t.confirmedBy = decidedBy;
+        t.confirmedByCompany = actorCompany;
         t.confirmedAt = now;
         if (dto.action === 'reject') t.rejectReason = dto.reason;
       }
       if (dto.action === 'link' && dto.linkDeclId) item.linkedDeclId = dto.linkDeclId;
-      await this.repo.getEntityManager().flush();
+      await em.flush();
       result = toDto(item);
       if (targets.length > 1) mirrorResult = toDto(targets[1]);
     } else {
@@ -385,8 +479,10 @@ export class MatchingService {
       const mirror = symmetric && item.declBId ? this.memory.find((r) => r.declAId === item.declBId && r.declBId === item.declAId) : undefined;
       if (mirror && !isTerminal(mirror.status)) targets.push(mirror);
       for (const t of targets) {
+        this.memoryDecisions.push({ id: randomUUID(), ...historyFor(t) });
         t.status = status;
         t.confirmedBy = decidedBy;
+        t.confirmedByCompany = actorCompany;
         t.confirmedAt = now.toISOString();
         if (dto.action === 'reject') t.rejectReason = dto.reason;
       }

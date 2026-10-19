@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 import { DEFAULT_PAGE_SIZE } from '../../common/dto/pagination.dto';
 
 export const MATCH_LEVELS = ['AUTO', 'MANUEL', 'NON'] as const;
@@ -59,7 +59,10 @@ export class MatchQueueItemDto {
   @ApiProperty({ enum: MATCH_STATUSES }) status!: string;
   @ApiProperty() econstatShared!: boolean;
   @ApiProperty({ type: MatchCriteriaDto }) criteria!: MatchCriteriaDto;
+  /** Nom de l'auteur de la décision — SEC-26 : remplacé par sa compagnie (« Compagnie X » / « Opérateur de place ») pour un lecteur d'une autre compagnie. */
   @ApiPropertyOptional() confirmedBy?: string;
+  /** Additif (SEC-28) : compagnie de l'auteur de la dernière décision (`PLACE` pour un rôle place). */
+  @ApiPropertyOptional() confirmedByCompany?: string;
   @ApiPropertyOptional() confirmedAt?: string;
   @ApiPropertyOptional() rejectReason?: string;
   @ApiProperty() at!: string;
@@ -101,16 +104,32 @@ export class MatchDecisionDto {
   @IsIn(MATCH_DECISIONS as unknown as string[])
   action!: 'confirm' | 'reject' | 'complement' | 'link';
 
-  @ApiPropertyOptional()
+  /** SEC-28 : borné ; obligatoire pour une re-décision (ligne déjà tranchée). */
+  @ApiPropertyOptional({ maxLength: 500, description: 'Motif — obligatoire pour revenir sur une décision déjà prise' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   reason?: string;
 
+  /** SEC-28 : identifiant de dossier (UUID), obligatoire pour `link`, vérifié dans le périmètre de la file. */
   @ApiPropertyOptional({ description: 'Id de la déclaration à lier (action=link)' })
   @IsOptional()
-  @IsString()
-  @IsNotEmpty()
+  @IsUUID()
   linkDeclId?: string;
+}
+
+/** SEC-28 — `GET /matching/:id/decisions` : historique des décisions d'une ligne (ordre chronologique). */
+export class MatchDecisionHistoryDto {
+  @ApiProperty() id!: string;
+  @ApiProperty({ enum: MATCH_DECISIONS }) action!: string;
+  @ApiProperty({ enum: MATCH_STATUSES }) previousStatus!: string;
+  @ApiProperty({ enum: MATCH_STATUSES }) newStatus!: string;
+  @ApiPropertyOptional() reason?: string;
+  @ApiPropertyOptional() linkDeclId?: string;
+  @ApiProperty({ description: 'Auteur — masqué (« Compagnie X ») pour un lecteur d’une autre compagnie' }) decidedBy!: string;
+  @ApiProperty() decidedByRole!: string;
+  @ApiPropertyOptional() decidedByCompany?: string;
+  @ApiProperty() decidedAt!: string;
 }
 
 export class MatchDecisionResultDto {

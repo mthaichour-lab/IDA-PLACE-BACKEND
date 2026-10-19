@@ -33,7 +33,21 @@ function maskSideB<T extends MatchQueueItemDto>(row: T): T {
  * lecteur (`undefined` pour un rôle place). Le côté du lecteur reste
  * intact ; l'autre côté est masqué tant que l'appariement n'est pas confirmé.
  */
-export function projectForViewer<T extends MatchQueueItemDto>(row: T, tenant: string | undefined): T {
+/** Marqueur de `confirmedByCompany` pour une décision prise par un rôle place. */
+export const PLACE_ACTOR = 'PLACE';
+
+/**
+ * SEC-26/28 — nom de l'auteur d'une décision : publié seulement à sa propre
+ * compagnie (et aux rôles place) ; ailleurs, remplacé par sa compagnie.
+ */
+export function actorLabelFor(name: string | undefined, actorCompany: string | undefined, tenant: string | undefined): string | undefined {
+  if (!name || !tenant || actorCompany === tenant) return name;
+  if (actorCompany === PLACE_ACTOR) return 'Opérateur de place';
+  return actorCompany ? `Compagnie ${actorCompany}` : 'Agent (masqué)';
+}
+
+export function projectForViewer<T extends MatchQueueItemDto>(input: T, tenant: string | undefined): T {
+  const row = input.confirmedBy && tenant ? { ...input, confirmedBy: actorLabelFor(input.confirmedBy, input.confirmedByCompany, tenant) } : input;
   if (!tenant || isDisclosed(row.status)) return row;
   const viewerIsA = row.companyA === tenant;
   const viewerIsB = row.companyB === tenant;

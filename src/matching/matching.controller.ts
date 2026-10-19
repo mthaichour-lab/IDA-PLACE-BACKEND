@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Privileges } from '../common/decorators/privileges.decorator';
@@ -40,9 +40,15 @@ export class MatchingController {
     return this.service.getItem(id, user);
   }
 
+  @Get(':id/decisions')
+  @ApiOperation({ summary: 'SEC-28 — historique des décisions d’une ligne de confrontation (auteur, état avant/après, motif) ; auteurs d’autres compagnies masqués (B.7 : scopé par compagnie)' })
+  decisions(@Param('id', new ParseUUIDPipe()) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.service.decisionHistory(id, user);
+  }
+
   @Post(':id/decide')
   @Privileges('matchDecide')
-  @ApiOperation({ summary: 'Décision de confrontation : confirm | reject | complement | link (Art. 14, validation humaine)' })
+  @ApiOperation({ summary: 'Décision de confrontation : confirm | reject | complement | link (Art. 14, validation humaine) — SEC-28 : historisée ; revenir sur une décision exige un motif (400 MOTIF_REQUIS) ; link exige un linkDeclId valide' })
   decide(@Param('id') id: string, @Body() dto: MatchDecisionDto, @CurrentUser() user: AuthenticatedUser) {
     return this.service.decide(id, dto, user.name, user);
   }

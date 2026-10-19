@@ -80,6 +80,10 @@ export class MatchQueueItem {
   @Property({ nullable: true })
   confirmedAt?: Date;
 
+  /** SEC-28/26 : compagnie de l'auteur de la dernière décision (`PLACE` pour un rôle place) — le nom d'un agent n'est publié qu'à sa propre compagnie. */
+  @Property({ nullable: true, length: 8 })
+  confirmedByCompany?: string;
+
   @Property({ nullable: true })
   rejectReason?: string;
 

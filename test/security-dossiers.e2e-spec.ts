@@ -208,6 +208,40 @@ describe('Remédiation sécurité 2026-10-19 — dossiers, appariement, pilotage
     });
   });
 
+  describe('SEC-28 — décisions d’appariement historisées et motivées', () => {
+    it('A confirme ; B ne peut défaire qu’avec un motif ; chaque décision est historisée par partie', async () => {
+      for (const [company, other, plateA, plateB] of [
+        ['CAAT', 'SAA', '16555028', '31555028'],
+        ['SAA', 'CAAT', '31555028', '16555028'],
+      ]) {
+        await http()
+          .post('/api/v1/claims/import')
+          .set('x-dev-user', companyUser('CORRESPONDANT_IDA', company))
+          .attach('file', csvFile(csvRow({ numEconstat: 'E2E-SEC28', compagnieA: company, compagnieB: other, immatriculationA: plateA, immatriculationB: plateB })), 'd.csv')
+          .expect(201);
+      }
+      const asCaat = companyUser('CORRESPONDANT_IDA', 'CAAT');
+      const asSaa = companyUser('CORRESPONDANT_IDA', 'SAA');
+      const queue = await http().get('/api/v1/matching/queue').query({ pageSize: 100 }).set('x-dev-user', asCaat).expect(200);
+      const row = queue.body.items.find((i: { refA: string; companyA: string }) => i.refA === 'E2E-SEC28' && i.companyA === 'CAAT');
+
+      await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', asCaat).send({ action: 'confirm' }).expect(201);
+      const refused = await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', asSaa).send({ action: 'reject' }).expect(400);
+      expect(refused.body.code).toBe('MOTIF_REQUIS');
+      await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', asSaa).send({ action: 'reject', reason: 'x'.repeat(501) }).expect(400);
+      await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', asSaa).send({ action: 'link', linkDeclId: 'pas-un-uuid' }).expect(400);
+      await http().post(`/api/v1/matching/${row.id}/decide`).set('x-dev-user', asSaa).send({ action: 'reject', reason: 'Sinistre différent' }).expect(201);
+
+      const history = await http().get(`/api/v1/matching/${row.id}/decisions`).set('x-dev-user', 'OPERATEUR_PLACE').expect(200);
+      expect(history.body.map((h: { action: string; decidedByCompany: string; newStatus: string }) => [h.action, h.decidedByCompany, h.newStatus])).toEqual([
+        ['confirm', 'CAAT', 'CONFIRME_MANUEL'],
+        ['reject', 'SAA', 'REJETE'],
+      ]);
+      expect(history.body[1].reason).toBe('Sinistre différent');
+      await http().get(`/api/v1/matching/${row.id}/decisions`).set('x-dev-user', companyUser('CORRESPONDANT_IDA', 'CASH')).expect(403);
+    });
+  });
+
   describe('SEC-02 — import lié à la compagnie de l’appelant', () => {
     it('un CORRESPONDANT_IDA de CAAT qui importe des lignes de SAA : lignes refusées, aucun dossier au nom de SAA', async () => {
       const file = csvFile(

@@ -151,7 +151,7 @@ describe('Confrontation & matching — /api/v1/matching/* (e2e)', () => {
       await request(app.getHttpServer())
         .post(`/api/v1/matching/${id}/decide`)
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ action: 'complement' })
+        .send({ action: 'complement', reason: 'Pièces à compléter (re-décision motivée, SEC-28)' })
         .expect(201);
 
       const queueRes = await request(app.getHttpServer())
@@ -168,7 +168,7 @@ describe('Confrontation & matching — /api/v1/matching/* (e2e)', () => {
       await request(app.getHttpServer())
         .post(`/api/v1/matching/${id}/decide`)
         .set('x-dev-user', 'OPERATEUR_PLACE')
-        .send({ action: 'confirm' })
+        .send({ action: 'confirm', reason: 'Confirmation après complément (SEC-28)' })
         .expect(201);
 
       // Nouvel import (ré-ingestion) qui recalcule l'appariement.
