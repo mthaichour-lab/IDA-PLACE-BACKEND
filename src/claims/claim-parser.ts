@@ -171,6 +171,10 @@ function coerceCell(raw: string, col: ClaimColumnDef): { value: unknown; error?:
     case 'number': {
       const n = Number(trimmed.replace(/\s/g, '').replace(',', '.'));
       if (!Number.isFinite(n)) return { value: undefined, error: `${col.label} : valeur numérique attendue (reçu "${raw}")` };
+      // SEC-49 : bornes de la colonne (ex. responsabilité 0-100 %), alignées sur la contrainte CHECK en base.
+      if ((col.min !== undefined && n < col.min) || (col.max !== undefined && n > col.max)) {
+        return { value: undefined, error: `${col.label} : valeur entre ${col.min} et ${col.max} attendue (reçu "${raw}")` };
+      }
       return { value: n };
     }
 

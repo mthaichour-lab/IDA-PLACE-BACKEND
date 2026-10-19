@@ -245,3 +245,21 @@ describe('SEC-39 — injection de formules à l’import', () => {
     expect(warnings).toEqual([expect.objectContaining({ column: 51, code: 'FORMULE_NEUTRALISEE' })]);
   });
 });
+
+describe('SEC-49 — bornes de la responsabilité déclarée', () => {
+  const idx = (key: string) => CLAIM_IMPORT_COLUMNS.findIndex((c) => c.key === key);
+  it.each(['-1', '100.5', '250'])('responsabilité « %s » : erreur de format, valeur non retenue', (raw) => {
+    const cells = CLAIM_IMPORT_COLUMNS.map(() => '');
+    cells[idx('responsabiliteDeclareeA')] = raw;
+    const { values, errors } = mapRow(cells);
+    expect(values.responsabiliteDeclareeA).toBeUndefined();
+    expect(errors[0]).toMatch(/entre 0 et 100/);
+  });
+
+  it('0 et 100 sont acceptés', () => {
+    const cells = CLAIM_IMPORT_COLUMNS.map(() => '');
+    cells[idx('responsabiliteDeclareeA')] = '0';
+    cells[idx('responsabiliteDeclareeB')] = '100';
+    expect(mapRow(cells)).toMatchObject({ values: { responsabiliteDeclareeA: 0, responsabiliteDeclareeB: 100 }, errors: [] });
+  });
+});

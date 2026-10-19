@@ -18,6 +18,9 @@ export interface ClaimColumnDef {
   group: ClaimColumnGroup;
   type: 'string' | 'number' | 'boolean' | 'date' | 'enum' | 'string[]';
   enumValues?: string[];
+  /** Bornes d'une colonne numérique (incluses) — hors bornes : erreur de format (SEC-49). */
+  min?: number;
+  max?: number;
 }
 
 export const CLAIM_IMPORT_COLUMNS: ClaimColumnDef[] = [
@@ -55,8 +58,8 @@ export const CLAIM_IMPORT_COLUMNS: ClaimColumnDef[] = [
   { index: 29, key: 'exclusions', label: 'Exclusions', group: 'ELIGIBILITE', type: 'string[]' },
   { index: 30, key: 'piecesFournies', label: 'Pièces fournies', group: 'ELIGIBILITE', type: 'string[]' },
   { index: 31, key: 'constatAmiableSigneDeuxParties', label: 'Constat amiable signé par les deux parties', group: 'ELIGIBILITE', type: 'boolean' },
-  { index: 32, key: 'responsabiliteDeclareeA', label: 'Responsabilité déclarée A (%)', group: 'ELIGIBILITE', type: 'number' },
-  { index: 33, key: 'responsabiliteDeclareeB', label: 'Responsabilité déclarée B (%)', group: 'ELIGIBILITE', type: 'number' },
+  { index: 32, key: 'responsabiliteDeclareeA', label: 'Responsabilité déclarée A (%)', group: 'ELIGIBILITE', type: 'number', min: 0, max: 100 },
+  { index: 33, key: 'responsabiliteDeclareeB', label: 'Responsabilité déclarée B (%)', group: 'ELIGIBILITE', type: 'number', min: 0, max: 100 },
   { index: 34, key: 'observationsIda', label: 'Observations IDA', group: 'ELIGIBILITE', type: 'string' },
   { index: 35, key: 'dommagesCorporelsDeclares', label: 'Dommages corporels déclarés', group: 'ELIGIBILITE', type: 'boolean' },
   { index: 36, key: 'adversePartieAdherente', label: 'Partie adverse adhérente IDA', group: 'ELIGIBILITE', type: 'boolean' },
