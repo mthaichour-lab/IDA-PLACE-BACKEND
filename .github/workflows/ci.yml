@@ -80,7 +80,9 @@ jobs:
         run: npm run build
 
       - name: Audit des dépendances de production
-        run: npm audit --omit=dev --audit-level=high
+        # Bloquant sur tout avis élevé/critique non analysé ; exceptions justifiées
+        # et datées dans security/audit-exceptions.json (SEC-42).
+        run: npm run audit:gate
 
   secrets:
     name: Analyse de secrets (gitleaks)

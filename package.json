@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "nest build",
+    "audit:gate": "node scripts/audit-gate.mjs",
     "start": "node dist/src/main.js",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",

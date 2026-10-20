@@ -1,0 +1,23 @@
+{
+  "_doc": "Exceptions d'audit npm acceptées (SEC-42). Chaque entrée est justifiée et datée ; scripts/audit-gate.mjs échoue dès qu'une exception expire ou qu'un avis élevé/critique non listé apparaît. Ne jamais ajouter une entrée sans analyse d'exploitabilité.",
+  "exceptions": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "severity": "high",
+      "via": "@mikro-orm/core 6 > globby > fast-glob > micromatch > braces <= 3.0.3",
+      "reason": "Aucune version corrigée de braces ; seule MikroORM 7 (majeure) retire la chaîne. braces n'est appelé que sur les motifs de découverte d'entités/migrations définis dans le code au démarrage, jamais sur une entrée utilisateur : déni de service non atteignable depuis l'API.",
+      "decidedOn": "2026-10-20",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "GHSA-hp3w-g68c-fv3c",
+      "package": "sprintf-js",
+      "severity": "moderate",
+      "via": "@mikro-orm/migrations 6 > umzug > @rushstack/ts-command-line > argparse > sprintf-js <= 1.1.3",
+      "reason": "Utilisé uniquement par la CLI de migrations (exécutée par l'exploitant), jamais par l'API en fonctionnement. Disparaît avec MikroORM 7.",
+      "decidedOn": "2026-10-20",
+      "reviewBy": "2027-01-31"
+    }
+  ]
+}

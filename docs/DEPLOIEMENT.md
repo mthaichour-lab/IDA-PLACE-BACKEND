@@ -79,7 +79,7 @@ Règles :
   toutes les capabilities retirées (`cap_drop: [ALL]`).
 - CI (`.github/workflows/ci.yml` des deux dépôts) : `npm ci --ignore-scripts`,
   lint, tests unitaires, e2e (`AUTH_PROVIDER=dev`, `NODE_ENV=test`), build,
-  `npm audit --omit=dev --audit-level=high` bloquant, gitleaks sur tout
+  `npm run audit:gate` bloquant (avis élevés/critiques non analysés ; exceptions datées dans `security/audit-exceptions.json`), gitleaks sur tout
   l'historique, build des images. Activer en plus Dependabot ou Renovate.
 - **Migrations** : jamais au démarrage de l'API. Ordre de mise en production :
   sauvegarde → job `migrator` (rôle PostgreSQL de migration, propriétaire du
