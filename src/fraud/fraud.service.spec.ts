@@ -23,7 +23,14 @@ function unreachableRepo() {
     findAll: fail(),
     findAndCount: fail(),
     count: fail(),
-    getEntityManager: jest.fn(() => ({ persist: jest.fn(), flush: fail(), persistAndFlush: fail() })),
+    getEntityManager: jest.fn(() => {
+      // RequestContext.create (SEC-13, voir fraud.service.ts) appelle
+      // em.fork() : une valeur minimale suffit, cette spec ne teste pas le
+      // comportement contextuel de MikroORM lui-même.
+      const em: Record<string, unknown> = { persist: jest.fn(), flush: fail(), persistAndFlush: fail() };
+      em.fork = jest.fn(() => em);
+      return em;
+    }),
   };
 }
 

@@ -1,5 +1,5 @@
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { FilterQuery } from '@mikro-orm/core';
+import { FilterQuery, RequestContext } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -136,10 +136,18 @@ export class FraudService implements OnApplicationBootstrap {
     }
     this.running = (async () => {
       try {
-        do {
-          this.rerunRequested = false;
-          await this.recompute();
-        } while (this.rerunRequested);
+        // Appelé hors requête HTTP (bootstrap, écoute d'événement realtime) :
+        // aucun RequestContext MikroORM n'est établi par Nest ici (il ne
+        // l'est qu'autour d'une requête entrante) — à défaut, les repos
+        // @InjectRepository utilisent l'EntityManager global et échouent
+        // (« Using global EntityManager instance methods … »). Même motif
+        // que RecoursService.computeAllViews.
+        await RequestContext.create(this.caseRepo.getEntityManager(), async () => {
+          do {
+            this.rerunRequested = false;
+            await this.recompute();
+          } while (this.rerunRequested);
+        });
       } catch (err) {
         this.logger.error(`Recalcul anti-fraude (${reason}) en échec : ${(err as Error).message}`);
       } finally {
