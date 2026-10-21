@@ -7,6 +7,35 @@ et depuis ce sprint `RecoursModule`, `SettlementModule`,
 `CommissionModule`, `LedgerModule`) — implémente la logique métier
 **derrière** ces contrats. Rupture de forme → `/api/v2`, jamais silencieuse.
 
+## 2026-10-21 — Références métier, sens de la compensation, jeu de démonstration
+
+- **Références lisibles et immuables** (champs additifs, l'UUID reste l'identifiant) :
+  `Recours.reference` `REC-AAAA-NNNNN`, `CommissionCase.reference` `CSC-AAAA-NNN`
+  (+ `recoursReference` dénormalisée), `MatchQueueItem.reference` `MAT-AAMMJJ-NNN`.
+  Exposées dans les vues recours/commission/matching, `GET /monitoring/companies/:code/journeys`,
+  les alertes du cockpit et les événements `recours.timer`/`match.updated`. Attribution par
+  la fonction SQL `next_business_ref(kind, at)` (compteur par type et période à l'heure
+  d'Alger, `INSERT … ON CONFLICT … RETURNING`, sans course), appelée dans la transaction de
+  création ; déclencheurs : attribution de secours à toute insertion sans référence, refus de
+  toute modification. Reprise chronologique de l'existant. Voir
+  `Migration20261021000000_ReferencesMetier`, `src/common/business-ref/`,
+  `test/business-ref-postgres.e2e-spec.ts`. Une SEQUENCE PostgreSQL ne convenait pas (pas de
+  remise à 1 par année/jour sans DDL).
+- **Sens de la compensation (correctif)** : convention unique `from` = compagnie demanderesse =
+  **créancier**, `to` = débiteur (comme `Recours`). `computeMultilateralNetPositions` lisait
+  `from` comme payeur et inversait tous les signes (un CAAT créancier de 30 000 DA apparaissait
+  à −30 000) ; corrigé, docs des DTO alignées. Les instantanés de clôture ne figent que la
+  matrice : les positions nettes relues sont désormais justes, y compris pour un trimestre clos.
+- **Jeu de démonstration** (`npm run demo:seed`, DÉVELOPPEMENT uniquement) : CASH, CAAT, CAAR,
+  SAA, 2A — adhésions, import 47 colonnes, appariements, recours Annexes 2/3/4, commission
+  (délibéré, prononcé, PV à quatre yeux), uniquement par l'API HTTP ; idempotent ; refusé en
+  production, hors hôte local ou sans authentification de développement. Il ne peut pas
+  produire d'alertes de délai dépassé ni de trimestre échu (aucune date antidatée) : elles
+  viennent avec le temps réel.
+- **Tests e2e** : les suites non PostgreSQL supposent le mode dégradé. Si la base de
+  développement tourne, elles s'y connectent et échouent sur les données accumulées : lancer
+  `DB_PORT=1 npm run test:e2e`, et les suites `*-postgres` contre une base jetable.
+
 ## Remédiation sécurité 2026-10-19/20 (revue du 2026-10-19, constats SEC-01 à SEC-52)
 
 Référence : `audit-securite-2026-10-19/IDA-Place-Plan-remediation-securite-2026-10-19.md`

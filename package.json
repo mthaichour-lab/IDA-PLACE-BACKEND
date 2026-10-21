@@ -24,6 +24,7 @@
     "migration:down": "ts-node -T src/common/config/destructive-command-guard.ts migration:down && mikro-orm migration:down",
     "migration:pending": "mikro-orm migration:pending",
     "seed:wilayas": "ts-node -r tsconfig-paths/register src/seeders/wilaya.seeder.ts",
+    "demo:seed": "ts-node -r tsconfig-paths/register src/seeders/demo-dataset.cli.ts",
     "experts:rechiffrer-rib": "ts-node -r tsconfig-paths/register src/experts/rechiffrer-rib.cli.ts"
   },
   "dependencies": {
