@@ -42,7 +42,9 @@ export class CommissionPvDto {
 
 export class CommissionCaseViewDto {
   @ApiProperty() id!: string;
+  @ApiProperty({ description: 'Référence métier lisible et immuable (CSC-AAAA-NNN)', example: 'CSC-2026-011' }) reference!: string;
   @ApiProperty() recoursId!: string;
+  @ApiPropertyOptional({ description: 'Référence métier du recours (REC-AAAA-NNNNN)' }) recoursReference?: string;
   @ApiProperty() claimId!: string;
   @ApiProperty() companyA!: string;
   @ApiProperty() companyB!: string;

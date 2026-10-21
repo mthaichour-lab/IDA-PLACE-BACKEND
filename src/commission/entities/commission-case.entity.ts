@@ -32,9 +32,17 @@ export class CommissionCase {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
+  /** Référence métier `CSC-AAAA-NNN`, attribuée à la création par la base et immuable (voir `common/business-ref`). */
+  @Property({ length: 20, unique: true, returning: true })
+  reference!: string;
+
   /** SEC-20 : un seul dossier de commission par recours (`UNIQUE(recours_id)`). */
   @Property({ length: 36, unique: true })
   recoursId!: string;
+
+  /** Référence métier du recours (`REC-…`), dénormalisée à la création comme `claimId`/`companyA`/`companyB`. */
+  @Property({ length: 20, nullable: true })
+  recoursReference?: string;
 
   @Property({ length: 36 })
   claimId!: string;

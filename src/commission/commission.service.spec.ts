@@ -95,6 +95,17 @@ describe('CommissionService (mode dégradé — file de conciliation, pénalité
     expect(ledgerAppend).toHaveBeenCalledWith('COMMISSION_SAISINE', created.id, 'id-secretaire', expect.any(String));
   });
 
+  it('createCase() attribue une référence CSC-AAAA-NNN séquentielle et reprend la référence REC du recours', async () => {
+    const year = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Algiers', year: 'numeric' }).format(new Date());
+    const first = await openCase();
+    const second = await openCase();
+    expect([first.reference, second.reference]).toEqual([`CSC-${year}-001`, `CSC-${year}-002`]);
+    expect(first.recoursReference).toBe((await recours.get(first.recoursId)).reference);
+    expect(first.recoursReference).toMatch(/^REC-\d{4}-\d{5}$/);
+    await commission.deliberate(first.id, member('a'));
+    expect((await commission.getCase(first.id)).reference).toBe(first.reference);
+  });
+
   it('createCase() renvoie un 404 normalisé si le recours est inconnu', async () => {
     await expect(commission.createCase({ recoursId: 'inconnu', motif: 'x' }, member('m'))).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
   });

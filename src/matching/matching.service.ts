@@ -5,6 +5,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundEx
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AdherentsService } from '../adherents/adherents.service';
+import { MemoryBusinessRefCounter, nextBusinessRef } from '../common/business-ref/business-ref';
 import { DEFAULT_PAGE_SIZE, paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { logDegraded, withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -67,6 +68,7 @@ function isTerminal(status: string): boolean {
 function toDto(e: MatchQueueItem): MatchQueueItemDto {
   return {
     id: e.id,
+    reference: e.reference,
     refA: e.refA,
     companyA: e.companyA,
     plateA: e.plateA,
@@ -135,6 +137,7 @@ function nextStatusForAction(action: MatchDecisionDto['action']): MatchStatus {
 export class MatchingService {
   /** Repli mémoire — mode dégradé (base injoignable). Persistant pour la durée du process. */
   private readonly memory: MemoryMatchRow[] = [];
+  private readonly memoryRefs = new MemoryBusinessRefCounter();
   /** SEC-28 : historique des décisions en repli mémoire. */
   private readonly memoryDecisions: MatchDecisionHistoryRow[] = [];
   private readonly logger = new Logger('MatchingService');
@@ -537,8 +540,11 @@ export class MatchingService {
         let item = await this.repo.findOne({ declAId: claim.id });
         if (item && isTerminal(item.status)) return; // décision humaine préservée (Art. 14)
         if (!item) {
+          // Référence attribuée une seule fois, à la création de la ligne : les recalculs (upsert) ne la touchent jamais.
+          const at = new Date();
+          const reference = await nextBusinessRef(this.repo.getEntityManager(), 'MAT', at);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          item = this.repo.create({ declAId: claim.id } as any);
+          item = this.repo.create({ declAId: claim.id, reference, at } as any);
           this.repo.getEntityManager().persist(item);
         }
         this.applyComputed(item, claim, best);
@@ -548,7 +554,8 @@ export class MatchingService {
         let item = this.memory.find((r) => r.declAId === claim.id);
         if (item && isTerminal(item.status)) return;
         if (!item) {
-          item = { id: randomUUID(), declAId: claim.id, at: new Date().toISOString() } as MemoryMatchRow;
+          const at = new Date();
+          item = { id: randomUUID(), reference: this.memoryRefs.next('MAT', at), declAId: claim.id, at: at.toISOString() } as MemoryMatchRow;
           this.memory.push(item);
         }
         this.applyComputedDto(item, claim, best);
@@ -720,7 +727,7 @@ export class MatchingService {
   private emitMatchDecision(item: MatchQueueItemDto, decision: MatchDecisionResultDto): void {
     this.realtime.emitEvent(
       'match.updated',
-      { id: item.id, status: item.status, level: item.level, decidedAt: decision.decidedAt },
+      { id: item.id, reference: item.reference, status: item.status, level: item.level, decidedAt: decision.decidedAt },
       { rooms: partyRooms(item.companyA, item.companyB), internalPayload: { item, decision } },
     );
   }

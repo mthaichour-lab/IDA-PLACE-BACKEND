@@ -63,6 +63,7 @@ export class RecoursTimerDto {
 /** Fiche recours (registre + détail) — écran 4. */
 export class RecoursViewDto {
   @ApiProperty() id!: string;
+  @ApiProperty({ description: 'Référence métier lisible et immuable (REC-AAAA-NNNNN)', example: 'REC-2026-00296' }) reference!: string;
   @ApiProperty() claimId!: string;
   @ApiProperty() from!: string;
   @ApiProperty() to!: string;

@@ -4,6 +4,7 @@ import { EntityManager, EntityRepository } from '@mikro-orm/postgresql';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
+import { MemoryBusinessRefCounter, nextBusinessRef } from '../common/business-ref/business-ref';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -36,7 +37,9 @@ const ART24_CONCILIATION_DAYS = 15;
 /** Repli mémoire — dossier de conciliation (mode dégradé, hors production). */
 type MemoryCase = {
   id: string;
+  reference: string;
   recoursId: string;
+  recoursReference?: string;
   claimId: string;
   companyA: string;
   companyB: string;
@@ -71,7 +74,9 @@ type MemorySanction = {
 function toCaseView(e: CommissionCase): CommissionCaseViewDto {
   return {
     id: e.id,
+    reference: e.reference,
     recoursId: e.recoursId,
+    recoursReference: e.recoursReference ?? undefined,
     claimId: e.claimId,
     companyA: e.companyA,
     companyB: e.companyB,
@@ -146,6 +151,7 @@ function parsePenaltyCap(raw: string | undefined, fallback: string | undefined):
 @Injectable()
 export class CommissionService implements OnModuleInit {
   private readonly memoryCases: MemoryCase[] = [];
+  private readonly memoryRefs = new MemoryBusinessRefCounter();
   private readonly memorySanctions: MemorySanction[] = [];
   private readonly penaltyCap: number;
 
@@ -245,7 +251,10 @@ export class CommissionService implements OnModuleInit {
           return await this.freshEm(this.caseRepo).transactional(async (tem) => {
             if (await tem.findOne(CommissionCase, { recoursId: recours.id })) throw duplicate();
             const entity = tem.create(CommissionCase, {
+              // Attribuée dans la transaction : un échec d'ouverture ne consomme pas de numéro.
+              reference: await nextBusinessRef(tem, 'CSC', now),
               recoursId: recours.id,
+              recoursReference: recours.reference,
               claimId: recours.claimId,
               companyA: recours.from,
               companyB: recours.to,
@@ -267,7 +276,9 @@ export class CommissionService implements OnModuleInit {
         if (this.memoryCases.some((c) => c.recoursId === recours.id)) throw duplicate();
         const row: MemoryCase = {
           id: randomUUID(),
+          reference: this.memoryRefs.next('CSC', now),
           recoursId: recours.id,
+          recoursReference: recours.reference,
           claimId: recours.claimId,
           companyA: recours.from,
           companyB: recours.to,

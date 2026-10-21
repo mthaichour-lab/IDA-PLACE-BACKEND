@@ -62,7 +62,7 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
   });
 
   describe('SEC-07 — temps réel limité aux parties, payload minimal', () => {
-    it('une transition n’est diffusée qu’à la place et aux deux compagnies parties, avec { id, state } seulement', async () => {
+    it('une transition n’est diffusée qu’à la place et aux deux compagnies parties, avec { id, reference, state } seulement', async () => {
       const id = await openRecours('E2E-S07-1', 'CAAT', 'SAA');
       const gateway = app.get(RealtimeGateway);
       const emitted: Array<{ rooms: unknown; event: string; payload: unknown }> = [];
@@ -73,7 +73,7 @@ describe('Revue sécurité 2026-10-19 — recours, compensation, commission, ré
         spy.mockRestore();
       }
       const recoursEvents = emitted.filter((e) => e.event === 'recours.timer');
-      expect(recoursEvents).toEqual([{ rooms: [PLACE_ROOM, tenantRoom('CAAT'), tenantRoom('SAA')], event: 'recours.timer', payload: { id, state: 'OPPOSITION' } }]);
+      expect(recoursEvents).toEqual([{ rooms: [PLACE_ROOM, tenantRoom('CAAT'), tenantRoom('SAA')], event: 'recours.timer', payload: { id, reference: expect.stringMatching(/^REC-\d{4}-\d{5,}$/), state: 'OPPOSITION' } }]);
     });
   });
 

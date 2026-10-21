@@ -87,6 +87,7 @@ describe('SEC-12 — index des candidats par clé de rapprochement', () => {
 describe('SEC-03 — masquage des champs nominatifs avant confirmation', () => {
   const row: MatchQueueItemDto = {
     id: 'm1',
+    reference: 'MAT-261013-001',
     refA: 'EC-A',
     companyA: 'CAAT',
     plateA: '16-111-16',

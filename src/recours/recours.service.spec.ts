@@ -97,6 +97,22 @@ describe('RecoursService (mode dégradé — timers Art.10/12/19, machine d’é
     expect((await service.list({ filter: 'TOUS', page: 1, pageSize: 6, q: 'inconnu' })).items).toHaveLength(0);
   });
 
+  it('attribue une référence métier REC-AAAA-NNNNN séquentielle, recherchable par q', async () => {
+    const year = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Algiers', year: 'numeric' }).format(new Date());
+    const a = await service.create({ claimId: 'clm-ref-1', from: 'CAAT', to: 'SAA', amount: 1_000 });
+    const b = await service.create({ claimId: 'clm-ref-2', from: 'CASH', to: 'CAAR', amount: 2_000 });
+    expect([a.reference, b.reference]).toEqual([`REC-${year}-00001`, `REC-${year}-00002`]);
+    expect((await service.get(a.id)).reference).toBe(a.reference);
+    const byRef = await service.list({ filter: 'TOUS', page: 1, pageSize: 6, q: b.reference.toLowerCase() });
+    expect(byRef.items.map((r) => r.id)).toEqual([b.id]);
+  });
+
+  it('la référence ne change pas au fil des transitions', async () => {
+    const r = await service.create({ claimId: 'clm-ref-3', from: 'CAAT', to: 'SAA', amount: 1_000 });
+    await service.transition(r.id, { action: 'opposer', reason: 'Montant' }, correspondant('SAA'));
+    expect((await service.get(r.id)).reference).toBe(r.reference);
+  });
+
   it('get() lève un 404 normalisé pour un id inconnu', async () => {
     await expect(service.get('inconnu')).rejects.toMatchObject({ response: { code: 'NOT_FOUND' } });
   });
@@ -147,17 +163,17 @@ describe('RecoursService (mode dégradé — timers Art.10/12/19, machine d’é
   });
 
   describe('SEC-07 — temps réel limité aux parties, payload minimal', () => {
-    it('l’ouverture et chaque transition visent PLACE_ROOM + les deux compagnies, avec { id, state } seulement', async () => {
+    it('l’ouverture et chaque transition visent PLACE_ROOM + les deux compagnies, avec { id, reference, state } seulement', async () => {
       const created = await service.create({ claimId: 'clm-rt', from: 'CAAT', to: 'SAA', amount: 10 });
       await service.transition(created.id, { action: 'opposer', reason: 'Montant' }, correspondant('SAA'));
       for (const call of emitEvent.mock.calls) {
         const [event, payload, opts] = call;
         expect(event).toBe('recours.timer');
-        expect(Object.keys(payload).sort()).toEqual(['id', 'state']);
+        expect(Object.keys(payload).sort()).toEqual(['id', 'reference', 'state']);
         expect(opts.rooms).toEqual([PLACE_ROOM, tenantRoom('CAAT'), tenantRoom('SAA')]);
         expect(JSON.stringify(payload)).not.toMatch(/corr\.|decidedBy|resolution/);
       }
-      expect(emitEvent).toHaveBeenCalledWith('recours.timer', { id: created.id, state: 'OPPOSITION' }, expect.anything());
+      expect(emitEvent).toHaveBeenCalledWith('recours.timer', { id: created.id, reference: created.reference, state: 'OPPOSITION' }, expect.anything());
     });
   });
 

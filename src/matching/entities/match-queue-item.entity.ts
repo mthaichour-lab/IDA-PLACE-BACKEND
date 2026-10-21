@@ -33,6 +33,10 @@ export class MatchQueueItem {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
+  /** Référence métier `MAT-AAMMJJ-NNN` (jour de création de la ligne), attribuée par la base et immuable (voir `common/business-ref`). */
+  @Property({ length: 20, unique: true, returning: true })
+  reference!: string;
+
   /** Id du `Claim` (ClaimsModule) porté par cette ligne. */
   // Colonne créée par Migration20260201000000_ClaimsMatching : la stratégie de nommage donnerait `decl_aid` (vérifié sur PostgreSQL, 2026-10-20).
   @Property({ length: 36, fieldName: 'decl_a_id' })

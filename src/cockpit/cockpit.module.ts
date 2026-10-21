@@ -260,12 +260,13 @@ export class CockpitController {
     };
 
     // ---- alertesConventionnelles (additif, dérivées de VRAIS dépassements) ----
-    type Alert = { id: string; from: string; to: string; description: string; article: string; detectedAt: string };
+    type Alert = { id: string; reference: string; from: string; to: string; description: string; article: string; detectedAt: string };
     const alertesConventionnelles: Alert[] = [];
     for (const r of allRecours) {
       if (r.timer.expired) {
         alertesConventionnelles.push({
           id: `recours-${r.id}`,
+          reference: r.reference,
           from: r.from,
           to: r.to,
           description:
@@ -285,6 +286,7 @@ export class CockpitController {
       if (ageMs > 15 * 86_400_000) {
         alertesConventionnelles.push({
           id: `commission-${c.id}`,
+          reference: c.reference,
           from: c.companyA,
           to: c.companyB,
           description: 'Conciliation par la Commission — dépassement du délai Art.24',

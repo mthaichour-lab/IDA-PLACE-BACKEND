@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
+import { MemoryBusinessRefCounter, nextBusinessRef } from '../common/business-ref/business-ref';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -51,6 +52,7 @@ import { isUniqueViolation, toConflict, withStrictFallback } from './strict-pers
 /** Repli mémoire — mode dégradé (hors production). Une ligne = base + snapshot (voir recours.rules.ts). */
 type MemoryRecoursRow = RecoursSnapshot & {
   id: string;
+  reference: string;
   claimId: string;
   from: string;
   to: string;
@@ -99,10 +101,10 @@ function applySnapshotToEntity(e: Recours, snap: RecoursSnapshot): void {
 }
 
 function baseOf(e: Recours) {
-  return { id: e.id, claimId: e.claimId, from: e.from, to: e.to, amount: Number(e.amount), createdAt: e.createdAt.toISOString() };
+  return { id: e.id, reference: e.reference, claimId: e.claimId, from: e.from, to: e.to, amount: Number(e.amount), createdAt: e.createdAt.toISOString() };
 }
 
-function toView(base: { id: string; claimId: string; from: string; to: string; amount: number; createdAt: string }, snap: RecoursSnapshot, now: Date, config: RecoursTimerConfig): RecoursViewDto {
+function toView(base: { id: string; reference: string; claimId: string; from: string; to: string; amount: number; createdAt: string }, snap: RecoursSnapshot, now: Date, config: RecoursTimerConfig): RecoursViewDto {
   // SEC-17 : l'historique d'audit (identifiants des agents) et la version de
   // verrouillage ne sortent jamais dans la fiche — l'historique n'est servi
   // que par `GET /recours/:id/history`, réservé à la place. Les lignes du
@@ -145,6 +147,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('RecoursService');
   /** Repli mémoire — mode dégradé (développement/test uniquement). */
   private readonly memory: MemoryRecoursRow[] = [];
+  private readonly memoryRefs = new MemoryBusinessRefCounter();
   private readonly timerConfig: RecoursTimerConfig;
   private readonly amountCap: number;
   private readonly sweepIntervalMs: number;
@@ -198,9 +201,9 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
     await RequestContext.create(this.repo.getEntityManager(), () => this.computeAllViews(now));
   }
 
-  private emitState(id: string, state: string, from: string, to: string, internal?: Record<string, unknown>): void {
-    // SEC-07 : payload WebSocket minimal (aucun nom, aucun auteur), diffusé aux seules parties + place.
-    this.realtime.emitEvent('recours.timer', { id, state }, { rooms: [PLACE_ROOM, tenantRoom(from), tenantRoom(to)], internalPayload: { id, state, from, to, ...internal } });
+  private emitState(id: string, reference: string, state: string, from: string, to: string, internal?: Record<string, unknown>): void {
+    // SEC-07 : payload WebSocket minimal (aucun nom, aucun auteur), diffusé aux seules parties + place ; la référence métier n'est qu'un libellé de l'id.
+    this.realtime.emitEvent('recours.timer', { id, reference, state }, { rooms: [PLACE_ROOM, tenantRoom(from), tenantRoom(to)], internalPayload: { id, reference, state, from, to, ...internal } });
   }
 
   private async seal(type: string, id: string, actorId: string, summary: Record<string, unknown>): Promise<void> {
@@ -250,7 +253,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
             Object.assign(row, snapshot);
             row.version += 1;
             row.history.push(this.automaticEntry(before, snapshot));
-            this.emitState(row.id, snapshot.state, row.from, row.to, { resolution: snapshot.resolution });
+            this.emitState(row.id, row.reference, snapshot.state, row.from, row.to, { resolution: snapshot.resolution });
             await this.seal('RECOURS_TRANSITION', row.id, SYSTEM_ACTOR.actorId, { action: 'automatique', from: before.state, to: snapshot.state, resolution: snapshot.resolution?.kind, at: snapshot.resolution?.at });
           }
           views.push(toView(row, snapshot, now, this.timerConfig));
@@ -283,7 +286,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
       const fresh = await this.freshEm().findOne(Recours, { id: e.id });
       return fresh ? snapshotOf(fresh) : before;
     }
-    this.emitState(e.id, after.state, e.from, e.to, { resolution: after.resolution });
+    this.emitState(e.id, e.reference, after.state, e.from, e.to, { resolution: after.resolution });
     return after;
   }
 
@@ -301,7 +304,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
     if (query.filter && query.filter !== 'TOUS') rows = rows.filter((r) => r.state === query.filter);
     if (query.q) {
       const needle = query.q.trim().toLowerCase();
-      if (needle) rows = rows.filter((r) => [r.id, r.claimId, r.from, r.to].some((v) => v.toLowerCase().includes(needle)));
+      if (needle) rows = rows.filter((r) => [r.id, r.reference, r.claimId, r.from, r.to].some((v) => v.toLowerCase().includes(needle)));
     }
     return paginateArray(rows, query.page, query.pageSize);
   }
@@ -387,6 +390,8 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
           return await this.freshEm().transactional(async (tem) => {
             if (await tem.findOne(Recours, { claimId: dto.claimId })) throw DUPLICATE();
             const entity = tem.create(Recours, {
+              // Attribuée dans la transaction : un échec de création ne consomme pas de numéro.
+              reference: await nextBusinessRef(tem, 'REC', now),
               claimId: dto.claimId,
               from: dto.from,
               to: dto.to,
@@ -409,6 +414,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
         if (this.memory.some((r) => r.claimId === dto.claimId)) throw DUPLICATE();
         const row: MemoryRecoursRow = {
           id: randomUUID(),
+          reference: this.memoryRefs.next('REC', now),
           claimId: dto.claimId,
           from: dto.from,
           to: dto.to,
@@ -425,7 +431,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
       },
     );
     // Notification de la compagnie débitrice (et de la place) — SEC-06 §4 / SEC-07.
-    this.emitState(view.id, view.state, view.from, view.to, { created: true });
+    this.emitState(view.id, view.reference, view.state, view.from, view.to, { created: true });
     return view;
   }
 
@@ -534,7 +540,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
             e.history = [...(e.history ?? []), ...entries];
             await tem.flush();
             await sealOf(e.from, e.to, entries);
-            return { next, from: e.from, to: e.to };
+            return { next, reference: e.reference, from: e.from, to: e.to };
           });
         } catch (err) {
           throw toConflict(err, 'CONFLIT_CONCURRENT', 'Le recours a été modifié entre-temps : rechargez-le avant de recommencer.');
@@ -551,11 +557,11 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
         row.version += 1;
         row.history.push(...entries);
         await sealOf(row.from, row.to, entries);
-        return { next, from: row.from, to: row.to };
+        return { next, reference: row.reference, from: row.from, to: row.to };
       },
     );
 
-    this.emitState(id, result.next.state, result.from, result.to, { action });
+    this.emitState(id, result.reference, result.next.state, result.from, result.to, { action });
     return {
       id,
       state: result.next.state,

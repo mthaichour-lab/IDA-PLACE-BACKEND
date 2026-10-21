@@ -48,6 +48,7 @@ export class DeclarationResponsabiliteDto {
 /** Ligne de la file de confrontation — écran 2. */
 export class MatchQueueItemDto {
   @ApiProperty() id!: string;
+  @ApiProperty({ description: 'Référence métier lisible et immuable de la ligne de confrontation (MAT-AAMMJJ-NNN)', example: 'MAT-261013-001' }) reference!: string;
   @ApiProperty() refA!: string;
   @ApiProperty() companyA!: string;
   @ApiProperty() plateA!: string;

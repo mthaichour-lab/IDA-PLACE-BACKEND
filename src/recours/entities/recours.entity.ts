@@ -20,6 +20,10 @@ export class Recours {
   @PrimaryKey({ type: 'uuid' })
   id: string = v4();
 
+  /** Référence métier `REC-AAAA-NNNNN`, attribuée à la création par la base et immuable (voir `common/business-ref`). */
+  @Property({ length: 20, unique: true, returning: true })
+  reference!: string;
+
   /** Id du `Claim` (ClaimsModule) à l'origine de ce recours — un seul recours par dossier (SEC-20, contrainte `UNIQUE` en base). */
   @Property({ length: 36, unique: true })
   claimId!: string;

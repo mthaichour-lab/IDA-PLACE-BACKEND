@@ -40,6 +40,8 @@ import { DEFAULT_ELIGIBILITY_CONFIG } from '../eligibility/eligibility.rules';
  */
 export interface MonitoringJourneyDto {
   id: string;
+  /** Référence métier du recours (REC-AAAA-NNNNN). */
+  reference: string;
   claimId: string;
   direction: 'EMIS' | 'RECU';
   counterparty: string;
@@ -216,6 +218,7 @@ export class MonitoringService {
       .filter((r) => r.from === code || r.to === code)
       .map((r) => ({
         id: r.id,
+        reference: r.reference,
         claimId: r.claimId,
         direction: (r.from === code ? 'EMIS' : 'RECU') as 'EMIS' | 'RECU',
         counterparty: r.from === code ? r.to : r.from,

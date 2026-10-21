@@ -65,6 +65,17 @@ describe('MatchingService — décision sur une paire (mode dégradé)', () => {
     expect(ba.companyB).toBe('CAAT');
   });
 
+  it('chaque ligne porte une référence MAT-AAMMJJ-NNN distincte, stable au recalcul et après décision', async () => {
+    const { ab, ba } = await rows();
+    expect(ab.reference).toMatch(/^MAT-\d{6}-\d{3}$/);
+    expect(ba.reference).toMatch(/^MAT-\d{6}-\d{3}$/);
+    expect(ab.reference).not.toBe(ba.reference);
+    await service.ingestClaim(declA, [declA, declB]);
+    await service.decide(ab.id, { action: 'confirm' }, 'Opérateur', operateur);
+    const after = await rows();
+    expect([after.ab.reference, after.ba.reference]).toEqual([ab.reference, ba.reference]);
+  });
+
   it('confirmer une ligne confirme aussi la ligne miroir, avec un événement temps réel pour chacune', async () => {
     const { ab } = await rows();
     realtime.emitEvent.mockClear();
@@ -206,10 +217,11 @@ describe('MatchingService — SEC-07 (diffusion temps réel ciblée et minimale)
     for (const call of to.mock.calls as unknown as string[][][]) expect([...call[0]].sort()).toEqual(['tenant:CAAT', 'tenant:SAA', 'tenant:place']);
     const wsPayloads = emit.mock.calls.map(([, p]) => p);
     expect(wsPayloads).toEqual([
-      { id: row.id, status: 'CONFIRME_MANUEL', level: 'AUTO', decidedAt: expect.any(String) },
+      { id: row.id, reference: row.reference, status: 'CONFIRME_MANUEL', level: 'AUTO', decidedAt: expect.any(String) },
       expect.objectContaining({ status: 'CONFIRME_MANUEL' }),
     ]);
-    expect(JSON.stringify(wsPayloads)).not.toMatch(/Nom A|Nom B|Agent Opérateur|111|222/);
+    // La référence (MAT-AAMMJJ-NNN) porte la date du jour : exclue de la recherche des plaques 111/222.
+    expect(JSON.stringify(wsPayloads.map(({ reference: _r, ...p }) => p))).not.toMatch(/Nom A|Nom B|Agent Opérateur|111|222/);
     // FraudModule (journal des actions) reçoit toujours la décision complète.
     expect(internal).toHaveBeenCalledWith(expect.objectContaining({ decision: expect.objectContaining({ decidedBy: 'Agent Opérateur', status: 'CONFIRME_MANUEL' }) }));
   });
