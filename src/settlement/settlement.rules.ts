@@ -56,13 +56,19 @@ export function isIsoDateInQuarter(iso: string, period: PeriodQuarter): boolean 
   return d.getUTCFullYear() === period.year && q === period.quarter;
 }
 
+/**
+ * Convention de sens (identique à `Recours`, Annexe 2) : `from` est la
+ * compagnie DEMANDERESSE, qui a indemnisé son assuré et exerce le recours —
+ * le CRÉANCIER ; `to` est la compagnie adverse — le DÉBITEUR. Un recours
+ * réglé est donc une somme que `to` paie à `from`.
+ */
 export interface SettledRecoursLike {
   from: string;
   to: string;
   amount: number;
 }
 
-/** Matrice brute des positions bilatérales : matrix[a][b] = total que `a` doit à `b`. */
+/** Matrice brute créancier × débiteur : matrix[a][b] = total des recours réglés que `b` (débiteur) doit à `a` (créancier). */
 export type BilateralMatrix = Record<string, Record<string, number>>;
 
 export function computeBilateralMatrix(rows: SettledRecoursLike[]): BilateralMatrix {
@@ -102,7 +108,9 @@ export interface BilateralNetPosition {
 
 /**
  * Netting BILATÉRAL : réduit chaque paire {A,B} à une seule direction nette
- * (le plus gros montant brut moins le plus petit). Une paire parfaitement
+ * (le plus gros montant brut moins le plus petit), dans la convention de la
+ * matrice : `from` = créancier net de la paire (reçoit), `to` = débiteur
+ * net (paie). Une paire parfaitement
  * compensée (mêmes montants dans les deux sens) disparaît (amount === 0,
  * exclue du résultat). Ne compense PAS les cycles à 3 compagnies ou plus
  * (voir `computeMultilateralNetPositions` pour la compensation de place).
@@ -141,18 +149,24 @@ export interface CompanyNetPosition {
  * A), pas seulement les paires symétriques — voir le cas de test du cycle à
  * 3 compagnies. Invariant garanti : la somme des positions nettes est
  * toujours 0 (la place ne gagne et ne perd jamais d'argent elle-même).
+ *
+ * Sens : une compagnie REÇOIT ce qu'elle a en ligne de la matrice (ses
+ * créances, recours qu'elle a exercés) et PAIE ce qu'elle a en colonne
+ * (ses dettes). Avant le 2026-10-21, la fonction lisait `from` comme payeur
+ * et inversait le signe de toutes les positions (le créancier d'un unique
+ * recours réglé apparaissait débiteur net).
  */
 export function computeMultilateralNetPositions(matrix: BilateralMatrix): CompanyNetPosition[] {
   const companies = allCompanies(matrix);
   return companies.map((code) => {
-    let incoming = 0;
-    let outgoing = 0;
+    let receivable = 0;
+    let payable = 0;
     for (const other of companies) {
       if (other === code) continue;
-      incoming += cell(matrix, other, code);
-      outgoing += cell(matrix, code, other);
+      receivable += cell(matrix, code, other);
+      payable += cell(matrix, other, code);
     }
-    return { code, net: fromCents(incoming - outgoing) };
+    return { code, net: fromCents(receivable - payable) };
   });
 }
 

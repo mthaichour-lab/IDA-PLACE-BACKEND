@@ -149,15 +149,44 @@ describe('computeMultilateralNetPositions — compensation multilatérale (B.2/B
     expect(net.find((n) => n.code === 'SAA')?.net).toBe(0);
   });
 
-  it('une compagnie pure débitrice (ne reçoit jamais) a une position nette strictement négative', () => {
+  it('sens : la compagnie demanderesse (from, créancière) reçoit, les compagnies mises en cause (to) paient', () => {
     const matrix = computeBilateralMatrix([
       { from: 'CAAT', to: 'SAA', amount: 100 },
       { from: 'CAAT', to: 'CASH', amount: 50 },
     ]);
     const net = computeMultilateralNetPositions(matrix);
-    expect(net.find((n) => n.code === 'CAAT')?.net).toBe(-150);
-    expect(net.find((n) => n.code === 'SAA')?.net).toBe(100);
-    expect(net.find((n) => n.code === 'CASH')?.net).toBe(50);
+    expect(net.find((n) => n.code === 'CAAT')?.net).toBe(150);
+    expect(net.find((n) => n.code === 'SAA')?.net).toBe(-100);
+    expect(net.find((n) => n.code === 'CASH')?.net).toBe(-50);
+  });
+
+  it('cas constaté le 2026-10-20 : un seul recours CAAT→SAA réglé (30 000 DA) — CAAT à recevoir dans la matrice ET en net', () => {
+    const matrix = computeBilateralMatrix([{ from: 'CAAT', to: 'SAA', amount: 30_000 }]);
+    expect(matrix.CAAT.SAA).toBe(30_000);
+    expect(computeMultilateralNetPositions(matrix)).toEqual([
+      { code: 'CAAT', net: 30_000 },
+      { code: 'SAA', net: -30_000 },
+    ]);
+    expect(computeBilateralNetPositions(matrix)).toEqual([{ from: 'CAAT', to: 'SAA', amount: 30_000 }]);
+  });
+
+  it('cohérence des trois vues : net multilatéral = total en ligne − total en colonne = créances nettes bilatérales − dettes nettes bilatérales', () => {
+    const rows = [
+      { from: 'CAAT', to: 'SAA', amount: 180_000 },
+      { from: 'SAA', to: 'CAAT', amount: 65_000 },
+      { from: 'SAA', to: 'CASH', amount: 40_000 },
+      { from: 'CASH', to: 'CAAR', amount: 12_000 },
+      { from: '2A', to: 'CAAT', amount: 5_000 },
+    ];
+    const matrix = computeBilateralMatrix(rows);
+    const bilateral = computeBilateralNetPositions(matrix);
+    for (const { code, net } of computeMultilateralNetPositions(matrix)) {
+      const rowTotal = rows.filter((r) => r.from === code).reduce((acc, r) => acc + r.amount, 0);
+      const colTotal = rows.filter((r) => r.to === code).reduce((acc, r) => acc + r.amount, 0);
+      expect(net).toBe(rowTotal - colTotal);
+      const bilateralNet = bilateral.reduce((acc, p) => acc + (p.from === code ? p.amount : p.to === code ? -p.amount : 0), 0);
+      expect(net).toBe(bilateralNet);
+    }
   });
 
   it('matrice vide : aucune compagnie, aucune position', () => {
@@ -189,7 +218,8 @@ describe('SEC-34 — compensation en centimes entiers (propriétés)', () => {
       const net = computeMultilateralNetPositions(matrix);
       expect(net.reduce((sum, n) => sum + toCents(n.net), 0)).toBe(0);
       for (const n of net) {
-        const expected = rows.reduce((acc, r) => acc + (r.to === n.code ? toCents(r.amount) : 0) - (r.from === n.code ? toCents(r.amount) : 0), 0);
+        // Le créancier (from) reçoit, le débiteur (to) paie.
+        const expected = rows.reduce((acc, r) => acc + (r.from === n.code ? toCents(r.amount) : 0) - (r.to === n.code ? toCents(r.amount) : 0), 0);
         expect(toCents(n.net)).toBe(expected);
         expect(Number.isInteger(Math.round(n.net * 100))).toBe(true);
       }

@@ -26,8 +26,8 @@ export class CloseMonthlyDto {
 }
 
 export class BilateralPositionDto {
-  @ApiProperty() from!: string;
-  @ApiProperty() to!: string;
+  @ApiProperty({ description: 'Créancier net de la paire (reçoit) — même convention que Recours.from' }) from!: string;
+  @ApiProperty({ description: 'Débiteur net de la paire (paie) — même convention que Recours.to' }) to!: string;
   @ApiProperty() amount!: number;
 }
 
@@ -52,9 +52,9 @@ export class QuarterlySettlementDto {
  * pas de forme, ces compléments vivent sur des routes séparées.
  */
 export class MatrixCellDto {
-  @ApiProperty() from!: string;
-  @ApiProperty() to!: string;
-  @ApiProperty({ description: 'Position BRUTE (avant tout netting) que `from` doit à `to`' }) amount!: number;
+  @ApiProperty({ description: 'Créancier — compagnie demanderesse des recours réglés (Recours.from)' }) from!: string;
+  @ApiProperty({ description: 'Débiteur — compagnie adverse (Recours.to)' }) to!: string;
+  @ApiProperty({ description: 'Position BRUTE (avant tout netting) que `to` doit à `from`' }) amount!: number;
 }
 
 export class QuarterlyMatrixDto {
