@@ -69,7 +69,7 @@ describe('FraudService — SEC-13 (aucun GET n’écrit) et SEC-36 (pas de fenê
       summariesFor: jest.fn(async (ids: string[]) => claims.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, company: c.company, plateA: c.plateA }))),
     } as unknown as ClaimsService;
     const matching = { listInternalPairs: jest.fn(async () => []) } as unknown as MatchingService;
-    gateway = new RealtimeGateway({ resolve: async () => null });
+    gateway = new RealtimeGateway({ resolve: async () => null }, { getEntityManager: () => ({}) } as never); // 2e arg : jamais utilisé ici (handleConnection n'est pas appelé).
     caseRepo = unreachableRepo();
     service = new FraudService(caseRepo as never, unreachableRepo() as never, claimsService, matching, gateway, { get: () => undefined } as unknown as ConfigService);
   });

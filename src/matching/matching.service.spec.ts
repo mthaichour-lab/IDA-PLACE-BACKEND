@@ -184,7 +184,7 @@ describe('MatchingService — SEC-07 (diffusion temps réel ciblée et minimale)
   it('une décision ne part qu’aux salons de la place et des deux parties, sans donnée nominative ; le détail reste interne', async () => {
     const emit = jest.fn();
     const to = jest.fn(() => ({ emit }));
-    const gateway = new RealtimeGateway({ resolve: async () => null });
+    const gateway = new RealtimeGateway({ resolve: async () => null }, { getEntityManager: () => ({}) } as never); // 2e arg : jamais utilisé ici (handleConnection n'est pas appelé).
     gateway.server = { to } as never;
     const internal = jest.fn();
     gateway.onEvent('match.updated', internal);

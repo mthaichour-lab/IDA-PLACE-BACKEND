@@ -15,6 +15,22 @@ function providerReturning(user: AuthenticatedUser | null): AuthProvider & { res
   return { resolve: jest.fn(async () => user) };
 }
 
+/**
+ * Faux repo MikroORM — uniquement pour son `getEntityManager()` (voir
+ * `RealtimeGateway.handleConnection` : `RequestContext.create` appelle
+ * `em.fork()`, une valeur minimale suffit, ces specs ne testent pas le
+ * comportement contextuel de MikroORM lui-même).
+ */
+function fakeRepo() {
+  return {
+    getEntityManager: () => {
+      const em: Record<string, unknown> = {};
+      em.fork = jest.fn(() => em);
+      return em;
+    },
+  } as never;
+}
+
 const placeUser: AuthenticatedUser = { id: 'p', name: 'P', email: 'p@x', role: 'OPERATEUR_PLACE', privileges: [] };
 const caat: AuthenticatedUser = { id: 'c', name: 'C', email: 'c@x', role: 'CORRESPONDANT_IDA', companyId: 'CAAT', privileges: [] };
 
@@ -45,7 +61,7 @@ describe('RealtimeGateway', () => {
   });
 
   it('un rôle compagnie rejoint seulement tenant:<code>', async () => {
-    const gateway = new RealtimeGateway(providerReturning(caat));
+    const gateway = new RealtimeGateway(providerReturning(caat), fakeRepo());
     const socket = fakeSocket({ token: 'jeton' });
     await gateway.handleConnection(socket as never);
     expect(socket.join).toHaveBeenCalledWith([tenantRoom('CAAT')]);
@@ -53,7 +69,7 @@ describe('RealtimeGateway', () => {
   });
 
   it('refuse une connexion non authentifiée', async () => {
-    const gateway = new RealtimeGateway(providerReturning(null));
+    const gateway = new RealtimeGateway(providerReturning(null), fakeRepo());
     const socket = fakeSocket();
     await gateway.handleConnection(socket as never);
     expect(socket.disconnect).toHaveBeenCalledWith(true);
@@ -61,7 +77,7 @@ describe('RealtimeGateway', () => {
   });
 
   it('refuse un rôle compagnie sans companyId', async () => {
-    const gateway = new RealtimeGateway(providerReturning({ ...caat, companyId: undefined }));
+    const gateway = new RealtimeGateway(providerReturning({ ...caat, companyId: undefined }), fakeRepo());
     const socket = fakeSocket({ token: 'jeton' });
     await gateway.handleConnection(socket as never);
     expect(socket.disconnect).toHaveBeenCalledWith(true);
@@ -69,14 +85,14 @@ describe('RealtimeGateway', () => {
 
   it('transmet handshake.auth.token au fournisseur comme en-tête Authorization Bearer', async () => {
     const provider = providerReturning(placeUser);
-    await new RealtimeGateway(provider).handleConnection(fakeSocket({ token: 'abc.def.ghi' }) as never);
+    await new RealtimeGateway(provider, fakeRepo()).handleConnection(fakeSocket({ token: 'abc.def.ghi' }) as never);
     expect(provider.resolve).toHaveBeenCalledWith({ headers: { authorization: 'Bearer abc.def.ghi' } });
   });
 
   it('SEC-01 : hors production, devUser est transmis (développement)', async () => {
     process.env.NODE_ENV = 'development';
     const provider = providerReturning(placeUser);
-    await new RealtimeGateway(provider).handleConnection(fakeSocket({ devUser: 'ADMIN_UAR' }) as never);
+    await new RealtimeGateway(provider, fakeRepo()).handleConnection(fakeSocket({ devUser: 'ADMIN_UAR' }) as never);
     expect(provider.resolve).toHaveBeenCalledWith({ headers: { 'x-dev-user': 'ADMIN_UAR' } });
   });
 
@@ -84,7 +100,7 @@ describe('RealtimeGateway', () => {
     process.env.NODE_ENV = 'production';
     const provider = providerReturning(null);
     const socket = fakeSocket({ devUser: 'ADMIN_UAR' }, { 'x-dev-user': 'ADMIN_UAR' });
-    await new RealtimeGateway(provider).handleConnection(socket as never);
+    await new RealtimeGateway(provider, fakeRepo()).handleConnection(socket as never);
     expect(provider.resolve).toHaveBeenCalledWith({ headers: {} });
     expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
@@ -92,13 +108,13 @@ describe('RealtimeGateway', () => {
   it('refuse (fail closed) si la résolution d’identité échoue (ex. 503 base injoignable)', async () => {
     const provider = { resolve: jest.fn(async () => Promise.reject(new Error('503'))) };
     const socket = fakeSocket({ token: 't' });
-    await new RealtimeGateway(provider).handleConnection(socket as never);
+    await new RealtimeGateway(provider, fakeRepo()).handleConnection(socket as never);
     expect(socket.disconnect).toHaveBeenCalledWith(true);
   });
 
   it('SEC-07 : déconnecte le client à l’expiration du jeton', async () => {
     jest.useFakeTimers();
-    const gateway = new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() + 5_000 }));
+    const gateway = new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() + 5_000 }), fakeRepo());
     const socket = fakeSocket({ token: 't' });
     await gateway.handleConnection(socket as never);
     expect(socket.disconnect).not.toHaveBeenCalled();
@@ -110,10 +126,10 @@ describe('RealtimeGateway', () => {
   it('refuse un jeton déjà expiré, et annule le minuteur à la déconnexion', async () => {
     jest.useFakeTimers();
     const expired = fakeSocket({ token: 't' });
-    await new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() - 1 })).handleConnection(expired as never);
+    await new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() - 1 }), fakeRepo()).handleConnection(expired as never);
     expect(expired.disconnect).toHaveBeenCalledWith(true);
 
-    const gateway = new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() + 5_000 }));
+    const gateway = new RealtimeGateway(providerReturning({ ...placeUser, expiresAt: Date.now() + 5_000 }), fakeRepo());
     const socket = fakeSocket({ token: 't' });
     await gateway.handleConnection(socket as never);
     gateway.handleDisconnect(socket as never);
@@ -122,7 +138,7 @@ describe('RealtimeGateway', () => {
   });
 
   it('emitEvent : contrat inchangé (salons explicites, PLACE_ROOM par défaut, payload interne)', () => {
-    const gateway = new RealtimeGateway(providerReturning(null));
+    const gateway = new RealtimeGateway(providerReturning(null), fakeRepo());
     const emit = jest.fn();
     gateway.server = { to: jest.fn(() => ({ emit })) } as never;
     const internal = jest.fn();

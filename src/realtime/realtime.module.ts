@@ -1,8 +1,12 @@
 import { EventEmitter } from 'events';
+import { RequestContext } from '@mikro-orm/core';
+import { InjectRepository, MikroOrmModule } from '@mikro-orm/nestjs';
+import { EntityRepository } from '@mikro-orm/postgresql';
 import { Inject, Injectable, Logger, Module } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { isProductionEnv } from '../common/config/env.validation';
+import { PlaceUser } from '../common/directory/place-user.entity';
 import { AUTH_PROVIDER, AuthenticatedUser, AuthProvider } from '../common/interfaces/authenticated-user.interface';
 import { sanitizeForLog } from '../common/logging/sanitize-log';
 import { isCompanyScopedRole, PLACE_LEVEL_ROLES } from '../common/rbac/roles-privileges';
@@ -62,7 +66,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   private readonly internalEmitter = new EventEmitter();
   private readonly expiryTimers = new Map<string, NodeJS.Timeout>();
 
-  constructor(@Inject(AUTH_PROVIDER) private readonly authProvider: AuthProvider) {
+  constructor(
+    @Inject(AUTH_PROVIDER) private readonly authProvider: AuthProvider,
+    // Seulement pour son `EntityManager` (voir `handleConnection` : un
+    // handshake WebSocket n'est pas une requête HTTP, aucun `RequestContext`
+    // MikroORM n'y est donc établi par Nest — même motif que
+    // `FraudService.recompute`/`RecoursService.sweep`, hors requête HTTP).
+    @InjectRepository(PlaceUser) private readonly placeUserRepo: EntityRepository<PlaceUser>,
+  ) {
     // Beaucoup d'abonnés internes possibles (Fraud, futurs modules) — évite
     // le warning MaxListenersExceeded par défaut (10) de Node.
     this.internalEmitter.setMaxListeners(50);
@@ -98,6 +109,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   async handleConnection(client: Socket): Promise<void> {
+    // `RequestContext.create` : voir le commentaire du constructeur — sans
+    // lui, `this.authProvider.resolve` (→ `PlaceUserDirectory.lookupAccount`,
+    // un repo MikroORM) utiliserait l'`EntityManager` global et lèverait
+    // "Using global EntityManager instance methods…", refusant TOUTE
+    // connexion WS en mode Keycloak (fail closed — jamais observé en mode
+    // dev, où `DevAuthProvider` ne touche pas la base).
+    await RequestContext.create(this.placeUserRepo.getEntityManager(), () => this.authenticateAndJoin(client));
+  }
+
+  private async authenticateAndJoin(client: Socket): Promise<void> {
     let user: AuthenticatedUser | null = null;
     try {
       user = await this.authProvider.resolve({ headers: this.handshakeHeaders(client) });
@@ -176,5 +197,5 @@ export function realtimeRoomsFor(user: Pick<AuthenticatedUser, 'role' | 'company
   return [];
 }
 
-@Module({ providers: [RealtimeGateway], exports: [RealtimeGateway] })
+@Module({ imports: [MikroOrmModule.forFeature([PlaceUser])], providers: [RealtimeGateway], exports: [RealtimeGateway] })
 export class RealtimeModule {}
