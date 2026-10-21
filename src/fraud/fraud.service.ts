@@ -3,7 +3,7 @@ import { FilterQuery, RequestContext } from '@mikro-orm/core';
 import { EntityRepository } from '@mikro-orm/postgresql';
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { paginateArray, PaginatedResult } from '../common/dto/pagination.dto';
 import { withDegradedFallback } from '../common/interfaces/degraded-mode';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -47,6 +47,25 @@ const FRAUD_CASE_TYPE_TO_GROUP = {
   INCOHERENCE_AB: 'INCOHERENCES_AB',
   VELOCITE_ADHERENT: 'VELOCITE',
 } as const;
+
+/**
+ * Clé de déduplication d'un cas suspect (`FraudCase.dedupeKey`, `varchar(512)`,
+ * unique) — un hachage de longueur FIXE de `${type}:${claimIds triés}`,
+ * jamais la liste brute : un cas RECURRENCE_VEHICULE regroupe autant de
+ * dossiers que de déclarations du même véhicule sur la fenêtre glissante
+ * (B.3 — `fraud.detection.ts`), sans borne métier. Avec les UUID bruts
+ * joints par des virgules, un cas à partir d'une quinzaine de dossiers
+ * dépassait déjà les 512 caractères (contrainte de colonne levée au
+ * démarrage : "value too long for type character varying(512)", le
+ * recalcul anti-fraude échouait silencieusement pour CE cas). Toujours
+ * exactement 20 + 64 = 84 caractères ici, quel que soit le nombre de
+ * dossiers du cluster — upsert idempotent inchangé (même type + même
+ * ensemble de dossiers ⇒ même clé).
+ */
+export function fraudDedupeKey(type: string, claimIds: readonly string[]): string {
+  const hash = createHash('sha256').update([...claimIds].sort().join(',')).digest('hex');
+  return `${type}:${hash}`;
+}
 
 /** Décision humaine (MatchingService.decide, via match.updated) → type d'action du journal (B.9). Mapping assumé, à valider avec le métier. */
 function mapStatusToActionType(status: string): FraudActionType | undefined {
@@ -380,7 +399,7 @@ export class FraudService implements OnApplicationBootstrap {
 
   private async persistCases(candidates: FraudCaseCandidate[]): Promise<void> {
     for (const candidate of candidates) {
-      const dedupeKey = `${candidate.type}:${[...candidate.claimIds].sort().join(',')}`;
+      const dedupeKey = fraudDedupeKey(candidate.type, candidate.claimIds);
       await withDegradedFallback(
         'FraudService.persistCases',
         async () => {

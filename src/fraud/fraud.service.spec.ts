@@ -4,7 +4,7 @@ import { ClaimsService } from '../claims/claims.service';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { MatchingService } from '../matching/matching.service';
 import { RealtimeGateway } from '../realtime/realtime.module';
-import { FraudService } from './fraud.service';
+import { fraudDedupeKey, FraudService } from './fraud.service';
 
 /** Base injoignable : erreur de connexion (repli mémoire). */
 function connectionError(): Error {
@@ -110,5 +110,31 @@ describe('FraudService — SEC-13 (aucun GET n’écrit) et SEC-36 (pas de fenê
     truncated = true;
     await service.scheduleRecompute('test');
     expect((await service.cases(1, 6, operateur)).analysis.truncated).toBe(true);
+  });
+});
+
+/**
+ * `fraudDedupeKey` — FraudCase.dedupeKey est un `varchar(512)` unique. Un
+ * cluster RECURRENCE_VEHICULE n'a pas de borne de taille (toutes les
+ * déclarations d'un même véhicule sur la fenêtre glissante) : avec les
+ * identifiants bruts joints par des virgules, une quinzaine de dossiers
+ * dépassait déjà les 512 caractères et faisait échouer le recalcul anti-
+ * fraude au démarrage ("value too long for type character varying(512)").
+ */
+describe('fraudDedupeKey (longueur fixe, quel que soit le nombre de dossiers du cluster)', () => {
+  it('reste très en-deçà de 512 caractères même pour un cluster de 200 dossiers', () => {
+    const manyClaims = Array.from({ length: 200 }, (_, i) => `11111111-1111-4111-8111-${String(i).padStart(12, '0')}`);
+    const key = fraudDedupeKey('RECURRENCE_VEHICULE', manyClaims);
+    expect(key.length).toBeLessThan(512);
+    expect(key).toMatch(/^RECURRENCE_VEHICULE:[0-9a-f]{64}$/);
+  });
+
+  it("est indépendant de l'ordre des identifiants (upsert idempotent sur le même ensemble)", () => {
+    expect(fraudDedupeKey('DOUBLON', ['c-2', 'c-1'])).toBe(fraudDedupeKey('DOUBLON', ['c-1', 'c-2']));
+  });
+
+  it('diffère selon le type ou l’ensemble de dossiers', () => {
+    expect(fraudDedupeKey('DOUBLON', ['c-1', 'c-2'])).not.toBe(fraudDedupeKey('RECURRENCE_VEHICULE', ['c-1', 'c-2']));
+    expect(fraudDedupeKey('DOUBLON', ['c-1', 'c-2'])).not.toBe(fraudDedupeKey('DOUBLON', ['c-1', 'c-3']));
   });
 });

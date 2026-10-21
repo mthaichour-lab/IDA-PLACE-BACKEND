@@ -5,8 +5,11 @@ import { FraudCaseType, FraudSeverity } from '../fraud.detection';
 /**
  * FraudCase — B.3/B.9, écran 9 "Anti-fraude". Un cas suspect RÉELLEMENT
  * détecté (voir `fraud.detection.ts` pour les 5 règles). `dedupeKey` permet
- * un recalcul périodique idempotent (upsert) : `${type}:${claimIds triés}`,
- * pour qu'un même cas ne soit jamais dupliqué à chaque `GET /fraud/cases`.
+ * un recalcul périodique idempotent (upsert) : un hachage de longueur fixe
+ * de `${type}:${claimIds triés}` (`FraudService.fraudDedupeKey`, jamais la
+ * liste brute — un cluster RECURRENCE_VEHICULE n'a pas de borne de taille,
+ * voir ce commentaire), pour qu'un même cas ne soit jamais dupliqué à
+ * chaque `GET /fraud/cases`.
  */
 @Entity({ tableName: 'fraud_case' })
 export class FraudCase {
