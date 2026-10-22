@@ -173,7 +173,7 @@ export class CommissionService implements OnModuleInit {
   async decisionForRecours(recoursId: string): Promise<CommissionDecisionForRecours | undefined> {
     const kase = (await this.loadAllCaseViews()).find((c) => c.recoursId === recoursId);
     if (!kase) return undefined;
-    return { caseId: kase.id, status: kase.status, outcome: kase.decision?.outcome as CommissionDecisionForRecours['outcome'], pvRef: kase.pv?.ref, pvSigned: !!kase.pv };
+    return { caseId: kase.id, caseReference: kase.reference, status: kase.status, outcome: kase.decision?.outcome as CommissionDecisionForRecours['outcome'], pvRef: kase.pv?.ref, pvSigned: !!kase.pv };
   }
 
   private async seal(type: string, ref: string, actorId: string, summary: Record<string, unknown>): Promise<void> {
@@ -392,7 +392,8 @@ export class CommissionService implements OnModuleInit {
         if (current.decidedBy && current.decidedBy === user.id) {
           throw new ConflictException({ code: 'FOUR_EYES', message: 'Le PV doit être signé par un autre membre que l’auteur du prononcé.' });
         }
-        return { pv: { signedBy: user.name, signedAt: new Date().toISOString(), ref: `PV-${id}` } };
+        // Référence lisible et opposable : PV-<référence métier du dossier> (CSC-AAAA-NNN), à défaut l'id technique.
+        return { pv: { signedBy: user.name, signedAt: new Date().toISOString(), ref: `PV-${current.reference ?? id}` } };
       },
       'COMMISSION_PV',
       user.id,

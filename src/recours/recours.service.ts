@@ -65,6 +65,8 @@ type MemoryRecoursRow = RecoursSnapshot & {
 /** Décision de commission rattachée à un recours (SEC-32) — fournie par `CommissionModule`, qui dépend de ce module (jamais l'inverse). */
 export interface CommissionDecisionForRecours {
   caseId: string;
+  /** Référence métier du dossier de commission (CSC-AAAA-NNN), citée dans la note de clôture. */
+  caseReference?: string;
   status: string;
   outcome?: 'RECOURS_FONDE' | 'RECOURS_REJETE';
   pvRef?: string;
@@ -470,7 +472,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** SEC-32 : la clôture en commission découle d'une décision PRONONCÉE, au PV signé, de sens identique. */
-  private async commissionBasis(id: string, action: RecoursAction): Promise<{ commissionCaseId?: string; pvRef?: string }> {
+  private async commissionBasis(id: string, action: RecoursAction): Promise<{ commissionCaseId?: string; caseReference?: string; pvRef?: string }> {
     if (action !== 'cloturer_commission_favorable' && action !== 'cloturer_commission_defavorable') return {};
     const decision = this.commissionLookup ? await this.commissionLookup(id) : undefined;
     const expected = action === 'cloturer_commission_favorable' ? 'RECOURS_FONDE' : 'RECOURS_REJETE';
@@ -480,7 +482,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
         message: `La clôture exige une décision de commission prononcée (${expected}) dont le PV est signé.`,
       });
     }
-    return { commissionCaseId: decision.caseId, pvRef: decision.pvRef };
+    return { commissionCaseId: decision.caseId, caseReference: decision.caseReference, pvRef: decision.pvRef };
   }
 
   async transition(id: string, dto: RecoursTransitionDto, user: AuthenticatedUser): Promise<RecoursTransitionResultDto> {
@@ -508,7 +510,7 @@ export class RecoursService implements OnModuleInit, OnModuleDestroy {
         throw new BadRequestException({ code: 'INVALID_TRANSITION', message: `Action "${action}" non autorisée depuis l'état "${autoSnapshot.state}".` });
       }
       const basis = await this.commissionBasis(id, action);
-      if (basis.commissionCaseId && next.resolution) next.resolution = { ...next.resolution, note: [dto.reason, `Dossier ${basis.commissionCaseId}`, basis.pvRef && `PV ${basis.pvRef}`].filter(Boolean).join(' — ') };
+      if (basis.commissionCaseId && next.resolution) next.resolution = { ...next.resolution, note: [dto.reason, `Dossier ${basis.caseReference ?? basis.commissionCaseId}`, basis.pvRef && `PV ${basis.pvRef}`].filter(Boolean).join(' — ') };
       const place = isPlaceUser(user);
       const entry: RecoursHistoryEntry = {
         at: now.toISOString(),

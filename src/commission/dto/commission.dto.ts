@@ -107,7 +107,7 @@ export class SanctionOrderDto {
 }
 
 /**
- * SEC-32 : la référence du PV est générée par le serveur (`PV-<id dossier>`) ;
+ * SEC-32 : la référence du PV est générée par le serveur (`PV-<référence du dossier>`, ex. PV-CSC-2026-013) ;
  * une `ref` fournie par le client n'est plus prise en compte.
  */
 export class PvSignDto {}

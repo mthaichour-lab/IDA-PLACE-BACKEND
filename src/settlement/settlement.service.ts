@@ -360,7 +360,11 @@ export class SettlementService {
 
     const allNet = computeMultilateralNetPositions(matrix);
     const net = tenant ? allNet.filter((n) => n.code === tenant) : allNet;
-    const multilateralNetTotal = sumAmounts(net.filter((n) => n.net > 0).map((n) => n.net));
+    // Place : flux réellement échangés après netting = somme des positions
+    // créditrices (égale à celle des débitrices). Compagnie : SON flux net,
+    // à recevoir ou à payer (valeur absolue) — sinon un débiteur net verrait
+    // « 0 DA après netting, réduction 100 % ».
+    const multilateralNetTotal = tenant ? sumAmounts(net.map((n) => Math.abs(n.net))) : sumAmounts(net.filter((n) => n.net > 0).map((n) => n.net));
 
     const reductionPct = grossTotal === 0 ? 0 : Math.round((1 - multilateralNetTotal / grossTotal) * 1000) / 10;
     const opposed = allRecours.filter((r) => r.state === 'OPPOSITION' && (!tenant || r.from === tenant || r.to === tenant));

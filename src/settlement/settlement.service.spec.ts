@@ -271,6 +271,17 @@ describe('SettlementService (mode dégradé — synthèse mensuelle, compensatio
     expect(result.reductionPct).toBeCloseTo(57.1, 1);
   });
 
+  it('summary() d’une compagnie débitrice nette : flux net = sa position à payer, pas 0', async () => {
+    const a = await recours.create({ claimId: 'clm-a9', from: 'CAAT', to: 'SAA', amount: 100_000 });
+    const b = await recours.create({ claimId: 'clm-b9', from: 'SAA', to: 'CAAT', amount: 40_000 });
+    await accept(a);
+    await accept(b);
+
+    const result = await settlement.summary(quarterOf(a.requestSentAt), correspondant('CAAT'));
+    expect(result).toMatchObject({ grossTotal: 140_000, multilateralNetTotal: 60_000 });
+    expect(result.reductionPct).toBeCloseTo(57.1, 1);
+  });
+
   it('summary() ne divise jamais par zéro quand aucun recours n’est réglé ce trimestre', async () => {
     const result = await settlement.summary('2099-Q1');
     expect(result).toMatchObject({ grossTotal: 0, bilateralNetTotal: 0, multilateralNetTotal: 0, reductionPct: 0, settledCount: 0 });

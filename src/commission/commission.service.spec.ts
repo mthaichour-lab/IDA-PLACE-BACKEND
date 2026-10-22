@@ -163,8 +163,8 @@ describe('CommissionService (mode dégradé — file de conciliation, pénalité
       expect(decided.decision).not.toHaveProperty('decidedBy');
 
       const signed = await commission.pvSign(created.id, member('b'));
-      expect(signed.pv).toMatchObject({ signedBy: 'b', ref: `PV-${created.id}` });
-      expect(ledgerAppend).toHaveBeenCalledWith('COMMISSION_PV', created.id, 'id-b', expect.stringContaining(`PV-${created.id}`));
+      expect(signed.pv).toMatchObject({ signedBy: 'b', ref: `PV-${created.reference}` });
+      expect(ledgerAppend).toHaveBeenCalledWith('COMMISSION_PV', created.id, 'id-b', expect.stringContaining(`PV-${created.reference}`));
     });
 
     it('un second pvSign est refusé (409 PV_DEJA_SIGNE) : le PV ne se réécrit pas', async () => {

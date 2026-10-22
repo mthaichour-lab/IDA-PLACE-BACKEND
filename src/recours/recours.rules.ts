@@ -347,7 +347,7 @@ export function applyManualTransition(
         ...snapshot,
         state: 'REGLE',
         responseAt: nowIso,
-        resolution: { kind: 'ACCEPTATION_EXPRESSE', at: nowIso },
+        resolution: { kind: 'ACCEPTATION_EXPRESSE', at: nowIso, note: opts.reason },
         settledAt: nowIso,
       };
     case 'opposer':
@@ -370,7 +370,7 @@ export function applyManualTransition(
         opposition: snapshot.opposition
           ? { ...snapshot.opposition, status: 'REJETEE', decidedAt: nowIso }
           : snapshot.opposition,
-        resolution: { kind: 'OPPOSITION_LEVEE', at: nowIso },
+        resolution: { kind: 'OPPOSITION_LEVEE', at: nowIso, note: opts.reason },
         settledAt: nowIso,
       };
     case 'contester':

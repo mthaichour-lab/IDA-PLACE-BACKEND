@@ -233,6 +233,20 @@ describe('monitoring.scoring (fonctions pures)', () => {
       expect(computeCompositeScore(allNull)).toBeNull();
     });
 
+    it('renvoie null pour une compagnie sans activité, même sans sanction (pénalités seules)', () => {
+      const none = { value: null, dataSource: 'NON_DISPONIBLE' as const, sampleSize: 0 };
+      const onlyPenalties = fullDetails({
+        delais: none,
+        silences: none,
+        oppositions: none,
+        qualiteDonnees: none,
+        forclusions: none,
+        demandesTardives: none,
+        penalites: { value: 100, dataSource: 'REEL', sampleSize: 0 },
+      });
+      expect(computeCompositeScore(onlyPenalties)).toBeNull();
+    });
+
     it('pondère correctement un mélange de composantes disponibles', () => {
       // délais (30%) = 0, qualiteDonnees (15%) = 100 → poids dispo 45% → (0*0.30 + 100*0.15)/0.45 = 33.3
       const details = fullDetails({

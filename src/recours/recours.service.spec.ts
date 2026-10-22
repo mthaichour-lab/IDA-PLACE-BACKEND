@@ -274,6 +274,14 @@ describe('RecoursService (mode dégradé — timers Art.10/12/19, machine d’é
       expect(history[history.length - 1]).toMatchObject({ action: 'cloturer_commission_favorable', commissionCaseId: 'case-1', pvRef: 'PV-case-1' });
     });
 
+    it('la note de clôture cite la référence métier du dossier de commission, pas son id technique', async () => {
+      const id = await toCommission('clm-32d');
+      service.registerCommissionDecisionLookup(async () => ({ caseId: 'uuid-technique', caseReference: 'CSC-2026-013', status: 'PRONONCE', outcome: 'RECOURS_FONDE', pvSigned: true, pvRef: 'PV-CSC-2026-013' }));
+      await service.transition(id, { action: 'cloturer_commission_favorable', reason: 'Recours fondé' }, placeUser());
+      const after = await service.getForUser(id, placeUser());
+      expect(after.resolution?.note).toBe('Recours fondé — Dossier CSC-2026-013 — PV PV-CSC-2026-013');
+    });
+
     it('un rôle compagnie ne clôture jamais en commission (403), même avec le privilège decide', async () => {
       const id = await toCommission('clm-32c');
       await expect(service.transition(id, { action: 'cloturer_commission_favorable' }, { ...correspondant('CAAT'), privileges: ['decide'] })).rejects.toMatchObject({ status: 403 });

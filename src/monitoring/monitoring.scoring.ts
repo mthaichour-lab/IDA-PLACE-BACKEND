@@ -214,6 +214,11 @@ export function computePenalitesScore(sanctionCountByCompany: Map<string, number
  * aucune composante n'est disponible.
  */
 export function computeCompositeScore(details: Record<MonitoringComponentKey, MonitoringComponentValue>): number | null {
+  // Sans aucune composante d'ACTIVITÉ (délais, silences, oppositions, données,
+  // forclusions, demandes), « aucune sanction » ne suffit pas à noter une
+  // compagnie : elle serait classée première à 100 sans avoir rien traité.
+  const hasActivity = (Object.keys(MONITORING_WEIGHTS) as MonitoringComponentKey[]).some((k) => k !== 'penalites' && details[k].value !== null);
+  if (!hasActivity) return null;
   let weightedSum = 0;
   let weightTotal = 0;
   for (const key of Object.keys(MONITORING_WEIGHTS) as MonitoringComponentKey[]) {
