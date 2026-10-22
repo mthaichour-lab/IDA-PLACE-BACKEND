@@ -5,7 +5,7 @@ import { PlaceUserDirectory } from '../../common/directory/place-user-directory.
 import { AuthenticatedUser, AuthProvider } from '../../common/interfaces/authenticated-user.interface';
 import { sanitizeForLog } from '../../common/logging/sanitize-log';
 import { RbacService } from '../../common/rbac/rbac.service';
-import { ROLES, Role } from '../../common/rbac/roles-privileges';
+import { isCompanyScopedRole, ROLES, Role } from '../../common/rbac/roles-privileges';
 
 interface KeycloakTokenPayload {
   sub: string;
@@ -221,6 +221,19 @@ export class KeycloakStrategy implements AuthProvider {
     const role = this.extractRole(payload);
     if (!role) {
       this.logger.warn('JWT Keycloak sans rôle applicatif unique reconnu (ida_place_role / realm_access.roles) — rejeté.');
+      return null;
+    }
+
+    // Séparation place / compagnies, fermée par défaut : un rôle compagnie
+    // sans `company_id` n'a pas de périmètre, un rôle de la place porteur
+    // d'un `company_id` cumulerait vue globale et actes de compagnie.
+    const companyScoped = isCompanyScopedRole(role);
+    if (companyScoped && !payload.company_id) {
+      this.logger.warn(`JWT Keycloak : rôle ${role} sans attribut company_id — rejeté.`);
+      return null;
+    }
+    if (!companyScoped && payload.company_id) {
+      this.logger.warn(`JWT Keycloak : rôle de la place ${role} porteur d'un company_id (${payload.company_id}) — rejeté.`);
       return null;
     }
 

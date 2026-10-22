@@ -249,6 +249,35 @@ describe('AdherentsService (mode dégradé)', () => {
     });
   });
 
+  describe('Organisation d’une compagnie — DG > DR > AG', () => {
+    it('une DR relève de la DG, une agence d’une DR (ou de la DG)', async () => {
+      const dr = await service.createAgency({ companyId: MEMORY_IDS.CAAT, code: 'DR-OUEST', name: 'Direction régionale Ouest', type: 'DR' as never, parentId: MEMORY_IDS.AGENCY_CAAT_DG }, correspondant('CAAT'));
+      const ag = await service.createAgency({ companyId: MEMORY_IDS.CAAT, code: 'AG-31-02', name: 'CAAT Es Senia', type: 'AG' as never, parentId: dr.id }, correspondant('CAAT'));
+      expect(ag.parentId).toBe(dr.id);
+    });
+
+    it('refuse une DR rattachée à une agence et une DG rattachée à quoi que ce soit (400 ORGANISATION_INVALIDE)', async () => {
+      await expect(
+        service.createAgency({ companyId: MEMORY_IDS.CAAT, code: 'DR-X', name: 'DR', type: 'DR' as never, parentId: MEMORY_IDS.AGENCY_CAAT_ORAN }, correspondant('CAAT')),
+      ).rejects.toMatchObject({ status: 400, response: { code: 'ORGANISATION_INVALIDE' } });
+    });
+
+    it('une compagnie n’a qu’une Direction générale (409 DG_EXISTANTE)', async () => {
+      await expect(service.createAgency({ companyId: MEMORY_IDS.CAAT, code: 'DG-02', name: 'Seconde DG', type: 'DG' as never }, correspondant('CAAT'))).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'DG_EXISTANTE' },
+      });
+    });
+
+    it('refuse un changement de niveau qui laisserait des entités rattachées incompatibles', async () => {
+      // La DG CAAT a des agences rattachées : la rétrograder en agence les laisserait sous une agence.
+      await expect(service.updateAgency(MEMORY_IDS.AGENCY_CAAT_DG, { type: 'AG' as never }, correspondant('CAAT'))).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'ORGANISATION_INVALIDE' },
+      });
+    });
+  });
+
   describe('SEC-31 — rattachement hiérarchique des agences', () => {
     it('refuse (400 PARENT_INVALIDE) un parent appartenant à une autre compagnie', async () => {
       await expect(

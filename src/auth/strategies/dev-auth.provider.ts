@@ -4,7 +4,7 @@ import { getDevJwtSecret, isProductionEnv } from '../../common/config/env.valida
 import { AuthenticatedUser, AuthProvider } from '../../common/interfaces/authenticated-user.interface';
 import { sanitizeForLog } from '../../common/logging/sanitize-log';
 import { RbacService } from '../../common/rbac/rbac.service';
-import { Privilege, Role, ROLES } from '../../common/rbac/roles-privileges';
+import { Privilege, Role, ROLES, isCompanyScopedRole } from '../../common/rbac/roles-privileges';
 
 interface DevUserPayload {
   id: string;
@@ -108,6 +108,11 @@ export class DevAuthProvider implements AuthProvider {
     }
 
     if (!payload || typeof payload !== 'object' || !(ROLES as readonly string[]).includes(payload.role)) return null;
+    // Même séparation place / compagnies que KeycloakStrategy.
+    if (isCompanyScopedRole(payload.role) !== !!payload.companyId) {
+      this.logger.warn(`Identité de développement incohérente : rôle ${payload.role} ${payload.companyId ? 'avec' : 'sans'} companyId — rejetée.`);
+      return null;
+    }
 
     const privileges = this.rbac.effectivePrivileges(payload.role, payload.grant ?? [], payload.revoke ?? []);
 

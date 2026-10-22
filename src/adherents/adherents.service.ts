@@ -22,7 +22,8 @@ import {
   UpdateCompanyDto,
   UpdateCompanyGovernanceDto,
 } from './dto/company.dto';
-import { Agency } from './entities/agency.entity';
+import { hierarchyViolation } from './agency-hierarchy.rules';
+import { Agency, AgencyType } from './entities/agency.entity';
 import { Company, CompanyStatus } from './entities/company.entity';
 import { CompanyGovernanceChange } from './entities/company-governance-change.entity';
 import { Wilaya } from './entities/wilaya.entity';
@@ -561,18 +562,51 @@ export class AdherentsService {
   }
 
   /** Compagnie et parent d'une agence (base, puis repli mémoire) — pour les contrôles d'accès et de hiérarchie, hors de toute écriture. */
-  private async agencyLink(id: string): Promise<{ companyId: string; companyCode: string; parentId?: string }> {
+  private async agencyLink(id: string): Promise<{ companyId: string; companyCode: string; parentId?: string; type: AgencyType }> {
     try {
       const a = await this.agencies.findOne({ id }, { populate: ['company', 'parent'] });
       if (!a) throw AGENCY_NOT_FOUND();
-      return { companyId: a.company.id, companyCode: a.company.code, parentId: a.parent?.id };
+      return { companyId: a.company.id, companyCode: a.company.code, parentId: a.parent?.id, type: a.type };
     } catch (err) {
       if ((err as { getStatus?: () => number }).getStatus?.() === 404) throw err;
       const a: MemoryAgency | undefined = MEMORY_AGENCIES.find((m) => m.id === id);
       if (!a) throw AGENCY_NOT_FOUND();
       const company = MEMORY_COMPANIES.find((c) => c.id === a.companyId);
       if (!company) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Compagnie introuvable (mode dégradé).' });
-      return { companyId: company.id, companyCode: company.code, parentId: a.parentId };
+      return { companyId: company.id, companyCode: company.code, parentId: a.parentId, type: a.type };
+    }
+  }
+
+  /** Agences d'une compagnie (base, puis repli mémoire) — type et rattachement seulement, pour les règles d'organisation. */
+  private async companyOrganisation(companyId: string): Promise<{ id: string; type: AgencyType; parentId?: string; status: CompanyStatus }[]> {
+    try {
+      const rows = await this.agencies.find({ company: { id: companyId } }, { populate: ['parent'] });
+      return rows.map((a) => ({ id: a.id, type: a.type, parentId: a.parent?.id, status: a.status }));
+    } catch {
+      return MEMORY_AGENCIES.filter((a) => a.companyId === companyId).map((a) => ({ id: a.id, type: a.type, parentId: a.parentId, status: a.status }));
+    }
+  }
+
+  /**
+   * Organisation de la compagnie (DG > DR > AG, voir `agency-hierarchy.rules.ts`) :
+   * niveau compatible avec celui du parent, DG unique, et un changement de
+   * niveau ne doit pas laisser d'entités rattachées incompatibles.
+   */
+  private async assertOrganisation(companyId: string, type: AgencyType, parentId: string | undefined, selfId?: string): Promise<void> {
+    const invalid = (message: string) => new BadRequestException({ code: 'ORGANISATION_INVALIDE', message });
+    const org = await this.companyOrganisation(companyId);
+    const parentType = parentId ? (org.find((a) => a.id === parentId)?.type ?? (await this.agencyLink(parentId)).type) : undefined;
+    const violation = hierarchyViolation(type, parentType);
+    if (violation) throw invalid(violation);
+    if (type === AgencyType.DG && org.some((a) => a.type === AgencyType.DG && a.id !== selfId && a.status !== CompanyStatus.EXCLU)) {
+      throw new ConflictException({ code: 'DG_EXISTANTE', message: 'Cette compagnie a déjà une Direction générale : une compagnie n’en a qu’une.' });
+    }
+    if (selfId) {
+      for (const child of org.filter((a) => a.parentId === selfId)) {
+        if (hierarchyViolation(child.type, type)) {
+          throw invalid('Ce changement de niveau est incompatible avec les entités qui en relèvent : rattachez-les d’abord ailleurs.');
+        }
+      }
     }
   }
 
@@ -606,6 +640,7 @@ export class AdherentsService {
     const owner = await this.getCompany(dto.companyId);
     assertCompanyAccess(user, owner.code);
     if (dto.parentId) await this.assertValidParent(owner.id, dto.parentId);
+    await this.assertOrganisation(owner.id, dto.type, dto.parentId);
     const created = await withStrictFallback(
       'AdherentsService.createAgency',
       async () => {
@@ -656,6 +691,7 @@ export class AdherentsService {
     const link = await this.agencyLink(id);
     assertCompanyAccess(user, link.companyCode);
     if (dto.parentId) await this.assertValidParent(link.companyId, dto.parentId, id);
+    if (dto.type !== undefined || dto.parentId) await this.assertOrganisation(link.companyId, dto.type ?? link.type, dto.parentId ?? link.parentId, id);
     const updated = await withStrictFallback(
       'AdherentsService.updateAgency',
       async () => {

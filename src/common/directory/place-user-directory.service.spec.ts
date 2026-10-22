@@ -64,6 +64,27 @@ describe('PlaceUserDirectory (mode dégradé)', () => {
     expect(updated.grant).toEqual(['bill']);
   });
 
+  it('refuse un compte de la place rattaché à une compagnie (séparation place / compagnies)', async () => {
+    await expect(service.create({ name: 'Op', email: 'op-cash@finlab.dz', role: 'OPERATEUR_PLACE', companyId: 'CASH' })).rejects.toMatchObject({
+      response: { code: 'COMPTE_PLACE_AVEC_COMPAGNIE' },
+    });
+  });
+
+  it('un correspondant promu rôle de la place perd son rattachement compagnie', async () => {
+    const created = await service.create({ name: 'Promu', email: 'promu@caat.dz', role: 'CORRESPONDANT_IDA', companyId: 'CAAT' });
+    const updated = await service.update(created.id, { role: 'OPERATEUR_PLACE' });
+    expect(updated.role).toBe('OPERATEUR_PLACE');
+    expect(updated.companyId).toBeUndefined();
+  });
+
+  it('filtre la liste par périmètre : comptes de la place / comptes des compagnies', async () => {
+    const place = await service.list(1, 100, 'PLACE');
+    const companies = await service.list(1, 100, 'COMPAGNIE');
+    expect(place.items.every((u) => !u.companyId && !['CORRESPONDANT_IDA', 'TRESORIER'].includes(u.role))).toBe(true);
+    expect(companies.items.every((u) => !!u.companyId && ['CORRESPONDANT_IDA', 'TRESORIER'].includes(u.role))).toBe(true);
+    expect(place.total + companies.total).toBe((await service.list(1, 100)).total);
+  });
+
   it('404 normalisé si id inconnu', async () => {
     await expect(service.update('id-inconnu', plainToInstance(UpdatePlaceUserDto, { active: false }))).rejects.toThrow();
   });

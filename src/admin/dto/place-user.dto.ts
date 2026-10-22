@@ -8,7 +8,15 @@ import { PRIVILEGES, ROLES } from '../../common/rbac/roles-privileges';
 const COMPANY_CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{1,15}$/;
 const COMPANY_CODE_MESSAGE = 'companyId doit être un code compagnie (2 à 16 caractères : majuscules, chiffres, _ ou -).';
 
+/** Séparation des comptes : la place (opérateur, Admin FinLab/UAR, commission, audit) ou les compagnies (correspondants, trésoriers). */
+export const USER_SCOPES = ['PLACE', 'COMPAGNIE'] as const;
+export type UserScope = (typeof USER_SCOPES)[number];
+
 export class ListPlaceUsersQueryDto {
+  @ApiPropertyOptional({ enum: USER_SCOPES, description: 'PLACE : comptes de la place ; COMPAGNIE : comptes rattachés à une compagnie' })
+  @IsOptional()
+  @IsIn(USER_SCOPES as unknown as string[])
+  scope?: UserScope;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) page: number = 1;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) pageSize: number = DEFAULT_PAGE_SIZE;
 }

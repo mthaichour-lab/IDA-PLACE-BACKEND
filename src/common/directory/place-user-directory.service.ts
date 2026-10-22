@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import { CreatePlaceUserDto, PlaceUserViewDto, UpdatePlaceUserDto } from '../../admin/dto/place-user.dto';
 import { paginateArray, PaginatedResult } from '../dto/pagination.dto';
 import { withDegradedFallback } from '../interfaces/degraded-mode';
-import { forbiddenPrivilegesForRole, isCompanyScopedRole, Privilege, Role } from '../rbac/roles-privileges';
+import { forbiddenPrivilegesForRole, isCompanyScopedRole, Privilege, Role, ROLES } from '../rbac/roles-privileges';
 import { PlaceUser } from './place-user.entity';
 
 /** Repli mémoire — mode dégradé (voir README "Mode dégradé"). Seed identique à l'ancien mock, pour ne pas changer le comportement observé en dev sans base. */
@@ -47,6 +47,18 @@ function assertAccountConsistency(role: string, grant: readonly string[], compan
   if (isCompanyScopedRole(role) && !companyId) {
     throw new BadRequestException({ code: 'BAD_REQUEST', message: `Le rôle ${role} doit être rattaché à une compagnie (companyId).` });
   }
+  // Séparation place / compagnies : un compte de la place (opérateur, Admin
+  // FinLab/UAR, commission, audit) n'est jamais rattaché à une compagnie —
+  // sinon il cumulerait la vue « toute la place » et des actes de compagnie.
+  if (!isCompanyScopedRole(role) && companyId) {
+    throw new BadRequestException({ code: 'COMPTE_PLACE_AVEC_COMPAGNIE', message: `Le rôle ${role} est un rôle de la place : il ne peut pas être rattaché à une compagnie (${companyId}).` });
+  }
+}
+
+/** Passage d'un rôle compagnie à un rôle de la place : le rattachement à la compagnie tombe avec l'ancien rôle. */
+function resultingCompanyId(role: string, patchCompanyId: string | undefined, currentCompanyId: string | undefined): string | undefined {
+  if (!isCompanyScopedRole(role)) return patchCompanyId;
+  return patchCompanyId ?? currentCompanyId;
 }
 
 function toView(u: PlaceUser): PlaceUserViewDto {
@@ -93,14 +105,17 @@ function definedFieldsOnly<T extends object>(dto: T): Partial<T> {
 export class PlaceUserDirectory {
   constructor(@InjectRepository(PlaceUser) private readonly repo: EntityRepository<PlaceUser>) {}
 
-  async list(page: number, pageSize: number): Promise<PaginatedResult<PlaceUserViewDto>> {
+  async list(page: number, pageSize: number, scope?: 'PLACE' | 'COMPAGNIE'): Promise<PaginatedResult<PlaceUserViewDto>> {
+    const companyRoles = ROLES.filter((r) => isCompanyScopedRole(r));
+    const where = scope === 'COMPAGNIE' ? { role: { $in: companyRoles } } : scope === 'PLACE' ? { role: { $nin: companyRoles } } : {};
+    const inScope = (u: PlaceUserViewDto) => !scope || (scope === 'COMPAGNIE') === isCompanyScopedRole(u.role);
     return withDegradedFallback(
       'PlaceUserDirectory.list',
       async () => {
-        const [rows, total] = await this.repo.findAndCount({}, { limit: pageSize, offset: (page - 1) * pageSize, orderBy: { name: 'ASC' } });
+        const [rows, total] = await this.repo.findAndCount(where, { limit: pageSize, offset: (page - 1) * pageSize, orderBy: { name: 'ASC' } });
         return { page, total, items: rows.map(toView) } as PaginatedResult<PlaceUserViewDto>;
       },
-      () => paginateArray(MEMORY_USERS, page, pageSize),
+      () => paginateArray(MEMORY_USERS.filter(inScope), page, pageSize),
     );
   }
 
@@ -151,16 +166,18 @@ export class PlaceUserDirectory {
       async () => {
         const u = await this.repo.findOne({ id });
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable.' });
-        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, patch.companyId ?? u.companyId);
-        this.repo.assign(u, patch as Partial<PlaceUser>);
+        const companyId = resultingCompanyId(patch.role ?? u.role, patch.companyId, u.companyId);
+        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, companyId);
+        this.repo.assign(u, { ...patch, companyId } as Partial<PlaceUser>);
         await this.repo.getEntityManager().flush();
         return toView(u);
       },
       () => {
         const u = MEMORY_USERS.find((m) => m.id === id);
         if (!u) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Utilisateur introuvable (mode dégradé).' });
-        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, patch.companyId ?? u.companyId);
-        Object.assign(u, patch);
+        const companyId = resultingCompanyId(patch.role ?? u.role, patch.companyId, u.companyId);
+        assertAccountConsistency(patch.role ?? u.role, patch.grant ?? u.grant, companyId);
+        Object.assign(u, patch, { companyId });
         return u;
       },
     );

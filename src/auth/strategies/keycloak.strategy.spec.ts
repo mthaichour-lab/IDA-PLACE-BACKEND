@@ -122,6 +122,15 @@ describe('KeycloakStrategy', () => {
     expect(user?.companyId).toBe('CAAT');
   });
 
+  it('séparation place / compagnies : rôle compagnie sans company_id rejeté', async () => {
+    expect(await resolve(signToken(accessToken({ realm_access: { roles: ['CORRESPONDANT_IDA'] } })))).toBeNull();
+  });
+
+  it('séparation place / compagnies : rôle de la place porteur d’un company_id rejeté', async () => {
+    expect(await resolve(signToken(accessToken({ company_id: 'CAAR', realm_access: { roles: ['OPERATEUR_PLACE'] } })))).toBeNull();
+    expect(await resolve(signToken(accessToken({ company_id: 'CAAR', realm_access: { roles: ['ADMIN_UAR'] } })))).toBeNull();
+  });
+
   it('priorise la claim explicite ida_place_role sur realm_access.roles', async () => {
     const user = await resolve(signToken(accessToken({ ida_place_role: 'AUDITEUR_CSA', realm_access: { roles: ['OPERATEUR_PLACE'] } })));
     expect(user?.role).toBe('AUDITEUR_CSA');

@@ -87,7 +87,7 @@ class AdminController {
   @Privileges('admin')
   @ApiOperation({ summary: 'Utilisateurs & accès — RÉEL, paginé (6/p)' })
   listUsers(@Query() q: ListPlaceUsersQueryDto) {
-    return this.users.list(q.page, q.pageSize);
+    return this.users.list(q.page, q.pageSize, q.scope);
   }
 
   @Post('users')
