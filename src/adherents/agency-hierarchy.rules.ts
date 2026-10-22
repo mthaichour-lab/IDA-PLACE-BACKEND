@@ -24,9 +24,14 @@ export function hierarchyViolation(type: AgencyType, parentType: AgencyType | un
   if (parentType === undefined) return null;
   if (allowed.length === 0) return `${capitalize(LABEL[type])} est la racine de l’organisation : elle ne relève d’aucune autre entité.`;
   if (!allowed.includes(parentType)) {
-    return `${capitalize(LABEL[type])} relève de ${allowed.map((t) => LABEL[t]).join(' ou de ')}, pas de ${LABEL[parentType]}.`;
+    return `${capitalize(LABEL[type])} relève ${allowed.map((t) => of(LABEL[t])).join(' ou ')}, pas ${of(LABEL[parentType])}.`;
   }
   return null;
+}
+
+/** « de la Direction générale », « d’une agence » (élision devant « une »). */
+function of(label: string): string {
+  return label.startsWith('une ') ? `d’${label}` : `de ${label}`;
 }
 
 function capitalize(s: string): string {
